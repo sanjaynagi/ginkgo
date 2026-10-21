@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from ginkgo.core.resources import memory_gib
 from ginkgo.formatting import duration_seconds, parse_timestamp
 from ginkgo.runtime.caching.cache import coarse_reasons, diff_key_components, key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, PRIOR_ENTRY_WINDOW, CacheEntry
@@ -145,11 +146,12 @@ class TaskRow:
         Threads the task declared, after site overrides.
     declared_memory_gb : float | None
         Memory the task declared, after site overrides and before any retry
-        escalation. This is the number a user would edit.
+        escalation, in GiB as written: ``512Mi`` is ``0.5``. This is the
+        number a user would edit.
     effective_memory_gb : float | None
-        Memory the last attempt actually ran against. Higher than
-        :attr:`declared_memory_gb` when ``memory_retry_multiplier`` escalated a
-        retry, and the honest denominator for a measured peak.
+        Whole GiB the last attempt actually ran against: the declaration
+        rounded up by the scheduler, or more when ``memory_retry_multiplier``
+        escalated a retry.
     """
 
     run_id: str
@@ -592,6 +594,39 @@ class Query:
             (run_id,),
         )
         return {row["status"]: int(row["n"]) for row in rows}
+
+    def measured_executions(self, cache_keys: Iterable[str]) -> dict[str, TaskRow]:
+        """Return, per cache key, the newest execution that produced and measured it.
+
+        A cache hit measures nothing: the result it serves was made, and its
+        memory measured, by an earlier run. This finds that run.
+
+        Parameters
+        ----------
+        cache_keys : Iterable[str]
+            The cache keys to look up.
+
+        Returns
+        -------
+        dict[str, TaskRow]
+            Keyed by cache key; a key no measured execution produced is absent.
+        """
+        keys = sorted(set(cache_keys))
+        if not keys:
+            return {}
+        placeholders = ", ".join("?" for _ in keys)
+        rows = self._store.query(
+            f"SELECT {_TASK_COLUMNS} "
+            "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
+            f"WHERE t.cache_key IN ({placeholders}) AND t.cached = 0 "
+            "AND t.status = 'succeeded' AND t.peak_rss_bytes IS NOT NULL "
+            "ORDER BY r.started_at DESC, t.run_id DESC",
+            tuple(keys),
+        )
+        found: dict[str, TaskRow] = {}
+        for row in rows:
+            found.setdefault(str(row["cache_key"]), _task_row(row))
+        return found
 
     def task_history(
         self, name: str, *, limit: int | None = 20, include_unstarted: bool = False
@@ -1338,7 +1373,8 @@ _TASK_COLUMNS = (
     "t.run_id, t.task_id, t.name, t.display_label, t.status, t.cached, "
     "t.cache_key, t.started_at, t.finished_at, t.attempts, "
     "t.peak_rss_bytes, t.cpu_seconds, t.declared_threads, "
-    "t.declared_memory_gb, t.effective_memory_gb"
+    "t.declared_memory_gb, t.effective_memory_gb, "
+    "json_extract(t.resource_usage, '$.declared.memory') AS declared_memory"
 )
 """The projection behind :class:`TaskRow`, shared by every reader of it."""
 
@@ -1368,9 +1404,23 @@ def _task_row(row: Any) -> TaskRow:
         peak_rss_bytes=row["peak_rss_bytes"],
         cpu_seconds=row["cpu_seconds"],
         declared_threads=row["declared_threads"],
-        declared_memory_gb=row["declared_memory_gb"],
+        declared_memory_gb=_declared_memory_gb(row),
         effective_memory_gb=row["effective_memory_gb"],
     )
+
+
+def _declared_memory_gb(row: Any) -> float | None:
+    """Return the memory a task declared, in GiB as written.
+
+    The ``declared_memory_gb`` column holds the whole GiB the scheduler rounds
+    a declaration up to, so ``512Mi`` reads as 1 there. Sizing a declaration
+    from a measured peak needs the figure the user wrote, which the recorded
+    resource usage keeps.
+    """
+    written = row["declared_memory"]
+    if isinstance(written, str):
+        return memory_gib(written)
+    return row["declared_memory_gb"]
 
 
 def _like_suffix(value: str) -> str:

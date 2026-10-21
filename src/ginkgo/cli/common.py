@@ -78,13 +78,27 @@ def resolve_run_id(reader: Query, run_id: str | None) -> str:
     """
     if run_id is not None:
         if not reader.store.query("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)):
-            raise FileNotFoundError(f"Run not found: {run_id}")
+            raise FileNotFoundError(f"Run not found: {run_id}{_task_name_hint(reader, run_id)}")
         return run_id
 
     latest = reader.latest_run_id()
     if latest is None:
         raise FileNotFoundError(f"No runs recorded in {_LAYOUT.db}")
     return latest
+
+
+def _task_name_hint(reader: Query, name: str) -> str:
+    """Point out that *name*, given where a run id belongs, names a task instead.
+
+    ``ginkgo cache explain manifest`` reads as a question about one task, but
+    the command takes a run and explains every task in it.
+    """
+    if not reader.task_history(name, limit=1, include_unstarted=True):
+        return ""
+    return (
+        f". {name!r} is a task, not a run: this command takes a run id (the latest "
+        f"run when left out), and `ginkgo history {name}` lists the runs of that task"
+    )
 
 
 @contextmanager

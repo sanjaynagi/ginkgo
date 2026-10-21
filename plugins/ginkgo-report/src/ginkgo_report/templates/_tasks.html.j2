@@ -31,7 +31,10 @@
   <strong>Peak memory</strong> is the task's own: for a Python task, how far its
   body raised its worker's resident memory, so the worker's interpreter and
   imports are left out; for a shell, script or notebook task, the peak of its
-  process tree. It is shown against the memory the task declared.
+  process tree, sampled every quarter second, so one that finishes sooner shows no
+  figure. It is shown against the memory the task declared. A task served from
+  the cache measured nothing in this run; it shows the peak of the earlier run
+  that produced its result, named after it.
 </p>
 {% else %}
 <p class="empty">No tasks in this run.</p>

@@ -12,7 +12,7 @@ import textwrap
 from typing import Any
 
 from ginkgo.config import config_session
-from ginkgo.core.directive import DirectiveError
+from ginkgo.core.directive import DirectiveError, ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.core.flow import discover_flow
 from ginkgo.core.task import TaskDef
@@ -36,6 +36,7 @@ MISSING_DIRECTIVE_CODE = "missing_directive_return"
 ENVIRON_READ_CODE = "environ_read_in_task"
 LITERAL_PATH_CODE = "undeclared_literal_path"
 STATIC_NOTICE_CODE = "task_kind_notice"
+REFUSED_DIRECTIVE_CODE = "refused_directive"
 ENV_WARNING_CONSEQUENCE = (
     "A run fails at the first task in this environment that has to run; "
     "cached tasks do not need it."
@@ -57,6 +58,26 @@ class WorkflowDiagnostic:
         return asdict(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class WorkflowCheck:
+    """What checking a workflow without running it found.
+
+    Parameters
+    ----------
+    diagnostics : list[WorkflowDiagnostic]
+        One diagnostic per validation failure or warning; empty when validation
+        passes cleanly. A failure is the last entry, after any dropped-call
+        warnings that may explain it.
+    env_sources : frozenset[Path]
+        The notebook and script files that tasks declaring an ``env=`` run, so
+        that environment, not the CLI's interpreter, has to supply their
+        imports. Only files a task names in literal arguments are known.
+    """
+
+    diagnostics: list[WorkflowDiagnostic]
+    env_sources: frozenset[Path] = frozenset()
+
+
 def collect_workflow_diagnostics(
     *,
     workflow_path: Path,
@@ -65,7 +86,7 @@ def collect_workflow_diagnostics(
     backend_factory: Callable[[], ExecutionEnvironment] | None = None,
     param_extras: Sequence[str] = (),
     command_flags: Collection[str] = (),
-) -> list[WorkflowDiagnostic]:
+) -> WorkflowCheck:
     """Collect structured workflow diagnostics.
 
     Parameters
@@ -92,10 +113,8 @@ def collect_workflow_diagnostics(
 
     Returns
     -------
-    list[WorkflowDiagnostic]
-        One diagnostic per validation failure or warning; empty when validation
-        passes cleanly. A failure is the last entry, after any dropped-call
-        warnings that may explain it.
+    WorkflowCheck
+        The diagnostics, and the sources that run in a task's own environment.
     """
     dropped_calls: list[WorkflowDiagnostic] = []
     try:
@@ -161,6 +180,7 @@ def collect_workflow_diagnostics(
         )
         diagnostics.extend(literal_path_diagnostics(nodes=graph.nodes.values(), root=Path.cwd()))
         diagnostics.extend(static_notice_diagnostics(nodes=graph.nodes.values()))
+        diagnostics.extend(refused_directive_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(dropped_calls)
         diagnostics.extend(path_like_str_param_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(
@@ -168,11 +188,18 @@ def collect_workflow_diagnostics(
                 task_defs=[node.task_def for node in graph.nodes.values()]
             )
         )
-        return diagnostics
+        return WorkflowCheck(
+            diagnostics=diagnostics, env_sources=_env_sources(nodes=graph.nodes.values())
+        )
     except Exception as exc:
         # KeyboardInterrupt and SystemExit are left to propagate: a user who
         # interrupts doctor wants it to stop, not to be told about a diagnostic.
-        return [*dropped_calls, _diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
+        return WorkflowCheck(
+            diagnostics=[
+                *dropped_calls,
+                _diagnostic_from_exception(exc=exc, workflow_path=workflow_path),
+            ]
+        )
 
 
 def env_warning_diagnostic(*, warning: Exception, workflow_path: Path) -> WorkflowDiagnostic:
@@ -549,15 +576,8 @@ def static_notice_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiag
         kind = task_kind(node.task_def)
         if kind.static_notices is None or kind.directive is None:
             continue
-        literal_args = {
-            name: value
-            for name, value in node.expr.args.items()
-            if not contains_dynamic_expression(value)
-        }
         try:
-            directive = static_directive(
-                fn=node.task_def.fn, resolved_args=literal_args, directive_type=kind.directive
-            )
+            directive = _literal_directive(node=node, directive_type=kind.directive)
         except DirectiveError:
             continue
         if directive is None:
@@ -575,6 +595,88 @@ def static_notice_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiag
                 )
             )
     return diagnostics
+
+
+def refused_directive_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiagnostic]:
+    """Build one error per task whose directive its constructor refuses outright.
+
+    Worked out from the task's literal arguments, as
+    :func:`static_notice_diagnostics` does: a notebook task naming a Jupyter
+    ``.ipynb`` file, say, fails whatever the run's state, so ``ginkgo doctor``
+    reports it as the dry run does rather than passing the workflow.
+
+    Parameters
+    ----------
+    nodes : Iterable[TaskNode]
+        The graph's task nodes.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``error``-severity diagnostic per distinct refusal, so a fan-out of
+        one task reports it once.
+    """
+    diagnostics: list[WorkflowDiagnostic] = []
+    seen: set[str] = set()
+    for node in nodes:
+        kind = task_kind(node.task_def)
+        if kind.directive is None:
+            continue
+        try:
+            _literal_directive(node=node, directive_type=kind.directive)
+        except DirectiveError as exc:
+            message = str(exc)
+            if message in seen:
+                continue
+            seen.add(message)
+            diagnostics.append(
+                WorkflowDiagnostic(
+                    severity="error",
+                    code=REFUSED_DIRECTIVE_CODE,
+                    message=message,
+                    location=node.task_def.name,
+                )
+            )
+    return diagnostics
+
+
+def _env_sources(*, nodes: Iterable[TaskNode]) -> frozenset[Path]:
+    """Return the files tasks declaring an ``env=`` run, as far as literal arguments tell."""
+    sources: set[Path] = set()
+    for node in nodes:
+        kind = task_kind(node.task_def)
+        if node.task_def.env is None or kind.directive is None:
+            continue
+        try:
+            directive = _literal_directive(node=node, directive_type=kind.directive)
+        except DirectiveError:
+            continue
+        path = getattr(directive, "path", None)
+        if isinstance(path, (str, Path)):
+            sources.add(Path(path).resolve())
+    return frozenset(sources)
+
+
+def _literal_directive(
+    *, node: TaskNode, directive_type: type[ExecutionDirective]
+) -> ExecutionDirective | None:
+    """Return the directive *node*'s body returns from its literal arguments alone.
+
+    ``None`` when that cannot be worked out without running something.
+
+    Raises
+    ------
+    DirectiveError
+        If the constructor refuses the request whatever the run's state.
+    """
+    literal_args = {
+        name: value
+        for name, value in node.expr.args.items()
+        if not contains_dynamic_expression(value)
+    }
+    return static_directive(
+        fn=node.task_def.fn, resolved_args=literal_args, directive_type=directive_type
+    )
 
 
 def _never_returns_directive(fn: Callable[..., Any]) -> bool:

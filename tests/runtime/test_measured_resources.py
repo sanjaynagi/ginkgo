@@ -18,6 +18,7 @@ from ginkgo.runtime.worker import (
     _current_rss_bytes,
     _max_rss_bytes,
     _rusage_snapshot,
+    run_task,
 )
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
@@ -96,6 +97,43 @@ class TestTaskPeakRss:
 
         assert tracker.baseline_bytes >= _current_rss_bytes() // 2
         assert peak < 10_000_000
+
+
+_held: list[bytes] = []
+
+
+def _returns_one() -> int:
+    return 1
+
+
+class TestBodyMeasurement:
+    """The measurement is the body's, not the worker's work around it."""
+
+    def test_encoding_the_result_is_not_charged_to_the_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A fresh worker's first encode imports and allocates; a task that
+        # allocates nothing must still read close to zero.
+        def heavy_encode(value: Any, *, base_dir: Path) -> Any:
+            _held.append(b"x" * 100_000_000)
+            return value
+
+        monkeypatch.setattr("ginkgo.runtime.worker.encode_value", heavy_encode)
+        try:
+            response = run_task(
+                {
+                    "transport_dir": str(tmp_path),
+                    "args": {},
+                    "module": __name__,
+                    "module_file": __file__,
+                    "binding_name": "_returns_one",
+                }
+            )
+        finally:
+            _held.clear()
+
+        assert response["ok"] is True
+        assert response["measured_resources"]["peak_rss_bytes"] < 20_000_000
 
 
 class TestUsageMerging:

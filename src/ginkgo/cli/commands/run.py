@@ -60,7 +60,7 @@ from ginkgo.params import ParamContext
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
-from ginkgo.runtime.module_loader import display_path, load_module_from_path, task_base_name
+from ginkgo.runtime.module_loader import display_path, load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import (
     RunDir,
@@ -959,30 +959,11 @@ def _load_skip_details(
     labels = {
         task.task_key: _task_label(task=task, renderer=renderer) for task in run_summary.tasks
     }
-    details: list[SkipDetails] = []
-    for task in run_summary.tasks:
-        if task.status != "skipped":
-            continue
-        blocker = task.skipped_because or {}
-        blocker_name = blocker.get("task_name")
-        blocker_label = labels.get(str(blocker.get("task_id"))) or (
-            task_base_name(blocker_name)
-            if isinstance(blocker_name, str) and blocker_name
-            else "a failed task"
-        )
-        reason = blocker.get("reason")
-        if reason == "interrupted":
-            cause = "not started: the run was interrupted"
-        elif reason == "run_stopped":
-            cause = (
-                f"not started: the run stopped when {blocker_label} failed"
-                if blocker.get("task_id")
-                else "not started: the run stopped"
-            )
-        else:
-            cause = f"blocked by {blocker_label}"
-        details.append(SkipDetails(task_label=labels[task.task_key], cause=cause))
-    return details
+    return [
+        SkipDetails(task_label=labels[task.task_key], cause=cause)
+        for task in run_summary.tasks
+        if (cause := task.skip_cause(labels=labels)) is not None
+    ]
 
 
 def _task_label(*, task: TaskSummary, renderer: CliRunRenderer) -> str:

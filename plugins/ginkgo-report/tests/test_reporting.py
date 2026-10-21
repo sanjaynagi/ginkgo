@@ -30,10 +30,12 @@ from ginkgo.runtime.events import (
     TaskFailed,
     TaskPlanned,
     TaskRetrying,
+    TaskSkipped,
     TaskStarted,
 )
 
 from ginkgo.runtime.events import EventBus, RunCompleted, RunNotice, RunStarted
+from ginkgo.query import TaskRow
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
@@ -482,8 +484,8 @@ class TestReportData:
             summary=summary, generated_at=datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC)
         )
 
-        assert [task.attempts_label for task in report.tasks] == ["3 / 3"]
-        assert [card.attempts_label for card in report.failures] == ["3 / 3"]
+        assert [task.attempts_label for task in report.tasks] == ["3 of 3 allowed"]
+        assert [card.attempts_label for card in report.failures] == ["3 of 3 allowed"]
 
     def test_a_retried_attempts_error_is_shown_after_the_retry_succeeds(
         self, tmp_path: Path
@@ -679,6 +681,78 @@ class TestReportData:
         assert card.category == "user_code_error"
         assert card.log_tail is not None
         assert card.log_tail.total_lines > 0
+
+    def test_a_failed_run_leads_with_why_it_has_no_result(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+        run.error = "The workflow result depends on second[b], which failed."
+
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert "The workflow result depends on second[b], which failed." in html
+        assert "Run failed:" in html
+
+    def test_a_skipped_task_is_counted_and_says_what_blocked_it(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+        run.ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id="run-fail", task_id="task_0002", node_id=2, task_name="demo.third"
+            )
+        )
+        run.ledger.bus.emit(
+            TaskSkipped(
+                run_id="run-fail",
+                task_id="task_0002",
+                task_name="demo.third",
+                reason="upstream_failed",
+                blocked_by_task_id="task_0001",
+                blocked_by_task_name="demo.second",
+            )
+        )
+
+        report = build_report_data(summary=run.summary())
+
+        assert report.summary_cards[0].sub == "1 ok · 1 fail · 1 skipped"
+        assert report.sidebar_status_label == "failed · 1 failed · 1 skipped"
+        assert [(task.label, task.cause) for task in report.skipped] == [
+            ("third", "blocked by second")
+        ]
+
+    def test_a_traceback_names_project_files_relative_to_the_project(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+        steps = tmp_path.resolve() / "workflow" / "steps.py"
+        (run.ledger.run_dir.logs_dir / "task_0001.stderr.log").write_text(
+            f'  File "{steps}", line 3, in second\n', encoding="utf-8"
+        )
+
+        report = build_report_data(summary=run.summary())
+
+        (card,) = report.failures
+        assert card.log_tail is not None
+        assert card.log_tail.lines == ('  File "workflow/steps.py", line 3, in second',)
+
+    def test_a_cache_hit_shows_the_peak_of_the_run_that_measured_it(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-cached", fail=False, cached=True)
+        measured = TaskRow(
+            run_id="20260101_000000_000000_9e1f3e6c",
+            task_id="task_0000",
+            name="demo.first",
+            display_label=None,
+            status="succeeded",
+            cached=False,
+            cache_key="cache-demo.first",
+            started_at=None,
+            finished_at=None,
+            duration_s=None,
+            attempts=1,
+            peak_rss_bytes=2048,
+        )
+
+        report = build_report_data(
+            summary=run.summary(), measured_runs={"cache-demo.first": measured}
+        )
+
+        assert [task.memory_label for task in report.tasks] == ["2.0 KiB (run 9e1f3e6c)", "—"]
 
     def test_a_rendered_page_gets_a_card_titled_by_its_task(self, tmp_path: Path) -> None:
         run = _make_page_run(tmp_path=tmp_path, run_id="run-page")
@@ -952,17 +1026,29 @@ class TestExport:
         assert (out_dir / "subdir" / "notes.txt").is_file()
         assert not (out_dir / "index.html").exists()
 
-    def test_force_replaces_foreign_directory(self, tmp_path: Path) -> None:
+    def test_force_writes_into_a_foreign_directory_and_keeps_its_files(
+        self, tmp_path: Path
+    ) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "precious"
         out_dir.mkdir()
-        (out_dir / "existing.txt").write_text("goodbye", encoding="utf-8")
+        (out_dir / "existing.txt").write_text("keep me", encoding="utf-8")
 
         result = export_report(summary=run.summary(), out=out_dir, force=True)
 
         assert result.index_path.is_file()
-        assert not (out_dir / "existing.txt").exists()
+        assert (out_dir / "existing.txt").read_text(encoding="utf-8") == "keep me"
+
+    def test_rerendering_a_report_keeps_files_kept_beside_it(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        out_dir = tmp_path / "out"
+        export_report(summary=run.summary(), out=out_dir)
+        (out_dir / "notes.txt").write_text("mine", encoding="utf-8")
+
+        export_report(summary=run.summary(), out=out_dir)
+
+        assert (out_dir / "notes.txt").read_text(encoding="utf-8") == "mine"
 
     def test_rerender_into_own_report_dir_needs_no_flag(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
@@ -1081,6 +1167,13 @@ class TestNotebookPage:
         assert "loaded 3 rows" in page
         assert "ValueError: boom" in page
 
+    def test_code_can_be_left_out(self) -> None:
+        page = static_notebook_page(page=_marimo_page(), title="cases", include_code=False)
+
+        assert page is not None
+        assert "mo.md(" not in page
+        assert "<h1>Cases</h1>" in page
+
     def test_hidden_code_stays_hidden(self) -> None:
         page = static_notebook_page(page=_marimo_page(), title="cases")
 
@@ -1142,19 +1235,43 @@ class TestReportCli:
         assert not (precious / "index.html").exists()
         assert "--force" in capsys.readouterr().out
 
-    def test_force_replaces_the_out_dir(
+    def test_force_writes_the_report_without_deleting_unrelated_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         target = tmp_path / "target"
         target.mkdir()
-        (target / "stale.txt").write_text("goodbye", encoding="utf-8")
+        (target / "thesis.txt").write_text("important", encoding="utf-8")
 
         assert main(["report", "--out", str(target), "--no-open", "--force"]) == 0
 
         assert (target / "index.html").is_file()
-        assert not (target / "stale.txt").exists()
+        assert (target / "thesis.txt").read_text(encoding="utf-8") == "important"
+
+    def test_a_single_file_out_naming_a_non_html_file_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+
+        assert main(["report", "--single-file", "--out", "x.txt", "--no-open"]) == 1
+
+        assert not (tmp_path / "x.txt").exists()
+        assert ".html" in capsys.readouterr().out
+
+    def test_hide_code_leaves_notebook_code_out_of_the_static_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb", page=_marimo_page())
+        run.summary()
+
+        assert main(["report", "--out", "out", "--hide-code", "--no-open"]) == 0
+
+        (static,) = (tmp_path / "out" / "pages").glob("*.static.html")
+        text = static.read_text(encoding="utf-8")
+        assert "<td>north</td>" in text
+        assert "mo.ui.table(df)" not in text
 
     def test_managed_report_dir_rerenders_without_a_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

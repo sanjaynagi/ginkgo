@@ -54,10 +54,16 @@ Notes:
   a webhook secret that is unset or empty sends nothing. `ginkgo run` warns with
   each problem, and `ginkgo doctor` reports them as errors before you run.
 - An unknown name in `events` beside valid ones is ignored: `ginkgo run` warns
-  about it and still sends the valid events, and `ginkgo doctor` reports it.
+  about it and still sends the valid events, and `ginkgo doctor` reports it as
+  a warning rather than an error.
 - Notification delivery is best-effort. A Slack failure warns, naming the event
   it was for, but does not fail the run, and the warning is kept with the run:
   `ginkgo runs show` and `ginkgo report` list it as a notice.
+- Notifications are posted on a background thread while the workflow runs, and
+  the run waits for any still outstanding as it finishes. Each post waits at
+  most 3 seconds for Slack. Once one fails because Slack cannot be reached, the
+  later notifications of that run are not attempted (each still warns), so an
+  unreachable or blocked host adds at most about 3 seconds to a run.
 
 ## Set Up The Slack Webhook
 

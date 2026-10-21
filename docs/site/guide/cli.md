@@ -287,7 +287,13 @@ fan-out counts its branches by reason, as in
 
 A task marked `? [unknown]` has a cache status dry-run cannot work out without
 running anything, most often because it sits downstream of a task that would
-run; the plan prints a one-line legend saying so. Dry-run never calls a task
+run; the plan prints a one-line legend saying so. A task whose body calls
+other tasks, a dynamic fan-out, adds the tasks it returns only when it runs, so
+the plan names it and leaves those tasks out of its counts. The closing line
+sizes the busiest wave among the tasks that will run: `up to 3 tasks at once,
+one thread each` when none asks for more than the default thread, and
+`12 threads requested at peak` when some do. Tasks served from the cache hold
+no threads and are not counted. Dry-run never calls a task
 body, but a script, notebook or subworkflow task's key includes the file its
 body names, so dry-run reads the body instead. When the body is a single
 `return script(...)` (or `notebook(...)`, `subworkflow(...)`) whose arguments

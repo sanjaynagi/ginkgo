@@ -14,6 +14,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import CodeType
 from typing import TYPE_CHECKING, Any, Literal
 
 from ginkgo.core.expr import ConstructedCall
@@ -165,10 +166,14 @@ class ResourceSummary:
     total_threads : int
         Sum of declared threads across all tasks.
     peak_wave_threads : int
-        Largest per-wave sum of declared threads. Not bounded by the run's
-        core budget, which the scheduler enforces by queueing within a wave.
+        Largest per-wave sum of threads among the tasks that will not be served
+        from the cache. Not bounded by the run's core budget, which the
+        scheduler enforces by queueing within a wave.
     peak_wave_index : int
         1-based index of the wave with the largest thread total (``0`` if empty).
+    peak_wave_task_count : int
+        Tasks in that wave that will not be served from the cache. Equal to
+        ``peak_wave_threads`` when each asks for the default single thread.
     total_memory_gb : int
         Sum of declared memory budgets in GiB.
     peak_wave_memory_gb : int
@@ -180,6 +185,7 @@ class ResourceSummary:
     total_threads: int
     peak_wave_threads: int
     peak_wave_index: int
+    peak_wave_task_count: int
     total_memory_gb: int
     peak_wave_memory_gb: int
     gpu_task_count: int
@@ -220,6 +226,10 @@ class DryRunPlan:
         task ``unknown``; none of them says anything about whether the
         workflow itself is sound, so they neither fail the command nor show
         in the default output.
+    fan_out_labels : tuple[str, ...]
+        Tasks whose bodies call other tasks, so that the calls they return
+        become new tasks only once they run. Those tasks are not in the plan
+        or its counts.
     """
 
     workflow_label: str
@@ -233,6 +243,7 @@ class DryRunPlan:
     dropped_labels: tuple[str, ...] = ()
     diagnostics: tuple[PlanDiagnostic, ...] = ()
     probe_failures: tuple[ProbeFailure, ...] = ()
+    fan_out_labels: tuple[str, ...] = ()
 
 
 def build_dry_run_plan(
@@ -321,6 +332,8 @@ def build_dry_run_plan(
     ]
 
     statuses = [task.cache_status for task in planned.values()]
+    # A fan-out whose cached expansion the probe replayed has its tasks planned.
+    expanded = set(evaluator.graph.dynamic_parent_ids.values())
     return DryRunPlan(
         workflow_label=workflow_label,
         task_count=len(nodes),
@@ -333,7 +346,32 @@ def build_dry_run_plan(
         dropped_labels=tuple(_dropped_label(call) for call in unreachable_calls),
         diagnostics=tuple(diagnostics),
         probe_failures=tuple(probe_failures),
+        fan_out_labels=tuple(
+            nodes[node_id].label
+            for node_id in topo_order
+            if node_id not in expanded and _calls_tasks(nodes[node_id].task_def.fn)
+        ),
     )
+
+
+def _calls_tasks(fn: Any) -> bool:
+    """Report whether *fn*'s body names a task, as a dynamic fan-out's body does.
+
+    A task that returns task calls adds them to the graph only when it runs,
+    so a plan built beforehand cannot show them. Its body naming a task
+    defined in its module is how the plan tells such a task apart.
+    """
+    from ginkgo.core.task import TaskDef
+
+    code = getattr(fn, "__code__", None)
+    namespace = getattr(fn, "__globals__", {})
+    pending = [code] if isinstance(code, CodeType) else []
+    while pending:
+        current = pending.pop()
+        if any(isinstance(namespace.get(name), TaskDef) for name in current.co_names):
+            return True
+        pending.extend(const for const in current.co_consts if isinstance(const, CodeType))
+    return False
 
 
 def _dropped_label(call: ConstructedCall) -> str:
@@ -683,17 +721,24 @@ def _probe_failure(*, node: NodeRun, stage: str, exc: Exception) -> ProbeFailure
 
 
 def _summarise_resources(waves: list[PlanWave]) -> ResourceSummary:
-    """Aggregate per-task resource declarations into run- and wave-level totals."""
+    """Aggregate per-task resource declarations into run- and wave-level totals.
+
+    The per-wave peaks count only the tasks that will not be served from the
+    cache: a cache hit holds no threads or memory.
+    """
     all_tasks = [task for wave in waves for task in wave.tasks]
     peak_threads = 0
     peak_index = 0
+    peak_count = 0
     peak_memory = 0
     for wave in waves:
-        wave_threads = sum(task.threads for task in wave.tasks)
+        running = [task for task in wave.tasks if task.cache_status != "cached"]
+        wave_threads = sum(task.threads for task in running)
         if wave_threads > peak_threads:
             peak_threads = wave_threads
             peak_index = wave.index
-        peak_memory = max(peak_memory, sum(task.memory_gb for task in wave.tasks))
+            peak_count = len(running)
+        peak_memory = max(peak_memory, sum(task.memory_gb for task in running))
 
     custom_totals: dict[str, int] = {}
     for task in all_tasks:
@@ -704,6 +749,7 @@ def _summarise_resources(waves: list[PlanWave]) -> ResourceSummary:
         total_threads=sum(task.threads for task in all_tasks),
         peak_wave_threads=peak_threads,
         peak_wave_index=peak_index,
+        peak_wave_task_count=peak_count,
         total_memory_gb=sum(task.memory_gb for task in all_tasks),
         peak_wave_memory_gb=peak_memory,
         gpu_task_count=sum(1 for task in all_tasks if task.gpu > 0),

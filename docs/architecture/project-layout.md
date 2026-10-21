@@ -258,7 +258,10 @@ only symptom is a bare `ModuleNotFoundError`.
 beside the workflow — marimo notebooks included, since they are `.py` files —
 for the root modules they import,
 skipping `envs/`, `scripts/`, `tests/` and hidden directories — those bodies
-run somewhere else — then checks each against the running interpreter with
+run somewhere else — and, in `ginkgo doctor`, the notebooks and scripts that
+tasks declaring an `env=` run (`WorkflowCheck.env_sources`, as far as the
+tasks' literal arguments name them), whose imports their own environment
+supplies. It then checks each against the running interpreter with
 `importlib.util.find_spec`. Imports are read from the parsed syntax tree, not
 matched in raw text, so an import written inside a docstring or string
 literal, under `if TYPE_CHECKING:`, or inside a `try`/`except ImportError`

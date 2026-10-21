@@ -29,3 +29,21 @@
   {% endif %}
 </div>
 {% endfor %}
+{% if report.skipped %}
+<div class="skipped">
+  <h4>Left without a result ({{ report.skipped | length }})</h4>
+  {% if report.skipped | length <= 50 %}
+  <ul>
+    {% for task in report.skipped %}
+    <li><span class="name">{{ task.label }}</span> <span class="cause">← {{ task.cause }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <ul>
+    {% for group in report.skip_causes %}
+    <li>{{ group.count }} {{ group.cause }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
