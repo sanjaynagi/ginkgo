@@ -556,8 +556,10 @@ def _help_suffix(decl: ParamDecl, *, config_default: tuple[Any, str] | None) -> 
         parts.append("(required)")
     else:
         parts.append(f"(default: {decl.default!r})")
+    if decl.value_type is bool:
+        parts.append(f"(bare {decl.flag} is true; {decl.flag} false turns it off)")
     if decl.multiple:
-        parts.append("(repeatable)")
+        parts.append("(repeatable; the value is a tuple)")
     return " ".join(parts)
 
 

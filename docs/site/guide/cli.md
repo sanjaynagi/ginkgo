@@ -224,7 +224,9 @@ required parameter that is not supplied fails the same way.
 `type=Path` all work. Without `type`, a `bool`, `int` or `float` default sets
 it, so `ginkgo.param("threshold", default=40.0)` reads `--threshold 2.5` as a
 float; any other default leaves values as strings. Booleans accept a bare `--flag` or an explicit
-`--flag false`, and `multiple=True` makes a flag repeatable:
+`--flag false`, which is how to turn off one whose default is `True`. `multiple=True`
+makes a flag repeatable, and the value is then a tuple (`("alpha", "beta")`),
+also when it comes from a list in `[params]` or a single value:
 
 ```bash
 ginkgo run flow.py --item alpha --item beta --verbose
