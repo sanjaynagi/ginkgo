@@ -339,6 +339,27 @@ Each such file must expose a flow, usually by re-exporting the project's own.
 `ginkgo init` scaffolds one `tests/workflows/smoke.py` that re-exports `main`
 from `workflow/flow.py`.
 
+### Several workflows in one project
+
+A file holds exactly one `@flow`, so a project with several workflows keeps one
+entry file per workflow, each importing tasks from the shared modules:
+
+```text
+workflow/
+├── flow.py          # the default: `ginkgo run` with no path runs this one
+├── qc_flow.py       # ginkgo run workflow/qc_flow.py
+├── report_flow.py   # ginkgo run workflow/report_flow.py
+└── modules/         # tasks the flows share
+```
+
+Auto-discovery only ever picks `flow.py`, so run the others by path. They all
+share the project's `.ginkgo/`: one ledger, one cache. A cache key depends on
+the task and its inputs, not on which flow called it, so a task two flows call
+with the same arguments runs once and is a cache hit in the other. Each run
+records the entry file it ran, and `ginkgo runs ls --workflow
+workflow/qc_flow.py` lists one workflow's runs. `ginkgo doctor <path>` and
+`ginkgo run <path> --dry-run` check one entry file at a time.
+
 `ginkgo doctor` catches environment and configuration problems before a run.
 Pass `--json` for structured output suitable for programmatic use:
 

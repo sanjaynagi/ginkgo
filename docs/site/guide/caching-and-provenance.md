@@ -307,7 +307,7 @@ tracked by path stays quiet.
 ### What The Cache Cannot See
 
 The cache key is built from the task's arguments and source, and only declared
-outputs are stored. Two things a task body can do sit outside both.
+outputs are stored. These sit outside both.
 
 **A file written to a path the task neither declares nor returns.** A task
 that writes `results/side.txt` to a hard-coded path, with no `Out[...]`
@@ -327,6 +327,22 @@ that to the task. `ginkgo run` and `ginkgo doctor` warn about a task body that
 reads `os.environ`, `os.getenv` or `os.environb` (code `environ_read_in_task`);
 a read made by a helper function the task calls is not detected.
 
+**A script or tool a shell command runs.** A shell task's key covers the
+command it builds and its arguments, not the files the command executes. A
+task running `python scripts/filter.py {reads}` or `tools/annotate.sh` does
+not re-run when that script changes, and Snakemake behaves the same way. Pass
+the script in as a `file` argument and use it in the command, so its bytes are
+hashed; or make it a script task (`@task("script")`), whose script is part of
+the key; or bump `version=` on the task when you change it.
+
+**An edit that keeps a file's size and modification time.** A digest is reused
+while a file's device, inode, size and modification time agree (see
+[Cache Identity](#cache-identity)), so such an edit leaves the old digest in
+place and the task is served from the cache. `ginkgo cache explain` compares
+those same recorded digests, so it reports the task as cached
+(`all_inputs_match`) and cannot point at the edit. `touch` the file to make the
+next run hash it again.
+
 ## Artifact Storage
 
 For file and folder outputs, Ginkgo stores content-addressed artifacts under
@@ -337,6 +353,21 @@ A task's declared output path is not the source of truth — the artifact store
 is. If `.ginkgo/artifacts/` is deleted while the outputs themselves are intact,
 the next cache hit stores them again from the working tree; an output that is
 gone or edited by then cannot be restored, so its task re-runs.
+
+### Intermediate Files
+
+Ginkgo has no equivalent of Snakemake's `temp()`. Every declared output is
+stored, and a cache hit puts a deleted output back in the working tree, so
+deleting an intermediate between runs does not keep it away. Three ways to
+handle an intermediate you do not want to keep:
+
+- Produce and consume it inside one task, in a `tmp_dir` scratch directory.
+  Ginkgo creates the directory for each execution and deletes it when the task
+  succeeds, and nothing in it is stored or restored.
+- Pass the data between tasks as a Python value instead of a file, when it is
+  small enough to hold in memory.
+- Leave it as a declared output, and bound what the store keeps with
+  `ginkgo cache prune` (see [Bounding Cache Size](#bounding-cache-size)).
 
 ## Where Provenance Lives
 
