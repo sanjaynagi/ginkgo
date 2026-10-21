@@ -544,10 +544,11 @@ class TaskKind:
         ``Out[...]`` paths must then not contain spaces.
     runner : Callable[[RunnerContext], TaskRunner] | None
         Build the runner for a run. ``None`` exactly when ``directive`` is.
-    static_notices : Callable[[ExecutionDirective, str, Sequence[str]], Sequence[str]] | None
+    static_notices : Callable[[ExecutionDirective, str, Mapping[str, Any]], Sequence[str]] | None
         Check a directive before anything runs, given the task's name and the
-        names of the arguments it passes, and return warnings about what the
-        run would get wrong. ``doctor`` and ``--dry-run`` call it for each
+        arguments it passes, by name (a value an upstream task supplies is an
+        unresolved expression), and return warnings about what the run would
+        get wrong. ``doctor`` and ``--dry-run`` call it for each
         task whose directive they can work out without running the body.
 
     Raises
@@ -569,7 +570,9 @@ class TaskKind:
     exit_code_retries: bool = False
     user_built_command: bool = False
     runner: Callable[[RunnerContext], TaskRunner] | None = None
-    static_notices: Callable[[ExecutionDirective, str, Sequence[str]], Sequence[str]] | None = None
+    static_notices: (
+        Callable[[ExecutionDirective, str, Mapping[str, Any]], Sequence[str]] | None
+    ) = None
 
     def __post_init__(self) -> None:
         returns_directive = self.directive is not None

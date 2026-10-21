@@ -415,7 +415,10 @@ underscore. `ginkgo doctor` and `ginkgo run --dry-run` give the same warning
 before anything runs, when the body is a plain `return notebook(...)` whose
 path does not depend on an upstream result. The notebook file is
 source material for both execution and cache identity — when the notebook
-changes, the task's cache key changes.
+changes, the task's cache key changes. Nothing else the notebook opens is: the
+same checks warn about a project path the notebook names in a literal that its
+task does not pass (a `mo.cli_args()` fallback like the ones above excepted),
+since a cached notebook is not re-run when that file changes.
 
 `mo.cli_args()` collects a repeated option into a list but joins
 space-separated values into one string. So a `list`/`tuple` parameter of
@@ -461,18 +464,50 @@ linked from the [run report](reports.md).
 
 The rendered page is a single HTML file, so an image a markdown cell links by
 a relative path (`![plot](results/plot.png)`) does not resolve from where the
-page is stored: embed it instead, with `mo.image("results/plot.png")` or a
-`data:` URI, which carries the bytes in the page. marimo's exported page loads
-its frontend from the `cdn.jsdelivr.net` CDN, so it renders blank without a
-network connection.
+page is stored: embed it instead, with `mo.image(...)` or a `data:` URI, which
+carries the bytes in the page. Pass the image's path in as an argument rather
+than writing it into the notebook, as below. marimo's exported page loads its
+frontend from the `cdn.jsdelivr.net` CDN, so it renders blank without a network
+connection.
 
-Inside the run directory the rendered page is stored under
-`.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To
-export it under the task's name, build the report bundle with the
-`ginkgo-report` plugin installed: `ginkgo report --out deliver` writes
-`deliver/pages/<task_key>_<task>.html` next to `deliver/index.html`. See
-[Reports](reports.md). A cache hit does not re-render: the task points at the
-page the producing run rendered.
+### Figures From Another Task
+
+A figure one task draws and another notebook shows is a dependency like any
+other file, so declare it at both ends. The task that draws it declares the
+figure as an `Out[file]` output, and the notebook task that shows it takes the
+figure as a `file` argument:
+
+```python
+@task("notebook")
+def region_report(region: str, cases: file, figure: Out[file]):
+    """Render one region's report and draw its figure."""
+    return notebook(_NOTEBOOKS_DIR / "region.py")
+
+
+@task("notebook")
+def overview(figures: list[file]) -> file:
+    """Render the overview of every region's figure."""
+    return notebook(_NOTEBOOKS_DIR / "overview.py")
+
+
+@flow
+def main():
+    regions = ["north", "south"]
+    reports = region_report(cases="data/cases.csv").map(
+        region=regions,
+        figure=expand("results/figures/{region}.png", region=regions),
+    )
+    return overview(figures=reports.output["figure"])
+```
+
+`region.py` saves its figure to `mo.cli_args().get("figure")`, and
+`overview.py` reads the paths with `mo.cli_args().get_all("figures")` and
+embeds each with `mo.image(path)`. The figures are then content-hashed inputs
+of `overview`, so a redrawn figure re-runs it, and Ginkgo runs `overview` after
+the tasks that draw them. A notebook that builds the path itself
+(`mo.image(f"results/figures/{region}.png")`) gets neither: it is served from
+the cache with the old figure, and may run before the figure exists. `ginkgo
+doctor` and `--dry-run` warn about such a path.
 
 ### Staging A Python Value For A Notebook
 

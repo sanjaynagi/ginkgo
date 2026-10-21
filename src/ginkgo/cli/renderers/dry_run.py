@@ -39,6 +39,7 @@ _RUN_REASON: dict[str, str] = {
     "version_bump": "version changed",
     "env_changed": "environment changed",
     "input_changed": "input changed",
+    "environ_changed": "environment variable changed",
     "cache_key_changed": "cache key changed",
     "rerun_requested": "--rerun",
 }
