@@ -22,6 +22,12 @@ from ginkgo.runtime.remote_executor import (
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import NodeRun
 
+# Payload keys that name driver-local state: the log queue proxy (not
+# JSON-safe) and paths on the driver's filesystem. A remote worker runs
+# elsewhere, so it writes task output to its own streams and keeps its own
+# transport directory.
+_DRIVER_LOCAL_KEYS = ("log_event_queue", "stdout_path", "stderr_path", "transport_dir")
+
 
 @dataclass(kw_only=True)
 class RemoteDispatchManager:
@@ -68,6 +74,8 @@ class RemoteDispatchManager:
         """Submit one task to a named executor and return its watcher future."""
         code_bundle = self._ensure_code_bundle(executor_name=executor_name)
         self._ensure_artifact_store()
+        for key in _DRIVER_LOCAL_KEYS:
+            payload.pop(key, None)
         payload["resources"] = {
             "threads": node.threads,
             "memory_gb": node.memory_gb,
@@ -80,8 +88,10 @@ class RemoteDispatchManager:
             from ginkgo.runtime.artifacts.remote_arg_transfer import (
                 stage_args_for_remote,
                 stage_output_params_for_dispatch,
+                upload_transport_artifacts,
             )
 
+            assert node.transport_path is not None
             payload["args"] = stage_args_for_remote(
                 args=payload["args"],
                 type_hints=node.task_def.type_hints,
@@ -89,8 +99,12 @@ class RemoteDispatchManager:
                 known_digests=self.digests.known,
                 output_params=node.task_def.output_params,
             )
+            payload["args"] = upload_transport_artifacts(
+                value=payload["args"],
+                base_dir=node.transport_path,
+                remote_store=self._artifact_store,
+            )
             if node.task_def.output_params:
-                assert node.transport_path is not None
                 assert node.execution_args is not None
                 output_args, output_param_entries = stage_output_params_for_dispatch(
                     resolved_args=node.execution_args,
@@ -198,13 +212,22 @@ class RemoteDispatchManager:
             and payload.get("result_encoding") == "encoded"
             and "result" in payload
         ):
-            from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote
+            from ginkgo.runtime.artifacts.remote_arg_transfer import (
+                download_transport_artifacts,
+                hydrate_result_from_remote,
+            )
 
+            assert node.transport_path is not None
             scratch_dir = self._artifact_store.local._root / "remote-outputs"
             payload["result"] = hydrate_result_from_remote(
                 result=payload["result"],
                 remote_store=self._artifact_store,
                 scratch_dir=scratch_dir,
+            )
+            payload["result"] = download_transport_artifacts(
+                value=payload["result"],
+                base_dir=node.transport_path,
+                remote_store=self._artifact_store,
             )
 
         if (

@@ -98,11 +98,11 @@ class KubernetesExecutor:
         ``performance``) or mount a separate PVC for the scratch dir.
     backoff_limit : int
         Number of K8s-level pod retries the Job controller may perform
-        before Ginkgo treats the attempt as failed. Defaults to 2 so
-        transient infrastructure preemption (Autopilot defragmenting
-        nodes, spot revocations) does not surface as a workflow failure.
-        Application errors are still surfaced because each retry
-        re-runs the same payload deterministically.
+        before Ginkgo treats the attempt as failed. Defaults to 0: the Job
+        controller cannot tell a failing task from a preempted pod, so any
+        retries would re-run deterministic task errors too. Raise it on
+        clusters that preempt pods (GKE Autopilot, spot nodes), or use
+        task-level ``retries``.
     """
 
     namespace: str = "default"
@@ -115,7 +115,7 @@ class KubernetesExecutor:
     ttl_seconds_after_finished: int = 3600
     unschedulable_timeout: float = 300.0
     ephemeral_storage: str = "10Gi"
-    backoff_limit: int = 2
+    backoff_limit: int = 0
     fuse_image: str | None = None
     fuse_annotations: dict[str, str] | None = None
     fuse_privileged: bool = False
@@ -491,7 +491,7 @@ def build_kubernetes_executor(settings: Mapping[str, Any]) -> KubernetesExecutor
         ttl_seconds_after_finished=int(settings.get("ttl_seconds_after_finished", 3600)),
         unschedulable_timeout=float(settings.get("unschedulable_timeout", 300.0)),
         ephemeral_storage=settings.get("ephemeral_storage", "10Gi"),
-        backoff_limit=int(settings.get("backoff_limit", 2)),
+        backoff_limit=int(settings.get("backoff_limit", 0)),
         fuse_image=settings.get("fuse_image"),
         fuse_annotations=settings.get("fuse_annotations"),
         fuse_privileged=bool(settings.get("fuse_privileged", False)),

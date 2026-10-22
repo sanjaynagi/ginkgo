@@ -84,8 +84,13 @@ The worker entry point (`remote/worker.py`) runs as
 
 1. Reads the task payload from `GINKGO_WORKER_PAYLOAD` (base64-encoded JSON)
 2. Optionally downloads and extracts a code bundle (code-sync mode)
-3. Calls the standard `run_task()` worker function
-4. Prints a JSON result line to stdout for the handle to parse
+3. Downloads `file`/`folder` inputs and large values from the artifact store
+   into its own scratch directory
+4. Calls the standard `run_task()` worker function. The payload carries no
+   driver-local state (log queue, log paths, transport directory), so task
+   output goes to the container's stdout/stderr and appears in the pod logs
+5. Uploads outputs and large result values, then prints a JSON result line to
+   stdout for the handle to parse
 
 The same worker image serves both K8s and GCP Batch executors. It installs
 core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a

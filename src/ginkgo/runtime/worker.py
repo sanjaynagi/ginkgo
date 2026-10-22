@@ -135,14 +135,19 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             encoded_result = encode_value(result, base_dir=base_dir)
             response = {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
-        if stderr_path is not None:
-            with Path(stderr_path).open("a", encoding="utf-8") as handle:
-                traceback.print_exception(
-                    type(exc),
-                    exc,
-                    _traceback_from_task(exc=exc, fn=fn),
-                    file=_RedactingWriter(handle=handle, secret_values=secret_values),
-                )
+        # With no task log file (a remote worker, or a run without a run
+        # directory) the traceback goes to the process's own stderr.
+        with (
+            Path(stderr_path).open("a", encoding="utf-8")
+            if stderr_path is not None
+            else contextlib.nullcontext(sys.stderr)
+        ) as handle:
+            traceback.print_exception(
+                type(exc),
+                exc,
+                _traceback_from_task(exc=exc, fn=fn),
+                file=_RedactingWriter(handle=handle, secret_values=secret_values),
+            )
         exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
         response = error_response(exc)
         _attach_measured_resources(response=response, usage_start=usage_start)

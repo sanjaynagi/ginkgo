@@ -279,6 +279,9 @@ _TERMINAL_NODE_STATES = frozenset({"completed", "failed", "skipped"})
 _IN_FLIGHT_NODE_STATES = frozenset({"staging", "running", "running_shell"})
 """Node states held by work the scheduler has already handed to an executor."""
 
+_SIGNAL_POLL_SECONDS = 0.5
+"""Longest the scheduler loop blocks before checking for an interrupt."""
+
 
 @dataclass(frozen=True, eq=False, kw_only=True)
 class TaskNode:
@@ -667,11 +670,18 @@ class ConcurrentEvaluator:
                             return self._materialize(self._root_template)
 
                     if self._running_futures:
+                        # The signal handler only sets a flag, and a remote job
+                        # can run for hours, so never block on futures alone.
                         retry_wait = self._earliest_retry_wait() if self._failure is None else None
+                        timeout = (
+                            _SIGNAL_POLL_SECONDS
+                            if retry_wait is None
+                            else min(retry_wait, _SIGNAL_POLL_SECONDS)
+                        )
                         done, _ = wait(
                             tuple(self._running_futures.keys()),
                             return_when=FIRST_COMPLETED,
-                            timeout=retry_wait,
+                            timeout=timeout,
                         )
                         self._consume_completed_futures(done)
                         continue
@@ -685,7 +695,7 @@ class ConcurrentEvaluator:
                     retry_wait = self._earliest_retry_wait()
                     if retry_wait is not None:
                         # Short, signal-interruptable sleep until the next retry is due.
-                        time.sleep(min(retry_wait, 0.5))
+                        time.sleep(min(retry_wait, _SIGNAL_POLL_SECONDS))
                         continue
 
                     if self._can_make_scheduler_progress():

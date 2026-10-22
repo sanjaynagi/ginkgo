@@ -162,7 +162,7 @@ ttl_seconds_after_finished = 300   # auto-cleanup delay (default 3600)
 node_selector = { "cloud.google.com/gke-nodepool" = "pool-1" }  # optional
 tolerations = []                   # optional, list of V1Toleration dicts
 ephemeral_storage = "10Gi"         # optional, per-pod scratch disk (default shown)
-backoff_limit = 2                  # optional, K8s-level pod retries (default shown)
+backoff_limit = 0                  # optional, K8s-level pod retries (default shown; raise on Autopilot/spot)
 unschedulable_timeout = 300.0      # optional, seconds before an unschedulable pod fails
 ```
 

@@ -63,6 +63,7 @@ def run_worker_payload(payload: dict) -> dict:
     code_bundle = payload.pop("code_bundle", None)
     remote_artifact_config = payload.pop("remote_artifact_store", None)
     output_param_entries = payload.pop("output_param_entries", None)
+    payload["transport_dir"] = str(_scratch_root() / "ginkgo-transport")
 
     mounted_access = None
     try:
@@ -100,16 +101,19 @@ def run_worker_payload(payload: dict) -> dict:
                 result, entries=output_param_entries, config=remote_artifact_config
             )
 
-        # Publish produced file/folder outputs back to the shared artifact
-        # store so the client can hydrate them. Skipped for dynamic results
-        # and failures — both contain no encoded file/folder leaves.
+        # Publish produced file/folder outputs and large values back to the
+        # shared artifact store so the client can hydrate them. Skipped for
+        # dynamic results and failures — neither carries encoded leaves.
         if (
             remote_artifact_config is not None
             and result.get("ok")
             and result.get("result_encoding") == "encoded"
         ):
             _stage_remote_outputs(
-                result, config=remote_artifact_config, output_param_entries=output_param_entries
+                result,
+                config=remote_artifact_config,
+                transport_dir=payload["transport_dir"],
+                output_param_entries=output_param_entries,
             )
     except Exception as exc:
         if mounted_access is not None:
@@ -169,12 +173,16 @@ def _stage_remote_outputs(
     result: dict,
     *,
     config: dict[str, str],
+    transport_dir: str,
     output_param_entries: list[dict[str, str]] | None = None,
 ) -> None:
-    """Upload encoded file/folder outputs to the shared remote store."""
+    """Upload encoded file/folder outputs and large values to the shared remote store."""
+    from pathlib import Path
+
     from ginkgo.runtime.artifacts.remote_arg_transfer import (
         build_worker_remote_store,
         stage_result_for_remote,
+        upload_transport_artifacts,
     )
 
     root = _scratch_root()
@@ -196,6 +204,9 @@ def _stage_remote_outputs(
         result=result["result"],
         remote_store=remote_store,
         output_param_paths=output_param_paths,
+    )
+    result["result"] = upload_transport_artifacts(
+        value=result["result"], base_dir=Path(transport_dir), remote_store=remote_store
     )
 
 
@@ -245,9 +256,12 @@ def _stage_output_params(
 
 
 def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:
-    """Download remote-staged ``file`` / ``folder`` inputs into the pod."""
+    """Download remote-staged inputs into the pod: files, folders and large values."""
+    from pathlib import Path
+
     from ginkgo.runtime.artifacts.remote_arg_transfer import (
         build_worker_remote_store,
+        download_transport_artifacts,
         hydrate_args_from_remote,
     )
 
@@ -264,6 +278,11 @@ def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:
         args=payload.get("args", {}),
         remote_store=remote_store,
         scratch_dir=scratch_dir,
+    )
+    payload["args"] = download_transport_artifacts(
+        value=payload["args"],
+        base_dir=Path(payload["transport_dir"]),
+        remote_store=remote_store,
     )
 
 

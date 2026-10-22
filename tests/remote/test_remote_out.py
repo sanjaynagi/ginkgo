@@ -1,4 +1,4 @@
-"""Functional tests for ``Out[...]`` parameters on remote tasks (issue #307 phase 2C).
+"""Functional tests for remote round trips: payload transport and ``Out[...]`` parameters.
 
 Exercises the full round trip through a fake ``RemoteExecutor`` that runs
 ``ginkgo.remote.worker.run_worker_payload`` in-process against a distinct
@@ -10,17 +10,27 @@ actually work, not just that they typecheck.
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import json
 import shutil
+import sys
+import tempfile
+import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from ginkgo import Out, file, folder, task
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
+from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.remote_executor import (
     RemoteExecutor,
     RemoteJobHandle,
@@ -92,16 +102,38 @@ class _ImmediateHandle:
 
 
 class _RoundTripExecutor(RemoteExecutor):
-    """Runs ``run_worker_payload`` synchronously, as if it were a pod."""
+    """Runs ``run_worker_payload`` synchronously, as if it were a pod.
+
+    The payload and result go through JSON exactly as they do between a
+    driver and a pod, and the driver's temporary directory is hidden while
+    the worker runs, so anything that only survives in-process fails here.
+    """
 
     def submit(self, *, attempt: dict) -> RemoteJobHandle:
+        from ginkgo.remote.executor_support import encode_payload
         from ginkgo.remote.worker import run_worker_payload
 
-        result = run_worker_payload(dict(attempt))
+        payload = json.loads(base64.b64decode(encode_payload(attempt)))
+        with _driver_temp_hidden():
+            result = json.loads(json.dumps(run_worker_payload(payload), default=str))
         state = RemoteJobState.SUCCEEDED if result.get("ok") else RemoteJobState.FAILED
         return _ImmediateHandle(
             job_id="test-job", _result=RemoteJobResult(state=state, payload=result)
         )
+
+
+@contextlib.contextmanager
+def _driver_temp_hidden() -> Iterator[None]:
+    """Swap the driver's temporary directory for an empty one, as a pod sees it."""
+    driver_tmp = Path(tempfile.gettempdir())
+    hidden = driver_tmp.with_name(f"{driver_tmp.name}-hidden")
+    driver_tmp.rename(hidden)
+    driver_tmp.mkdir()
+    try:
+        yield
+    finally:
+        shutil.rmtree(driver_tmp)
+        hidden.rename(driver_tmp)
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +153,10 @@ def _configure_remote_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     object_root.mkdir()
     pod_scratch = tmp_path / "pod-scratch"
     pod_scratch.mkdir()
+    driver_tmp = tmp_path / "driver-tmp"
+    driver_tmp.mkdir()
 
+    monkeypatch.setattr(tempfile, "tempdir", str(driver_tmp))
     fake_backend = _LocalDirObjectStore(root=object_root)
     monkeypatch.setattr("ginkgo.remote.resolve.resolve_backend", lambda scheme, **kw: fake_backend)
     monkeypatch.setattr("ginkgo.remote.worker._scratch_root", lambda: pod_scratch)
@@ -133,8 +168,14 @@ def _registry() -> ExecutorRegistry:
 
 
 def _evaluate(expr: Any, *, event_bus: Any = None) -> Any:
-    """Evaluate through a fresh evaluator wired to the round-trip executor."""
-    kwargs: dict[str, Any] = {"executor_registry": _registry()}
+    """Evaluate through a fresh evaluator wired to the round-trip executor.
+
+    The run directory gives tasks log files, as ``ginkgo run`` does.
+    """
+    kwargs: dict[str, Any] = {
+        "executor_registry": _registry(),
+        "run_dir": RunDir.create(run_id=uuid.uuid4().hex, root=Path.cwd() / "runs"),
+    }
     if event_bus is not None:
         kwargs["event_bus"] = event_bus
     return ConcurrentEvaluator(jobs=1, **kwargs).evaluate(expr)
@@ -213,9 +254,34 @@ def read_file_content(*, path: file) -> str:
     return Path(str(path)).read_text(encoding="utf-8").strip()
 
 
+@task(remote=True)
+def remote_chatty(value: int) -> int:
+    print("hello from the pod")
+    print("a warning", file=sys.stderr)
+    return value + 1
+
+
+@task(remote=True)
+def remote_double(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame * 2
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+class TestRemotePayloadTransport:
+    def test_task_that_prints_succeeds(self) -> None:
+        assert _evaluate(remote_chatty(value=1)) == 2
+
+    def test_large_dataframe_crosses_both_ways(self) -> None:
+        # Random floats keep the encoded frame well over the inline limit.
+        frame = pd.DataFrame({"x": np.random.default_rng(0).random(100_000)})
+
+        result = _evaluate(remote_double(frame=frame))
+
+        pd.testing.assert_frame_equal(result, frame * 2)
 
 
 class TestRemoteOutFile:

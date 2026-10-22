@@ -603,10 +603,11 @@ Locally, the evaluator encodes task args into a transport directory and the
 process-pool worker decodes them; results often come back as a direct in-memory
 Python object with no re-serialization, while the Pixi subprocess path uses a
 pickle-over-JSON bridge. For remote execution the encoded payload is layered with
-a remote-transfer step: `file`/`folder` artifacts are uploaded to a shared
-remote artifact store (object storage) as references, and the remote worker
-downloads them before running, then pushes outputs back the same way — so
-nothing large travels inside the job payload itself.
+a remote-transfer step: `file`/`folder` artifacts, and binary values over the
+256 KiB inline limit, are uploaded to a shared remote artifact store (object
+storage) as references, and the remote worker downloads them before running,
+then pushes outputs back the same way — so nothing large travels inside the
+job payload itself.
 
 ### What types can be passed between tasks, and what happens to a value with no special codec?
 
