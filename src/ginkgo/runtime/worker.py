@@ -8,11 +8,14 @@ import sys
 from pathlib import Path
 import traceback
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ginkgo.runtime.module_loader import load_module
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
+
+if TYPE_CHECKING:
+    from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
 
 
 def error_response(exc: BaseException) -> dict[str, Any]:
@@ -80,12 +83,30 @@ def _traceback_from_task(*, exc: BaseException, fn: Any) -> TracebackType | None
     return tb
 
 
-def run_task(payload: dict[str, Any]) -> dict[str, Any]:
-    """Execute a task payload inside a process-pool worker."""
+def run_task(
+    payload: dict[str, Any], *, artifact_store: ArtifactStore | None = None
+) -> dict[str, Any]:
+    """Execute a task payload inside a process-pool or remote worker.
+
+    Parameters
+    ----------
+    payload : dict[str, Any]
+        Worker payload built by the evaluator.
+    artifact_store : ArtifactStore | None
+        Store that carries large values, for a remote worker whose transport
+        directory the driver cannot read. ``None`` keeps them in the
+        transport directory.
+
+    Returns
+    -------
+    dict[str, Any]
+        The worker response: the encoded result, or the error.
+    """
     usage_start = _rusage_snapshot()
     base_dir = Path(payload["transport_dir"])
     decoded_args = {
-        name: decode_value(value, base_dir=base_dir) for name, value in payload["args"].items()
+        name: decode_value(value, base_dir=base_dir, artifact_store=artifact_store)
+        for name, value in payload["args"].items()
     }
 
     # Mount any fuse-marked inputs against a task-local mount root so
@@ -132,7 +153,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("dynamic_result", True) and _is_dynamic_result(result):
             response = {"ok": True, "result": result, "result_encoding": "direct"}
         else:
-            encoded_result = encode_value(result, base_dir=base_dir)
+            encoded_result = encode_value(result, base_dir=base_dir, artifact_store=artifact_store)
             response = {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
         # With no task log file (a remote worker, or a run without a run

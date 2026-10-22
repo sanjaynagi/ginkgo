@@ -88,10 +88,8 @@ class RemoteDispatchManager:
             from ginkgo.runtime.artifacts.remote_arg_transfer import (
                 stage_args_for_remote,
                 stage_output_params_for_dispatch,
-                upload_transport_artifacts,
             )
 
-            assert node.transport_path is not None
             payload["args"] = stage_args_for_remote(
                 args=payload["args"],
                 type_hints=node.task_def.type_hints,
@@ -99,12 +97,8 @@ class RemoteDispatchManager:
                 known_digests=self.digests.known,
                 output_params=node.task_def.output_params,
             )
-            payload["args"] = upload_transport_artifacts(
-                value=payload["args"],
-                base_dir=node.transport_path,
-                remote_store=self._artifact_store,
-            )
             if node.task_def.output_params:
+                assert node.transport_path is not None
                 assert node.execution_args is not None
                 output_args, output_param_entries = stage_output_params_for_dispatch(
                     resolved_args=node.execution_args,
@@ -122,6 +116,12 @@ class RemoteDispatchManager:
         self.stats.record_submit(executor=executor_name)
         self._handles[node.node_id] = handle
         return watcher.submit(self._poll_job, handle, node=node)
+
+    @property
+    def artifact_store(self) -> Any:
+        """The shared remote artifact store, or ``None`` when none is configured."""
+        self._ensure_artifact_store()
+        return self._artifact_store
 
     def handle_for(self, node_id: int) -> RemoteJobHandle | None:
         """Return the in-flight job handle for a node, if any."""
@@ -212,22 +212,13 @@ class RemoteDispatchManager:
             and payload.get("result_encoding") == "encoded"
             and "result" in payload
         ):
-            from ginkgo.runtime.artifacts.remote_arg_transfer import (
-                download_transport_artifacts,
-                hydrate_result_from_remote,
-            )
+            from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote
 
-            assert node.transport_path is not None
             scratch_dir = self._artifact_store.local._root / "remote-outputs"
             payload["result"] = hydrate_result_from_remote(
                 result=payload["result"],
                 remote_store=self._artifact_store,
                 scratch_dir=scratch_dir,
-            )
-            payload["result"] = download_transport_artifacts(
-                value=payload["result"],
-                base_dir=node.transport_path,
-                remote_store=self._artifact_store,
             )
 
         if (

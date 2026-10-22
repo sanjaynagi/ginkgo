@@ -200,7 +200,7 @@ class TestWorkerCodeBundle:
         # Capture the payload that the worker actually hands to run_task.
         captured: dict[str, Any] = {}
 
-        def fake_run_task(received: dict[str, Any]) -> dict[str, Any]:
+        def fake_run_task(received: dict[str, Any], *, artifact_store: Any) -> dict[str, Any]:
             captured["payload"] = received
             return {"ok": True, "result_encoding": "inline", "result": None}
 

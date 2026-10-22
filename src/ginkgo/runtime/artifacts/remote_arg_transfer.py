@@ -46,10 +46,6 @@ if TYPE_CHECKING:
 _REMOTE_FILE_TAG = "__ginkgo_remote_file__"
 _REMOTE_FOLDER_TAG = "__ginkgo_remote_folder__"
 
-# Storage tag for an encoded binary value that crossed the remote boundary
-# through the artifact store; see :func:`upload_transport_artifacts`.
-_REMOTE_TRANSPORT_STORAGE = "remote_artifact"
-
 # Parent directories whose contents are managed content-addressed blobs.
 # Paths resolving into these trees are safe to hardlink rather than copy.
 _LAYOUT = WorkspaceLayout.relative()
@@ -370,90 +366,6 @@ def _hydrate_reference(
     """Download one artifact into the scratch dir and return a wrapped path."""
     dest = _materialize_remote_output(ref=ref, remote_store=remote_store, scratch_dir=scratch_dir)
     return wrap(str(dest))
-
-
-def upload_transport_artifacts(
-    *, value: Any, base_dir: Path, remote_store: RemoteArtifactStore
-) -> Any:
-    """Upload large encoded values so the other side of a remote dispatch can read them.
-
-    :func:`encode_value` writes binary values over the inline limit to
-    ``base_dir``, a directory only this machine can see. Each such value is
-    uploaded and its marker rewritten to carry the artifact id; the marker's
-    relative ``artifact`` path is kept so :func:`download_transport_artifacts`
-    can put the bytes back where :func:`decode_value` looks for them.
-
-    Parameters
-    ----------
-    value : Any
-        Encoded value tree (task arguments or a task result).
-    base_dir : Path
-        Transport directory the values were encoded against.
-    remote_store : RemoteArtifactStore
-        Shared store both sides can reach.
-
-    Returns
-    -------
-    Any
-        The value tree with every large binary value uploaded.
-    """
-
-    def upload(marker: dict[str, Any]) -> dict[str, Any]:
-        record = remote_store.store_bytes(
-            data=(base_dir / marker["artifact"]).read_bytes(),
-            extension=Path(marker["artifact"]).suffix.lstrip("."),
-        )
-        return {**marker, "storage": _REMOTE_TRANSPORT_STORAGE, "artifact_id": record.artifact_id}
-
-    return _map_binary_markers(value=value, storage="artifact", convert=upload)
-
-
-def download_transport_artifacts(
-    *, value: Any, base_dir: Path, remote_store: RemoteArtifactStore
-) -> Any:
-    """Bring values uploaded by :func:`upload_transport_artifacts` into ``base_dir``.
-
-    Parameters
-    ----------
-    value : Any
-        Encoded value tree received from the other side.
-    base_dir : Path
-        Transport directory the value will be decoded against.
-    remote_store : RemoteArtifactStore
-        Shared store the values were uploaded to.
-
-    Returns
-    -------
-    Any
-        The value tree, decodable with :func:`decode_value` against ``base_dir``.
-    """
-
-    def download(marker: dict[str, Any]) -> dict[str, Any]:
-        remote_store.retrieve(
-            artifact_id=marker["artifact_id"], dest_path=base_dir / marker["artifact"]
-        )
-        local = {key: item for key, item in marker.items() if key != "artifact_id"}
-        return {**local, "storage": "artifact"}
-
-    return _map_binary_markers(value=value, storage=_REMOTE_TRANSPORT_STORAGE, convert=download)
-
-
-def _map_binary_markers(
-    *, value: Any, storage: str, convert: abc.Callable[[dict[str, Any]], dict[str, Any]]
-) -> Any:
-    """Apply *convert* to every encoded binary marker with the given storage."""
-    if isinstance(value, dict):
-        if value.get("__ginkgo_type__") == "binary" and value.get("storage") == storage:
-            return convert(value)
-        return {
-            key: _map_binary_markers(value=item, storage=storage, convert=convert)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _map_binary_markers(value=item, storage=storage, convert=convert) for item in value
-        ]
-    return value
 
 
 def stage_output_params_for_dispatch(

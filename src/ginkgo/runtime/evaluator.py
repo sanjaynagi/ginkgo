@@ -2090,9 +2090,12 @@ class ConcurrentEvaluator:
         """Encode task inputs into a transport payload for the process pool."""
         assert node.transport_path is not None
         assert node.execution_args is not None
+        artifact_store = self._value_store(node=node)
         return {
             "args": {
-                name: encode_value(value, base_dir=node.transport_path)
+                name: encode_value(
+                    value, base_dir=node.transport_path, artifact_store=artifact_store
+                )
                 for name, value in node.execution_args.items()
             },
             "stdout_path": str(node.stdout_path) if node.stdout_path is not None else None,
@@ -2129,7 +2132,21 @@ class ConcurrentEvaluator:
             return payload["result"]
 
         assert node.transport_path is not None
-        return decode_value(payload["result"], base_dir=node.transport_path)
+        return decode_value(
+            payload["result"],
+            base_dir=node.transport_path,
+            artifact_store=self._value_store(node=node),
+        )
+
+    def _value_store(self, *, node: NodeRun) -> Any:
+        """Return the store large values go through for *node*, if not its transport dir.
+
+        A remote worker cannot read the driver's transport directory, so a
+        remote node's large values travel through the shared artifact store.
+        """
+        if node.executor_name is None:
+            return None
+        return self._remote_dispatch.artifact_store
 
     def _remove_tmp_paths(self, node: NodeRun) -> None:
         """Remove the attempt's ``tmp_dir`` scratch directories."""
