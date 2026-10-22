@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 from typing import NoReturn, Sequence
 
-from ginkgo.cli.commands.cache import command_cache
+from ginkgo.cli.commands.cache import command_cache, parse_size_bytes
 from ginkgo.cli.commands.db import command_db
 from ginkgo.cli.commands.debug import command_debug
 from ginkgo.cli.commands.doctor import command_doctor
@@ -25,10 +25,11 @@ from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.why import command_why
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
-from ginkgo.params import looks_like_flag
+from ginkgo.params import looks_like_flag, unrecognized_arguments_message
 from ginkgo.plugins.api import CliCommand
 from ginkgo.plugins.registry import PluginNotFoundError, first_party_provider, plugin_registry
-from ginkgo.query import SQL_ROW_LIMIT
+from ginkgo.formatting import parse_duration
+from ginkgo.query import RUN_STATUSES, SQL_ROW_LIMIT
 from ginkgo.project import project_root
 from ginkgo.core.resources import parse_memory
 
@@ -43,6 +44,35 @@ def _memory_arg(value: str) -> int:
         # argparse reports a bare "invalid value" for ValueError; this keeps
         # parse_memory's message, which names the accepted notation.
         raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _duration_arg(value: str) -> str:
+    """Validate a duration option (``30d``, ``12h``), keeping it as typed."""
+    try:
+        parse_duration(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
+
+
+def _size_arg(value: str) -> str:
+    """Validate a size option (``2GB``, ``500MB``), keeping it as typed."""
+    try:
+        parse_size_bytes(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
+
+
+def _non_negative_int(value: str) -> int:
+    """Parse a count that may be zero but not negative."""
+    try:
+        count = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer {value!r}") from None
+    if count < 0:
+        raise argparse.ArgumentTypeError(f"must be at least 0, got {count}")
+    return count
 
 
 _MISSING_ARGS_PREFIX = "the following arguments are required: "
@@ -105,6 +135,8 @@ def _normalize_working_directory(args: argparse.Namespace) -> None:
     root = project_root()
     if root == Path.cwd():
         return
+    # Kept for the run header, which says whose project this is.
+    args.invoked_from = str(Path.cwd())
 
     # Resolved before the chdir, while they still mean what the user typed.
     for name in _PATH_ARGS:
@@ -137,14 +169,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         known_options=_all_option_strings(parser),
     )
     _refuse_uninstalled_command(parser=parser, argv=known_argv)
-    args = parser.parse_args(known_argv)
+    args, misplaced = parser.parse_known_args(known_argv)
 
     # Commands that import a workflow accept its declared parameters as flags.
     # Every other command must still reject anything it does not recognise.
+    command_parser = _command_parser(parser=parser, args=args)
+    args.command_flags = frozenset(
+        flag for action in command_parser._actions for flag in action.option_strings
+    )
+    # A flag another command defines (``run --no-open``) got past the split
+    # above. Refused by the command it was given to, so the usage shown is
+    # that command's rather than the whole CLI's.
+    if misplaced:
+        command_parser.error(
+            unrecognized_arguments_message(tokens=misplaced, known_flags=args.command_flags)
+        )
     if _accepts_workflow_params(args):
         args.param_extras = tuple(extras)
     elif extras:
-        parser.error(f"unrecognized arguments: {' '.join(extras)}")
+        command_parser.error(
+            unrecognized_arguments_message(tokens=extras, known_flags=args.command_flags)
+        )
     else:
         args.param_extras = ()
 
@@ -218,6 +263,29 @@ def _parser_tree(parser: argparse.ArgumentParser) -> list[argparse.ArgumentParse
                     if isinstance(value, argparse.ArgumentParser)
                 )
     return found
+
+
+def _command_parser(
+    *, parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> argparse.ArgumentParser:
+    """Return the parser of the (sub)command *args* was parsed for.
+
+    Descends through each subcommand the parse chose, so ``ginkgo inspect
+    workflow`` answers with the ``workflow`` parser rather than ``inspect``'s.
+    """
+    current = parser
+    while True:
+        chosen = next(
+            (
+                action.choices.get(getattr(args, action.dest, None) or "")
+                for action in current._actions
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+        if chosen is None:
+            return current
+        current = chosen
 
 
 def _all_option_strings(parser: argparse.ArgumentParser) -> frozenset[str]:
@@ -375,6 +443,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
     )
     run_parser.add_argument(
+        "--rerun",
+        action="append",
+        default=[],
+        metavar="TASK",
+        help=(
+            "Run this task again rather than use its cached result (repeatable): its "
+            "name, or a fan-out display label. Tasks downstream re-run only if its "
+            "result changes."
+        ),
+    )
+    run_parser.add_argument(
         "--keep-going",
         action="store_true",
         help="Continue dispatching after task failures; every task is treated as on_failure='ignore'",
@@ -393,13 +472,33 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     cache_parser = subparsers.add_parser("cache", help="Manage task execution cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
-    cache_subparsers.add_parser("ls", help="List cached task entries")
+    cache_ls_parser = cache_subparsers.add_parser("ls", help="List cached task entries")
+    cache_ls_parser.add_argument(
+        "--task",
+        default=None,
+        help="Only entries written by this task: its name, or a fan-out display label.",
+    )
+    cache_ls_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a table."
+    )
     stats_parser = cache_subparsers.add_parser(
         "stats", help="Summarise cache size and hit statistics"
     )
     stats_parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     clear_parser = cache_subparsers.add_parser("clear", help="Clear cache entries")
     clear_parser.add_argument("cache_key", nargs="?")
+    clear_parser.add_argument(
+        "--task",
+        default=None,
+        metavar="NAME",
+        help="Remove every entry written by this task: its name, or a fan-out display label.",
+    )
+    clear_parser.add_argument(
+        "--all",
+        dest="clear_all",
+        action="store_true",
+        help="Remove every cache entry, and any cache directory the database has no entry for.",
+    )
     clear_parser.add_argument(
         "--orphans",
         action="store_true",
@@ -422,15 +521,22 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     prune_parser = cache_subparsers.add_parser(
         "prune", help="Prune cached artifacts by age or size"
     )
-    prune_parser.add_argument("--older-than", default=None)
+    prune_parser.add_argument(
+        "--older-than",
+        type=_duration_arg,
+        default=None,
+        metavar="DURATION",
+        help="Prune entries created more than this long ago (30d, 12h, 45m).",
+    )
     prune_parser.add_argument(
         "--max-size",
+        type=_size_arg,
         default=None,
         help="Prune oldest entries until total size is at or below the target (e.g. 2GB, 500MB).",
     )
     prune_parser.add_argument(
         "--max-entries",
-        type=int,
+        type=_non_negative_int,
         default=None,
         help="Prune oldest entries until entry count is at or below this number.",
     )
@@ -443,8 +549,22 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     db_parser = subparsers.add_parser("db", help="Maintain the provenance database")
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
-    db_subparsers.add_parser("migrate", help="Create or upgrade the provenance database")
-    db_subparsers.add_parser("check", help="Check database integrity and schema version")
+    db_check_parser = db_subparsers.add_parser(
+        "check", help="Check database integrity and schema version"
+    )
+    db_check_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Also rehash every stored artifact and report corrupt bytes (reads the whole store).",
+    )
+    db_check_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help=(
+            "First remove what nothing can use: run and cache directories with no ledger row, "
+            "cache rows whose bytes are gone, and a write-ahead log without its database."
+        ),
+    )
     db_subparsers.add_parser("path", help="Print the provenance database path")
     db_subparsers.add_parser("vacuum", help="Rebuild the database, releasing freed space")
     db_prune_parser = db_subparsers.add_parser(
@@ -452,16 +572,19 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     db_prune_parser.add_argument(
         "--events-older-than",
+        type=_duration_arg,
         metavar="DURATION",
         help="Delete the raw events of runs that finished more than this ago (30d, 12h, 45m)",
     )
     db_prune_parser.add_argument(
         "--digest-memo-older-than",
+        type=_duration_arg,
         metavar="DURATION",
         help="Delete memoised file digests not seen for this long",
     )
     db_prune_parser.add_argument(
         "--staging-older-than",
+        type=_duration_arg,
         metavar="DURATION",
         help="Delete staged remote inputs not used for this long, and their bytes",
     )
@@ -508,7 +631,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     runs_subparsers = runs_parser.add_subparsers(dest="runs_command", required=True)
     runs_ls_parser = runs_subparsers.add_parser("ls", help="List recorded runs, newest first")
     runs_ls_parser.add_argument("--workflow", default=None, help="Only runs of this workflow.")
-    runs_ls_parser.add_argument("--status", default=None, help="Only runs with this status.")
+    runs_ls_parser.add_argument(
+        "--status", default=None, choices=RUN_STATUSES, help="Only runs with this status."
+    )
     runs_ls_parser.add_argument(
         "--since", default=None, metavar="TIMESTAMP", help="Only runs started at or after this."
     )
@@ -521,12 +646,18 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     runs_show_parser.add_argument(
         "--json", action="store_true", help="Emit the full run manifest as JSON."
     )
+    runs_show_parser.add_argument(
+        "--all",
+        dest="all_tasks",
+        action="store_true",
+        help="List every task; a large run otherwise lists its first tasks and every failure.",
+    )
 
     history_parser = subparsers.add_parser("history", help="Show every run of one task")
     history_parser.add_argument("task", help="Task name, base name, or fan-out display label.")
     history_parser.add_argument("--limit", type=int, default=20, help="Most runs to list.")
     history_parser.add_argument(
-        "--include-pending",
+        "--include-unstarted",
         action="store_true",
         help="Also list runs in which the task never started.",
     )

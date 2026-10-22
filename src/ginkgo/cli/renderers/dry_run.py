@@ -24,6 +24,32 @@ _TAG: dict[CacheStatus, str] = {
     "unknown": "[unknown]",
 }
 
+# Legend for the one status that is not self-explanatory.
+_UNKNOWN_MEANING = (
+    "cache status cannot be known without running something: a script, notebook "
+    "or subworkflow task's body is more than a single `return script(...)`, "
+    "`notebook(...)` or `subworkflow(...)` whose arguments a dry run can work out, "
+    "or an input is a path the run restores first"
+)
+
+# Legend for an unknown task that only waits on its upstream tasks.
+_UPSTREAM_PENDING = "after upstream"
+_UPSTREAM_PENDING_MEANING = (
+    "an upstream task runs first; this task is served from cache if that task's "
+    "output comes out unchanged and nothing of its own changed"
+)
+
+# Why a task will run, by ``ginkgo cache explain`` reason code.
+_RUN_REASON: dict[str, str] = {
+    "no_prior_entry": "no prior entry",
+    "source_hash_changed": "source changed",
+    "version_bump": "version changed",
+    "env_changed": "environment changed",
+    "input_changed": "input changed",
+    "cache_key_changed": "cache key changed",
+    "rerun_requested": "--rerun",
+}
+
 
 def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) -> None:
     """Print a wave-grouped static execution plan for a dry run.
@@ -53,12 +79,47 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
         console.print()
         _render_wave(wave=wave, console=console, label_width=label_width, verbose=verbose)
 
+    unknown = [
+        task for wave in plan.waves for task in wave.tasks if task.cache_status == "unknown"
+    ]
+    if unknown:
+        console.print()
+    if any(task.run_reasons for task in unknown):
+        console.print(
+            Text(
+                f"  {_GLYPH['unknown']} [unknown: {_UPSTREAM_PENDING}]  {_UPSTREAM_PENDING_MEANING}",
+                style="dim",
+            )
+        )
+    if any(not task.run_reasons for task in unknown):
+        console.print(
+            Text(f"  {_GLYPH['unknown']} {_TAG['unknown']}  {_UNKNOWN_MEANING}", style="dim")
+        )
+
+    _render_fan_outs(plan=plan, console=console)
     _render_dropped(plan=plan, console=console)
     _render_problems(plan=plan, console=console)
     _render_probe_failures(plan=plan, console=console, verbose=verbose)
 
     console.print()
     console.print(_summary(plan))
+
+
+def _render_fan_outs(*, plan: DryRunPlan, console: Console) -> None:
+    """Say which tasks add tasks only when they run, and so are missing from the plan."""
+    if not plan.fan_out_labels:
+        return
+    console.print()
+    names = ", ".join(plan.fan_out_labels)
+    one = len(plan.fan_out_labels) == 1
+    console.print(
+        Text(
+            f"  ↳ {names} {'calls' if one else 'call'} tasks in {'its' if one else 'their'} "
+            f"body: the tasks {'it returns are' if one else 'they return are'} added at run "
+            "time, so they are not in this plan or its counts",
+            style="dim",
+        )
+    )
 
 
 def _render_dropped(*, plan: DryRunPlan, console: Console) -> None:
@@ -157,7 +218,7 @@ def _render_task_line(*, task: PlannedTask, label_width: int) -> Text:
     line.append(f"{_GLYPH[task.cache_status]} ", style=style)
     line.append(label.ljust(label_width))
     line.append("  ")
-    line.append(_TAG[task.cache_status], style=style)
+    line.append(_tag(task), style=style)
     if task.kind != "python":
         line.append(f"  · {task.kind}", style="dim")
     if task.env is not None:
@@ -165,14 +226,39 @@ def _render_task_line(*, task: PlannedTask, label_width: int) -> Text:
     return line
 
 
+def _tag(task: PlannedTask) -> str:
+    """Return a task's status tag, naming why it will run when known."""
+    if not task.run_reasons:
+        return _TAG[task.cache_status]
+    if task.cache_status == "unknown":
+        return f"[unknown: {_UPSTREAM_PENDING}]"
+    return f"[will run: {_run_reason(task)}]"
+
+
+def _run_reason(task: PlannedTask) -> str:
+    """Return the readable reasons a ``will_run`` task misses the cache."""
+    return ", ".join(_RUN_REASON.get(code, code) for code in task.run_reasons)
+
+
 def _render_collapsed_group(*, base_name: str, group: list[PlannedTask], console: Console) -> None:
-    """Print a single collapsed line for a large fan-out group."""
+    """Print a single collapsed line for a large fan-out group.
+
+    Branches of one task usually miss for one or two reasons, so the
+    ``will run`` count carries those reasons, counted, rather than a list.
+    """
     counts = Counter(task.cache_status for task in group)
-    breakdown = ", ".join(
-        f"{counts[status]} {_TAG[status].strip('[]')}"
-        for status in ("cached", "will_run", "unknown")
-        if counts[status]
+    reasons = Counter(
+        _run_reason(task) for task in group if task.run_reasons and task.cache_status == "will_run"
     )
+    parts = []
+    for status in ("cached", "will_run", "unknown"):
+        if not counts[status]:
+            continue
+        part = f"{counts[status]} {_TAG[status].strip('[]')}"
+        if status == "will_run" and reasons:
+            part += " (" + ", ".join(f"{n} {reason}" for reason, n in reasons.most_common()) + ")"
+        parts.append(part)
+    breakdown = ", ".join(parts)
     line = Text("  ")
     line.append(f"{base_name} × {len(group)}", style="bold")
     line.append(f"   {breakdown}", style="dim")
@@ -193,7 +279,18 @@ def _summary(plan: DryRunPlan) -> Text:
     parts: list[str] = []
     # Declared demand, not occupancy: the scheduler holds a wave to the core
     # budget, so this figure may exceed it.
-    if resources.peak_wave_threads:
+    # Counted over the tasks that will run; a cache hit holds no thread. When
+    # none asked for more than the default one, say so rather than calling
+    # that a request.
+    if resources.peak_wave_threads and (
+        resources.peak_wave_threads == resources.peak_wave_task_count
+    ):
+        count = resources.peak_wave_task_count
+        parts.append(
+            f"up to {count} task{'' if count == 1 else 's'} at once, one thread each "
+            f"(wave {resources.peak_wave_index})"
+        )
+    elif resources.peak_wave_threads:
         parts.append(
             f"{resources.peak_wave_threads} threads requested at peak "
             f"(wave {resources.peak_wave_index})"

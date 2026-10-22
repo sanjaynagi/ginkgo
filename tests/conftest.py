@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from ginkgo.core.remote import parse_bucket_key_uri
+from ginkgo.core.shell import shell_argv
 from ginkgo.plugins.api import ExecutorType, ObjectStoreType, Plugin
 from ginkgo.plugins.builtin import BUILTIN
 from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
@@ -287,7 +288,7 @@ labels and required settings and refuse to build anything.
 
 @dataclass(kw_only=True)
 class ShellEnvironment:
-    """An execution environment that runs commands under ``bash -c``.
+    """An execution environment that runs commands under strict bash.
 
     For core tests of task kinds that run in an ``env=``: core ships no
     environment for bare names, so these tests pass this as the evaluator's
@@ -296,8 +297,8 @@ class ShellEnvironment:
 
     identity: str = "test-env-identity"
 
-    def validate_envs(self, *, env_names: set[str]) -> None:
-        pass
+    def validate_envs(self, *, env_names: set[str]) -> list[Exception]:
+        return []
 
     def prepare(self, *, env: str) -> None:
         pass
@@ -309,7 +310,7 @@ class ShellEnvironment:
         return None
 
     def exec_argv(self, *, env: str, cmd: str, mounts: Any = (), env_vars: Any = ()) -> list[str]:
-        return ["bash", "-c", cmd]
+        return shell_argv(shell="bash", cmd=cmd)
 
     def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
         return None

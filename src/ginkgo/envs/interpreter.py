@@ -276,7 +276,9 @@ def _handles_import_error(handler: ast.ExceptHandler) -> bool:
     return any(isinstance(item, ast.Name) and item.id in _GUARDED_IMPORT_ERRORS for item in caught)
 
 
-def workflow_import_roots(*, workflow_path: Path) -> tuple[str, ...]:
+def workflow_import_roots(
+    *, workflow_path: Path, excluded_sources: frozenset[Path] = frozenset()
+) -> tuple[str, ...]:
     """Return the third-party root modules the workflow's sources import.
 
     Scans the Python files (marimo notebooks among them) beside *workflow_path*,
@@ -288,6 +290,9 @@ def workflow_import_roots(*, workflow_path: Path) -> tuple[str, ...]:
     ----------
     workflow_path : Path
         The workflow module. Its directory is the scan root.
+    excluded_sources : frozenset[Path]
+        Resolved paths of files left out of the scan: those a task runs in an
+        environment of its own, which supplies their imports.
 
     Returns
     -------
@@ -296,7 +301,7 @@ def workflow_import_roots(*, workflow_path: Path) -> tuple[str, ...]:
     """
     scan_root = workflow_path.parent
     roots: set[str] = set()
-    for text in _iter_source_texts(scan_root=scan_root):
+    for text in _iter_source_texts(scan_root=scan_root, excluded=excluded_sources):
         roots |= source_import_roots(text=text)
     return tuple(
         sorted(
@@ -348,6 +353,7 @@ def detect_import_problem(
     *,
     workflow_path: Path,
     project_root: Path,
+    excluded_sources: frozenset[Path] = frozenset(),
 ) -> EnvironmentFinding | None:
     """Report imports the running interpreter cannot satisfy, and say why.
 
@@ -357,6 +363,10 @@ def detect_import_problem(
         The workflow whose sources are scanned for imports.
     project_root : Path
         Where the project manifest is looked for.
+    excluded_sources : frozenset[Path]
+        Resolved paths of notebooks and scripts that tasks run in their own
+        ``env=``. Their imports are that environment's to supply, so they are
+        not scanned.
 
     Returns
     -------
@@ -370,7 +380,9 @@ def detect_import_problem(
     manifest = find_project_manifest(project_root=project_root)
     if manifest is None:
         return None
-    missing = unimportable(names=workflow_import_roots(workflow_path=workflow_path))
+    missing = unimportable(
+        names=workflow_import_roots(workflow_path=workflow_path, excluded_sources=excluded_sources)
+    )
     if not missing:
         return None
     return _finding(manifest=manifest, missing=missing)
@@ -449,7 +461,7 @@ def _is_importable(name: str) -> bool:
         return False
 
 
-def _iter_source_texts(*, scan_root: Path) -> Iterator[str]:
+def _iter_source_texts(*, scan_root: Path, excluded: frozenset[Path]) -> Iterator[str]:
     """Yield each separately parseable source text under *scan_root*.
 
     Each Python file yields once (a marimo notebook is a Python file).
@@ -468,7 +480,7 @@ def _iter_source_texts(*, scan_root: Path) -> Iterator[str]:
         )
         for filename in sorted(filenames):
             path = Path(dirpath) / filename
-            if path.suffix != ".py":
+            if path.suffix != ".py" or path.resolve() in excluded:
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

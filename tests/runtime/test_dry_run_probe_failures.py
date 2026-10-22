@@ -16,7 +16,6 @@ from rich.console import Console
 import ginkgo
 from ginkgo import file, task
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
-from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -39,9 +38,8 @@ def consume_path(src: file) -> str:
 
 def _plan_for(build):
     """Build the dry-run plan for a flow body's expression."""
-    with record_constructed_calls() as calls:
-        expr = build()
-    evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
+    expr = build()
+    evaluator = ConcurrentEvaluator()
     evaluator.build_graph(expr)
     evaluator.validate_graph()
     return build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")

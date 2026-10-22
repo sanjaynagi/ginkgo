@@ -16,11 +16,58 @@ level, Ginkgo hashes:
 - resolved input values
 - environment identity for foreign execution
 
+Nothing else reaches the key (see
+[A Task Sees Only Its Arguments](#a-task-sees-only-its-arguments)).
+
 Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
 `Any`/`list[str]`/...) value that names an existing *file* and reads as a path
 (a separator or a file extension) is hashed by content too, whatever its
 annotation — everything else is hashed from its `repr`. See
 [Cache Correctness](#cache-correctness) for the exact rule and why it exists.
+
+A list, tuple or dict that holds no file, folder or remote object is hashed as
+one digest of its elements, so a 200,000-number input costs the cache entry and
+the ledger one digest, and `cache explain` reports the parameter as changed
+rather than naming the element. A container holding a file keeps an entry per
+element, which is how `cache explain` and `ginkgo why` name the file that
+moved. Recorded inputs (`runs show --json`, `debug`, the manifest) keep the
+first 20 items of a long container, with its length and the number left out.
+
+Hashing a large file on every run would be slow, so each digest is memoised
+under the file's device, inode, size and modification time, and reused while
+those four agree. A rewrite that keeps the size and the modification time —
+a tool that restores timestamps, `touch -r`, or a filesystem with coarse
+timestamps — is therefore not re-hashed, and the old digest stands. `touch`
+the file to make the next run hash it again. The same memo checks a cached
+output on a cache hit, so an output edited that way is not restored either (see
+[What The Cache Cannot See](#what-the-cache-cannot-see)).
+
+### A Task Sees Only Its Arguments
+
+A task's cache key covers its arguments, its source and `version=`. Anything
+else the task reads must come in as an argument.
+
+- Files go in as `file` or `folder` arguments. Their contents are hashed, and a
+  file another task writes orders the graph, so the reader runs after the
+  writer.
+- Environment variables are read in the flow body, which runs while the graph
+  is built, and passed as plain arguments:
+
+  ```python
+  @flow
+  def main():
+      threshold = float(os.environ.get("PEAK_THRESHOLD", "0.05"))
+      return call_peaks(bam="data/a.bam", out="results/a.bed", threshold=threshold)
+  ```
+
+  Workflow parameters are the other route (see
+  [Workflow Parameters](cli.md#workflow-parameters)). An argument's value is
+  recorded in provenance, so pass a secret with `ginkgo.secret(...)` instead
+  (see
+  [the FAQ](../faq.md#how-do-i-reference-a-secret-without-leaking-it-into-logs-provenance-or-the-report)).
+
+A file the task body opens by its own path, or a variable it reads from
+`os.environ`, is invisible to the cache: changing it serves the cached result.
 
 The import walk starts at the task's own module, so the unit of cache identity
 is one file plus the local modules that file imports — not one function. Two
@@ -32,12 +79,19 @@ only through this hash, so hashing function bodies alone would serve stale
 results whenever such state changed. When a task is expensive and the code
 beside it is under active edit, move it into its own module; that is the only
 way to decouple them. `ginkgo cache explain <run_id>` reports
-`source_hash_changed` for a task invalidated this way.
+`module_source_changed` for a task invalidated this way — its own text is
+unchanged — and `source_hash_changed` when the task's own definition moved. The hash covers the
+module's raw text, so editing only a comment or whitespace in it also re-runs
+every task the module defines.
 
 Local-import tracking is conservative: changing a reachable helper module
 invalidates tasks that import it, even when the changed symbol is not called.
-Dynamic imports and other runtime dependencies cannot be tracked this way; set
-or increment `version=` on the task when those dependencies change.
+An `import` statement inside a function body counts too, whether or not it has
+run yet. Dynamic imports (`importlib.import_module`) and other runtime
+dependencies cannot be tracked this way; set or increment `version=` on the
+task when those dependencies change. A task that returns other tasks needs no
+bump for its children: on a cache hit each returned task is looked up on its
+own, so a child whose module, script or inputs changed runs again.
 
 The conservative closure has a practical consequence for fan-out. If tasks read
 their parameters from a shared module-level structure, every consumer's cache
@@ -139,6 +193,11 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
 - `Out[file]` / `Out[folder]` compose with containers and optionals —
   `Out[list[file]]`, `Out[file | None]` — but must be the outermost wrapper:
   `list[Out[file]]` is rejected, `Out[list[file]]` is not.
+- `Out[file | None]` means the *argument* may be `None`, in which case the
+  task has nothing to write there. A path that is passed must still be
+  written. For a shell, script or notebook output that may legitimately not
+  be written, use [`optional()`](tasks-and-flows.md#outputs-that-may-not-be-written)
+  on its `output=` entry instead.
 - **Before execution:** an `Out[...]` argument need not exist yet — it is
   validated to be a local, path-like value, and if something already exists at
   the path it must be the declared kind (`Out[file]` pointing at an existing
@@ -148,13 +207,15 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
 - **After execution:** the path must exist, with the right kind, or the task
   fails naming the parameter and the path. On a cache hit, a tracked output
   file or folder that is missing or modified on disk is restored from the
-  artifact store without re-running the task and without a log line. This
-  covers `file(...)` returns and inferred returns (below). The restore
-  overwrites hand edits: an edited output is reset to the cached bytes. An
-  `Out[...]` path that is not part of the return value, as with an explicit
-  `-> None` return, has no stored artifact: on a cache hit it is only checked
-  for existence. A missing one is a miss and the task re-runs; an edited one
-  is neither restored nor re-run, so the edit stays.
+  artifact store without re-running the task and without a log line.
+  "Modified" is judged as for inputs: a file whose size or modification time
+  moved is re-hashed, and one whose size and modification time both survived
+  the edit is taken as unchanged (see
+  [What The Cache Cannot See](#what-the-cache-cannot-see)). This
+  covers `file(...)` returns and every declared `Out[...]` path, whatever the
+  task's return annotation says (`-> str`, `-> None`, or a dynamic task
+  returning tasks). The restore overwrites hand edits: an edited output is
+  reset to the cached bytes.
 - Supported for remote tasks (`remote=True` / `executor=`) too: with a
   `[remote.artifacts] store` configured, each declared path is rewritten to a
   worker-local scratch path, staged back through the same channel returned
@@ -162,11 +223,14 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   driver path before the post-execution check runs. Without a configured
   store, the declared path is sent to the worker unchanged, which only works
   when the worker shares the driver's filesystem.
-- The parent directory of every declared `Out[...]` path is created
-  automatically before the task body runs (`mkdir(parents=True)`), so a task
-  writing into a fresh subdirectory needs no boilerplate of its own. For
-  `Out[folder]` only the *parent* is created, not the folder itself — tools
-  differ on whether they want the target directory to already exist.
+- Before the task body runs, whatever is at every declared `Out[...]` path is
+  removed (a file, or a folder with everything in it), for every task kind,
+  so a task never reads its own stale output: a body globbing its
+  `Out[folder]` sees only the files this run wrote. The parent directory is
+  then created (`mkdir(parents=True)`), so a task writing into a fresh
+  subdirectory needs no boilerplate of its own. For `Out[folder]` only the
+  *parent* is created, not the folder itself — tools differ on whether they
+  want the target directory to already exist.
 
 A literal path elsewhere in the graph that matches an `Out[...]` path is now
 also a real dependency edge: if another task's argument is the same path
@@ -222,7 +286,9 @@ name, in addition to the existing positional `.output[i]`:
 ```python
 @task(kind="shell")
 def normalize(src: file, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+    return shell(
+        cmd=f"tr a-z A-Z < {shlex.quote(src)} > {shlex.quote(dest)} && shasum {shlex.quote(dest)} > {shlex.quote(check)}"
+    )
 
 norm = normalize(src="in.txt", dest="out.txt", check="out.sha")
 normalized = norm.output["dest"]
@@ -284,6 +350,57 @@ prints one dim summary line — `N inputs are tracked by path only; see
 surfaces without having to go looking for it. A workflow with nothing
 tracked by path stays quiet.
 
+### What The Cache Cannot See
+
+The cache key is built from the task's arguments and source, and only declared
+outputs are stored. These sit outside both.
+
+**A file written to a path the task neither declares nor returns.** A task
+that writes `results/side.txt` to a hard-coded path, with no `Out[...]`
+parameter for it and without returning it, leaves that file invisible to the
+cache. It is not tracked or stored, so on a cache hit the task does not re-run
+and a deleted or edited copy is not restored. Nothing about the file feeds a
+cache key either, so a change to it invalidates nothing downstream. Ginkgo
+prints nothing about it. Declare the path as an `Out[file]` parameter, or
+return it as `file(...)`.
+
+**A file or environment variable read inside a task body.** A task that opens
+`Path("data/genes.tsv")` or reads `os.environ["PEAK_THRESHOLD"]` itself depends
+on something its key never sees, so a change to it serves the cached result.
+Pass the file in as a `file` argument, and read the variable in the flow body
+and pass its value in (see
+[A Task Sees Only Its Arguments](#a-task-sees-only-its-arguments)).
+
+**A script or tool a shell command runs.** A shell task's key covers the
+command it builds and its arguments, not the files the command executes. A
+task running `python scripts/filter.py {reads}` or `bash tools/annotate.sh`
+does not re-run when that script changes, and Snakemake behaves the same way.
+Pass the script in as a `file` argument and use it in the command, so its bytes
+are hashed; or make it a script task (`@task("script")`), whose script is part
+of the key; or bump `version=` on the task when you change it.
+
+**A file a notebook reads by a literal path.** A notebook task's key covers the
+notebook source and the task's arguments. A notebook that calls
+`mo.image("results/figures/north.png")` or reads `pd.read_csv("results/x.csv")`
+itself is served from the cache after that file changes. Declare the file as an
+`Out[file]` output of the task that writes it and pass that result to the
+notebook task as a `file` argument (see
+[Figures From Another Task](tasks-and-flows.md#figures-from-another-task)).
+
+**An edit that keeps a file's size and modification time.** A digest is reused
+while a file's device, inode, size and modification time agree (see
+[Cache Identity](#cache-identity)), so such an edit leaves the old digest in
+place. For an input, the task is served from the cache. For a cached output,
+the hit takes the file as already holding the cached bytes and does not restore
+it, so the hand edit stays in the working tree. `ginkgo cache explain` compares
+those same recorded digests, so it reports the task as cached
+(`all_inputs_match`) and cannot point at the edit. `touch` the file, or delete
+an output, to make the next run hash or restore it. Checking every output by
+content on every hit would read every cached output's bytes on every run: at
+about 0.5 s per GiB from a warm page cache, a workflow with 100 GiB of outputs
+would spend close to a minute re-reading them before deciding nothing changed,
+and much longer on network storage.
+
 ## Artifact Storage
 
 For file and folder outputs, Ginkgo stores content-addressed artifacts under
@@ -291,7 +408,24 @@ For file and folder outputs, Ginkgo stores content-addressed artifacts under
 outputs.
 
 A task's declared output path is not the source of truth — the artifact store
-is.
+is. If `.ginkgo/artifacts/` is deleted while the outputs themselves are intact,
+the next cache hit stores them again from the working tree; an output that is
+gone or edited by then cannot be restored, so its task re-runs.
+
+### Intermediate Files
+
+Ginkgo has no equivalent of Snakemake's `temp()`. Every declared output is
+stored, and a cache hit puts a deleted output back in the working tree, so
+deleting an intermediate between runs does not keep it away. Three ways to
+handle an intermediate you do not want to keep:
+
+- Produce and consume it inside one task, in a `tmp_dir` scratch directory.
+  Ginkgo creates the directory for each execution and deletes it when the task
+  succeeds, and nothing in it is stored or restored.
+- Pass the data between tasks as a Python value instead of a file, when it is
+  small enough to hold in memory.
+- Leave it as a declared output, and bound what the store keeps with
+  `ginkgo cache prune` (see [Bounding Cache Size](#bounding-cache-size)).
 
 ## Where Provenance Lives
 
@@ -314,7 +448,8 @@ Together, the cache and the ledger answer different questions:
 ```bash
 ginkgo db path                # where the database is
 ginkgo db check               # schema version, integrity, rows against bytes
-ginkgo db migrate             # create or upgrade it
+ginkgo db check --verify      # also rehash every stored artifact byte
+ginkgo db check --fix         # first remove what nothing can use any more
 ginkgo db prune --events-older-than 90d --dry-run
 ginkgo db prune --staging-older-than 30d    # staged remote inputs, and their bytes
 ginkgo db vacuum              # give the freed space back
@@ -323,7 +458,22 @@ ginkgo db vacuum              # give the freed space back
 `ginkgo db check` asks every index whether its rows and the files they name
 still agree — the cache, the artifact store, the run directories, the staged
 remote inputs — and reports both directions: a row whose bytes are gone, and
-bytes no row can find. It never repairs anything.
+bytes no row can find. On its own it repairs nothing; `--fix` first removes
+what nothing can use any more — run directories and cache directories the
+ledger has no row for, cache entries whose bytes are missing or unreadable
+(each would only miss), the artifacts no entry names, and a `ginkgo.db-wal` /
+`-shm` left behind by a database that was moved or deleted — then reports what
+is left. A run row whose directory is gone is kept: it is the only record of
+that run. `ginkgo doctor` reports what `db check` fails on as well: a ledger
+SQLite cannot read is an error, and cache drift a warning pointing at `--fix`.
+Those checks compare rows with file names; they cannot see a stored file whose bytes changed in place.
+`--verify` rehashes every stored blob and directory member against its digest
+and reports each mismatch, exiting non-zero. It reads the whole store, so it
+takes as long as the store is large.
+
+A cache hit checks the bytes it restores anyway: they are hashed as they are
+copied, and a copy that does not match its digest is deleted with a warning,
+the corrupt stored bytes are discarded, and the task re-runs as a cache miss.
 
 `ginkgo db prune --events-older-than 90d` deletes the raw event stream of runs
 that finished more than 90 days ago. Everything `ginkgo runs show`, the report
@@ -333,7 +483,28 @@ file digests, which cost only a re-hash to lose, `--staging-older-than` to
 evict downloaded remote inputs that nothing has read for a while — bytes and
 row together, and the only eviction the staging cache has — and `--dry-run` to
 see the counts first. Deleting rows does not shrink the database file; `ginkgo
-db vacuum` does.
+db vacuum` does, and reports the file and its write-ahead log together.
+`ginkgo cache clear` and `cache prune` likewise free their entries' rows for
+reuse without shrinking the file; the space they report freed is what the
+cached outputs and artifacts they deleted occupied on disk, in allocated
+blocks as `du` counts them.
+
+Every run adds to the ledger, a fully cached one too: about 4 KiB per task
+(3.5–4.5 KiB in our measurements, more for a task with many inputs), of which
+the raw events are between a third and two thirds, so a 1,000-task workflow run
+nightly adds about 1.5 GB a year. `ginkgo doctor` warns once the ledger passes
+1 GiB. Nothing is pruned unless you ask: prune events older than a few months
+and vacuum, or opt the workspace in to pruning after every run in
+`ginkgo.toml`:
+
+```toml
+[ledger]
+keep_events_for = "90d"   # each run drops the events of runs finished over 90 days ago
+```
+
+That is `ginkgo db prune --events-older-than 90d` run as each run finishes; the
+runs themselves stay listed, and `ginkgo db vacuum` still returns the space to
+the disk.
 
 `ginkgo db check` reads; it never creates. In a directory nobody has run a
 workflow in it says so and succeeds.
@@ -343,7 +514,8 @@ says that instead — how many runs are stranded, and that their provenance
 cannot be read until the ledger is restored. `ginkgo runs ls` and
 `ginkgo doctor` report the same thing. It is a warning rather than a failure,
 so all three still exit 0: nothing is corrupt, and the fix is to restore the
-file (or delete the directories if the history is not wanted).
+file — or, if the history is not wanted, `ginkgo db check --fix`, which removes
+the stranded run directories and any write-ahead log the database left behind.
 
 ### Upgrading from a pre-ledger workspace
 
@@ -353,15 +525,16 @@ are invisible to every command. If you have one, delete `.ginkgo/` and run the
 workflow again; there is no import path, and nothing in the old layout is read
 by mistake.
 
-The same holds between schema versions before 1.0: the schema is edited in
-place rather than migrated, so a database written by an older ginkgo is refused
-with an error naming both versions. Delete `.ginkgo/` and run again.
+The same holds between schema versions before 1.0: there are no migrations,
+so a database written at a different schema version is refused with an error
+naming both versions. Delete `.ginkgo/` and run again.
 
 `ginkgo.db` is the record of your runs and of your cache; back it up as you
 would `.git`. If it is lost, the run history goes with it and the cache goes
 cold: the cached bytes are still under `.ginkgo/cache/`, but the keys that find
 them were rows in the database. `ginkgo db check` lists those stranded
-directories and `ginkgo cache clear --orphans` removes them.
+cache and run directories; `ginkgo db check --fix` removes both, and
+`ginkgo cache clear --orphans` (or any `cache prune`) the cache ones.
 
 Each run directory still holds a `manifest.yaml` of what that run did, which is
 there to be read rather than re-imported: ginkgo does not load it back.
@@ -389,6 +562,12 @@ entries there are, how much they take, how often they are hit, and how much is
 held by entries nothing has ever reused. They read the database read-only, so
 they answer while a run is in progress.
 
+An entry's size is its stored return value plus the files and folders it
+restores, which live in the artifact store. An artifact two entries share
+counts toward both, so the per-entry sizes can add up to more than the store
+holds; `cache stats` also reports the artifact store's own size, each byte
+counted once.
+
 ## Bounding Cache Size
 
 `ginkgo cache prune` supports three eviction policies, which can be combined
@@ -413,9 +592,17 @@ ginkgo cache prune --max-size 5GB --least-recently-hit
 
 Eviction is oldest-first unless you pass `--least-recently-hit`, which gives up
 the entries with the oldest last hit first — an old entry that hits on every run
-is worth more than a young one nothing has touched. Orphaned artifacts are
-garbage-collected at the end of the operation. Use `--dry-run` to preview what
-would be removed.
+is worth more than a young one nothing has touched. `--max-size` counts each
+entry's artifacts as well as its return value — including a large value kept
+in the artifact store, such as a DataFrame's Parquet; `5GB` means 5,000,000,000 bytes
+and `5GiB` means 5 × 1024³. Sizes are printed in binary units (KiB, MiB, GiB). Artifacts no remaining entry
+names are garbage-collected at the end of the operation, and the space
+reported as freed is what was actually deleted, measured on disk: an artifact a
+surviving entry still names stays. Entry sizes in `cache ls` and the totals in
+`cache stats` are apparent sizes — what the files hold — while `cache stats`
+also reports the space the cache takes on disk, which for many small entries is
+far larger. A prune also removes cache directories the database has no row
+for. Use `--dry-run` to preview what would be removed.
 
 ## Partial Resume
 

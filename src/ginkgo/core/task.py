@@ -8,6 +8,7 @@ arguments), enabling lazy expression tree construction.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from importlib import import_module
 from itertools import product
@@ -15,9 +16,17 @@ from typing import Any, Callable, Literal, get_type_hints
 
 import re
 
-from ginkgo.core.expr import Expr, ExprList, record_call, record_partial_call, supersede_call
+from ginkgo.core.expr import (
+    Expr,
+    ExprList,
+    OutputIndex,
+    OutputName,
+    record_call,
+    record_partial_call,
+    supersede_call,
+)
 from ginkgo.core.resources import Resources
-from ginkgo.core.source_hash import compute_source_hash
+from ginkgo.core.source_hash import compute_own_source_hash, compute_source_hash
 from ginkgo.core.types import (
     contains_output_annotation,
     contains_pathlib_annotation,
@@ -118,6 +127,7 @@ class TaskDef:
     _output_params: frozenset[str] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
     _source_hash: str = field(init=False, repr=False)
+    _own_source_hash: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.retries < 0:
@@ -156,7 +166,7 @@ class TaskDef:
                     raise ValueError(f"retry_on_exit_codes must be integers, got {code!r}")
 
         sig = inspect.signature(self.fn)
-        hints, output_params = _resolve_type_hints(fn=self.fn, task_name=self.name)
+        hints, output_params = _resolve_type_hints(fn=self.fn, task_name=self.base_name)
         required = frozenset(
             name
             for name, param in sig.parameters.items()
@@ -168,31 +178,27 @@ class TaskDef:
         object.__setattr__(self, "_output_params", output_params)
         object.__setattr__(self, "_required_params", required)
         object.__setattr__(self, "_source_hash", compute_source_hash(self.fn))
+        object.__setattr__(self, "_own_source_hash", compute_own_source_hash(self.fn))
 
     @property
     def name(self) -> str:
-        """Fully qualified name of the wrapped function."""
-        module = getattr(self.fn, "__module__", None) or ""
-        return f"{module}.{self.fn.__qualname__}"
+        """Location-independent qualified name: the task's machine identity.
 
-    @property
-    def cache_name(self) -> str:
-        """Location-independent task identity used in the cache key.
+        The one qualified form ginkgo records — in events, the ledger's
+        ``tasks.name``, ``cache_entries.function`` and the cache key — so the
+        three always agree. A task defined inside a real package has a stable
+        dotted name that does not depend on where the project checkout lives.
+        A single-file workflow's module, by contrast, is loaded under a
+        synthetic name unique to the *absolute path* of that file (see
+        ``USER_MODULE_PREFIX``); that segment is replaced with
+        ``<workflow>``, so renaming, moving or copying the file neither
+        cold-starts its cache nor changes the name its history is filed under.
+        Two workflows defining a same-named task then share an identity, and
+        collide in the cache only if :attr:`cache_source_hash` also agrees,
+        i.e. their code is identical too — the correct, content-addressed
+        outcome.
 
-        A task defined inside a real package already has a stable dotted
-        name — :attr:`name` — that does not depend on where the project
-        checkout lives. A single-file workflow's module, by contrast, is
-        loaded under a synthetic name unique to the *absolute path* of that
-        file (see ``USER_MODULE_PREFIX``), so :attr:`name` for such a task
-        changes whenever the workflow file is renamed, moved or copied to
-        another checkout — even byte-for-byte — which would otherwise
-        cold-start its entire cache. That synthetic module segment is
-        replaced here with a fixed placeholder, so identically named tasks
-        loaded from single-file workflows share a cache identity regardless
-        of path. Two different workflows defining a same-named task can then
-        still collide only if :attr:`cache_source_hash` also agrees, i.e.
-        their code is identical too — which is the correct, content-addressed
-        outcome, not a false collision.
+        Messages a user reads name the task by :attr:`base_name` instead.
         """
         # Imported lazily: ``core`` must not depend on ``runtime`` at module
         # load time, only inside this property body (see the similar import in
@@ -201,6 +207,11 @@ class TaskDef:
 
         module = getattr(self.fn, "__module__", None) or ""
         return f"{cache_identity_module_name(module)}.{self.fn.__qualname__}"
+
+    @property
+    def base_name(self) -> str:
+        """The task's function name: what user-facing output calls it."""
+        return self.fn.__qualname__.rsplit(".", 1)[-1]
 
     @property
     def required_params(self) -> frozenset[str]:
@@ -273,6 +284,11 @@ class TaskDef:
         return self._source_hash
 
     @property
+    def own_source_hash(self) -> str:
+        """BLAKE3 digest of the task definition alone, without its modules."""
+        return self._own_source_hash
+
+    @property
     def threads(self) -> int:
         """Declared CPU footprint (see :class:`Resources`)."""
         return self.resources.threads
@@ -330,11 +346,14 @@ class TaskDef:
         delay = self.retry_backoff * (self.retry_backoff_multiplier ** (attempt - 1))
         return min(delay, self.retry_backoff_max)
 
-    def __call__(self, **kwargs: Any) -> Expr | PartialCall:
+    def __call__(self, *args: Any, **kwargs: Any) -> Expr | PartialCall:
         """Build an ``Expr`` (all required args supplied) or ``PartialCall``.
 
         Parameters
         ----------
+        *args
+            Refused: task calls are keyword-only. Accepted only to say so,
+            rather than leave Python's bare positional-argument error.
         **kwargs
             Keyword arguments for the task.  If all required parameters are
             covered, returns ``Expr``.  Otherwise returns ``PartialCall``.
@@ -343,6 +362,14 @@ class TaskDef:
         -------
         Expr | PartialCall
         """
+        if args:
+            names = [name for name in self.all_params if name not in kwargs]
+            example = ", ".join(f"{name}=..." for name in names[: len(args)]) or "name=..."
+            raise TypeError(
+                f"{self.fn.__name__}() was given {len(args)} positional argument(s), but "
+                "task calls are keyword-only, so each value names the parameter it fills. "
+                f"Call it as {self.fn.__name__}({example})."
+            )
         supplied = set(kwargs.keys())
 
         if "threads" in supplied:
@@ -386,6 +413,23 @@ class TaskDef:
     def __reduce__(self) -> tuple[Callable[..., TaskDef], tuple[str, str]]:
         """Serialize task definitions by their module-level binding."""
         return (_load_taskdef, (self.fn.__module__, self.fn.__name__))
+
+    def __getattr__(self, name: str) -> Any:
+        """Refuse a missing attribute, pointing ``.map()`` at a call to fan out.
+
+        Only reached when normal lookup fails. Every other name gets Python's
+        usual error, so the dunders copy and pickle probe behave as before, and
+        ``fn`` is read from ``__dict__`` because those probes can reach an
+        instance whose fields are not yet set.
+        """
+        fn = self.__dict__.get("fn")
+        if name in ("map", "product_map") and fn is not None:
+            raise AttributeError(
+                f"{fn.__name__} is a task definition, not a call, so it has no .{name}(). "
+                "Call it first with the arguments every branch shares, leaving the varying "
+                f"parameters unset: {fn.__name__}(fixed=...).{name}(varying=[...])"
+            )
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -496,6 +540,14 @@ def _fan_out_partial_call(
     """Build an ``ExprList`` from one partially-applied task."""
     function_name = _fan_out_function_name(mode=mode)
     _validate_max_concurrent(max_concurrent=max_concurrent, function_name=function_name)
+    both = sorted(set(varying) & set(partial_call.fixed_args))
+    if both:
+        names = ", ".join(repr(name) for name in both)
+        raise TypeError(
+            f"{partial_call.task_def.fn.__name__}(): {names} given both on the call and to "
+            f".{function_name}(). Pass each argument in one place: fixed on the call, "
+            f"or varying in .{function_name}()."
+        )
     varying_args = _materialize_varying_columns(
         task_def=partial_call.task_def,
         varying=varying,
@@ -689,6 +741,13 @@ def _materialize_varying_columns(
                 f"fan out over its individual characters. Pass a list of values, or pass "
                 f"{key}={value!r} as a fixed argument on the {task_def.fn.__name__}() call."
             )
+        if not isinstance(value, Iterable):
+            raise TypeError(
+                f"{function_name}() argument {key!r} is a single "
+                f"{type(value).__name__}, not a list of per-branch values. Pass a list of "
+                f"values, or pass {key}={value!r} as a fixed argument on the "
+                f"{task_def.fn.__name__}() call."
+            )
         if mode == "product" and isinstance(value, ExpandedTemplate):
             raise ValueError(
                 _expanded_template_in_product_message(key=key, column=value, axis_keys=axis_keys)
@@ -803,7 +862,7 @@ def _require_renderable(
                 f"argument to {function_name}() or as a fixed argument on the "
                 f"{task_def.fn.__name__}() call."
             )
-        if isinstance(values[name], Expr | ExprList):
+        if isinstance(values[name], Expr | ExprList | OutputIndex | OutputName):
             raise ValueError(
                 f"{function_name}() argument {key!r}: per_branch({template.template!r}) "
                 f"references {name!r}, which is a task result with no value until the run "
@@ -863,7 +922,12 @@ def _label_parts_for_row(
         return ()
 
     if mode == "zip":
-        return _zip_label_parts_for_row(row=row, varying_keys=varying_keys, label_keys=label_keys)
+        return _zip_label_parts_for_row(
+            row=row,
+            varying_keys=varying_keys,
+            label_keys=label_keys,
+            inherited=lambda expr: expr.display_label_parts,
+        )
 
     parts: list[str] = []
     valid_params = set(task_def.all_params.keys())
@@ -917,6 +981,7 @@ def _zip_label_parts_for_row(
     row: dict[str, Any],
     varying_keys: tuple[str, ...],
     label_keys: tuple[str, ...],
+    inherited: Callable[[Expr], tuple[str, ...]],
 ) -> tuple[str, ...]:
     """Build the label for one zip fan-out row.
 
@@ -924,9 +989,10 @@ def _zip_label_parts_for_row(
     :func:`_zip_label_keys` found are needed to tell the fan-out's branches
     apart. When none renders as a short scalar (every value is an
     ``Expr``/``ExprList``, the normal shape for a chained downstream task),
-    inherit the label of the upstream branch that produced it, since the zip
-    position ties each row back to exactly one producing branch. Falls back
-    to the first key's rendered value, matching the previous behaviour.
+    inherit the label of the upstream branch that produced it, as
+    *inherited* gives it, since the zip position ties each row back to
+    exactly one producing branch. Falls back to the first key's rendered
+    value, matching the previous behaviour.
     """
     parts = [
         rendered
@@ -938,14 +1004,75 @@ def _zip_label_parts_for_row(
 
     for key in varying_keys:
         value = row.get(key)
-        if isinstance(value, Expr) and value.display_label_parts:
-            return value.display_label_parts
+        # A selected output (``t.output[0]``) belongs to the branch that
+        # produced it, so it inherits that branch's label too.
+        if isinstance(value, OutputIndex | OutputName):
+            value = value.expr
+        if isinstance(value, Expr) and (parts := inherited(value)):
+            return parts
 
     first_key = varying_keys[0]
     rendered = _render_label_value(row.get(first_key))
     if rendered is None:
         return ()
     return (rendered,)
+
+
+def sibling_label_parts(
+    *, calls: list[Expr], inherited: Callable[[Expr], tuple[str, ...]]
+) -> list[tuple[str, ...]]:
+    """Label plain calls of one task gathered in one list as ``.map()`` would.
+
+    ``[child(name=n) for n in names]`` builds the calls a ``.map()`` over
+    ``name`` builds, so its calls take the same labels (``child[c0]``) rather
+    than ordinals. The arguments whose values differ between the calls are
+    the varying axes, chosen and rendered as for a zip fan-out.
+
+    Parameters
+    ----------
+    calls : list[Expr]
+        Unmapped calls of one task.
+    inherited : Callable[[Expr], tuple[str, ...]]
+        Returns the label parts an upstream call is shown under, for a call
+        whose varying arguments are all upstream results.
+
+    Returns
+    -------
+    list[tuple[str, ...]]
+        The label parts of each call, in order; empty where none renders.
+    """
+    rows = [call.args for call in calls]
+    varying_keys = tuple(
+        name
+        for name in calls[0].task_def.signature.parameters
+        if any(not _same_argument(row.get(name), rows[0].get(name)) for row in rows[1:])
+    )
+    if not varying_keys:
+        return [() for _ in calls]
+    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys)
+    return [
+        _zip_label_parts_for_row(
+            row=row, varying_keys=varying_keys, label_keys=label_keys, inherited=inherited
+        )
+        for row in rows
+    ]
+
+
+def _same_argument(left: Any, right: Any) -> bool:
+    """Return whether two calls received the same value for one argument.
+
+    A deferred value is the same only as itself: comparing it with a plain
+    value raises, by design.
+    """
+    if left is right:
+        return True
+    deferred = Expr | ExprList | OutputIndex | OutputName
+    if isinstance(left, deferred) or isinstance(right, deferred):
+        return False
+    try:
+        return bool(left == right)
+    except Exception:  # noqa: BLE001 - an array or other value with no plain equality
+        return False
 
 
 def _is_short_scalar_label(rendered: str) -> bool:
@@ -956,12 +1083,8 @@ def _is_short_scalar_label(rendered: str) -> bool:
 
 
 def _render_label_value(value: Any) -> str | None:
-    """Render one concise label-safe value."""
-    if isinstance(value, Expr):
-        return None
-    if isinstance(value, ExprList):
-        return None
-    if value is None:
+    """Render one concise label-safe value, or ``None`` for a deferred one."""
+    if value is None or isinstance(value, Expr | ExprList | OutputIndex | OutputName):
         return None
     return str(value)
 

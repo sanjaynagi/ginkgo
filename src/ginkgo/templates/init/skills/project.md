@@ -17,6 +17,12 @@ called. `workflow/flow.py` lives inside a package, so it may import task
 modules relatively (`from .modules.analysis import build_brief`) or absolutely
 (`from workflow.modules.analysis import build_brief`).
 
+A file holds one `@flow`. For several workflows in one project, add one entry
+file per workflow beside `flow.py` (say `workflow/qc_flow.py`) importing the
+shared task modules, and run it by path: `ginkgo run workflow/qc_flow.py`.
+`ginkgo run` with no path only ever picks `flow.py`. All of them share
+`.ginkgo/`, so a task two flows call with the same inputs runs once.
+
 Keep `flow.py` thin:
 
 - good: flow definitions, config lookups, task composition, `.map()`,

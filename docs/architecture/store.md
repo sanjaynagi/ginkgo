@@ -15,9 +15,16 @@ The store has two halves.
 - **The ledger.** One append-only `events` table. Each row is a runtime event
   from `runtime/events.py`: `run_id`, `ts`, `type`, `v`, the columns readers
   filter and join on (`task_id`, `attempt`, `cache_key`), and the
-  whole payload as JSON. `seq` is assigned by SQLite, so insertion order is the
-  order things happened. Because the payload is JSON, a new event type needs no
-  migration.
+  rest of the event as JSON. A field a column holds is not repeated in the
+  payload (it was a fifth of a cached task's events);
+  `StoredEvent.fields`/`event_fields` put the event back together, and the
+  projector and `Query.events` read through them. `seq` is assigned by SQLite,
+  so insertion order is the order things happened. Because the payload is JSON,
+  a new event type needs no schema change. Nothing prunes the ledger unless the
+  workspace opts in with `[ledger] keep_events_for` (`maintenance.event_retention`,
+  applied by `ginkgo run` once a run finishes): a fully cached run adds about
+  4 KiB per task, and `doctor` warns past 1 GiB
+  (`store.maintenance.large_ledger_warning`).
 - **The projections.** `runs`, `tasks`, `attempts`, `task_inputs`,
   `task_outputs`, `edges`. Every one of them is derived from the ledger and
   updated in the same transaction as the event that caused it. A projection is
@@ -71,11 +78,11 @@ written; that is what `ginkgo why` resolves through.
 ## Connections and pragmas
 
 `open_store(path)` returns a `SqliteStore`. A write-mode open creates the
-parent directory, applies the pragmas, and migrates. A read-only open
-(`readonly=True`) goes through a `file:…?mode=ro` URI, never migrates, and
-raises `SchemaVersionError` naming `ginkgo db migrate` if the schema is behind
-— so a CLI read path can never upgrade a database out from under a running
-workflow.
+parent directory, applies the pragmas, and creates the schema in an empty
+database. A read-only open (`readonly=True`) goes through a `file:…?mode=ro`
+URI and never creates anything, so a CLI read path can never change a database
+out from under a running workflow. It raises `UninitializedStoreError` for a
+file whose schema the first run has not committed yet.
 
 | Pragma | Value | Why |
 |---|---|---|
@@ -99,39 +106,32 @@ Network filesystems are detected at the first write-mode open of a process
 FUSE, 9p, AFS and GPFS mounts get one warning on stderr, naming the database
 path and `GINKGO_DB`. Ginkgo never refuses to run there.
 
-## Migrations
+## Schema versions
 
-`schema.py` holds `MIGRATIONS: list[tuple[int, str | Callable[[Connection],
-None]]]` and `migrate(conn)`, which applies the missing steps inside one
-transaction and records each in `schema_version`. The first step creates every
-table, including the ones later phases populate: one migration is easier to
-reason about than eight, and an empty table costs nothing.
+`schema.py` holds the DDL as one script, `_SCHEMA`, and `create_schema(conn)`,
+which runs it on an empty database inside one transaction and records
+`SCHEMA_VERSION` in `schema_version`. Every table exists from the start,
+including the ones later phases populate: an empty table costs nothing.
 
-Before 1.0 the schema is edited in place rather than migrated: a workspace is
-derived data, and carrying a step for every column change costs more than a
-cold cache. The schema is at version 3, and that is its first step — removing
-the asset catalog edited it in place. A database at a version `MIGRATIONS` has
-no step for (1 or 2, or a newer ginkgo's) is refused with
-`StaleWorkspaceError`, whose message names the workspace to delete; deleting
-`.ginkgo/` is the whole upgrade. A purely additive change, such as a nullable
-column, is cheap enough to step forward and gets a step of its own.
+Before 1.0 there are no migrations. Any schema change edits `_SCHEMA` in place
+and bumps `SCHEMA_VERSION`. A database at any other version, older or newer, is
+refused with `StaleWorkspaceError`, whose message names the workspace to
+delete. The workspace holds derived data whose runs can be re-run, so deleting
+`.ginkgo/` is the whole upgrade.
 
-`tests/store/fixtures/schema.txt` is a snapshot of `sqlite_master` after the
-last migration. It is regenerated deliberately, as part of changing the
-schema, and tests check that a version 2 database and a newer one are both
-refused.
+`tests/store/fixtures/schema.txt` is a snapshot of `sqlite_master` for a fresh
+database. It is regenerated deliberately, as part of changing the schema.
 
 ## Errors
 
-`StoreError`, `SchemaVersionError`, `StaleWorkspaceError` and
-`StoreLockedError` are `GinkgoError`
+`StoreError`, `StaleWorkspaceError`, `UninitializedStoreError`,
+`StoreLockedError` and `CorruptStoreError` are `GinkgoError`
 subclasses, so the CLI prints the message and nothing else; each message names
 the database and the way out. A run whose ledger cannot be written fails —
 provenance never degrades silently.
 
 ## `ginkgo db`
 
-- `ginkgo db migrate` — create or upgrade the database.
 - `ginkgo db check` — schema version, `PRAGMA integrity_check`, and every way
   an index and the bytes it names can disagree. A read path: it opens the
   database read-only and never creates one, so a workspace nobody has run
@@ -173,7 +173,7 @@ provenance never degrades silently.
   `.ginkgo/` and this is their only eviction; a blob two URIs share is kept
   until the last row naming it goes. At least one cutoff is required.
 - `ginkgo db vacuum` — rebuild the file, returning the pages a prune freed to
-  the filesystem, and report the size either side. SQLite cannot rebuild while
+  the filesystem, and report the size either side, write-ahead log included. SQLite cannot rebuild while
   another connection holds the database and says nothing when it declines, so
   an unchanged size is reported as "no space reclaimed" rather than as a win.
 - `ginkgo db path` — where the database is, after `GINKGO_DB`.
@@ -183,7 +183,8 @@ directories: back it up as you would `.git`. Losing it loses the run history —
 the `events` ledger has no on-disk counterpart at all — and colds the cache,
 because since the cache index moved into the database the key that finds an
 entry exists nowhere else. The bytes stay behind as orphans; `db check` lists
-them and `ginkgo cache clear --orphans` removes them. Each run directory keeps a
+them, and `db check --fix` removes them with the stranded run directories and a
+write-ahead log left without its database (`cli.commands.db._repair`). Each run directory keeps a
 `manifest.yaml` of what that run did, to be read rather than re-imported.
 
 ## Layering
@@ -207,9 +208,10 @@ writes the run's manifest when it completes. `store/projector.py` is the whole
 of the event-to-rows mapping, one pure function per event type. See
 [Provenance and Run State](provenance.md) for the shape of that path.
 
-`tasks.status` is free text, so a new terminal state costs no migration:
-`task_skipped` writes `'skipped'` and merges `skipped_because` — the failed
-task the skip is attributed to — into `tasks.extra`. `task_failed` merges
+`tasks.status` is free text, so a new terminal state costs no schema change:
+`task_skipped` writes `'skipped'` and merges `skipped_because` — the skip's
+`reason` and the failed task it is attributed to — into `tasks.extra`; a v1
+payload predates reasons and replays as `upstream_failed`. `task_failed` merges
 `ignored: true` there when the run's failure policy let the failure pass; a v1
 payload has no such key and replays unchanged. `task_skipped` is in
 `TERMINAL_EVENTS`, so the writer commits after it and a reader sees it at
@@ -234,7 +236,7 @@ Readers go through `ginkgo.query`, which opens read-only — including the cache
 readers `cache ls`, `cache explain` and `cache stats`, the report, `why`, and
 the run readers `runs ls/show`, `history`, `query` and `export`. No read path ever
 opens a write connection, so listings work while a run is writing and can never
-migrate a database out from under one.
+change a database out from under one.
 
 `SqliteStore.query` serves ginkgo's own SQL, which knows its columns and its
 row count. `SqliteStore.select_with_columns` serves SQL ginkgo did not write — `Query.sql`,

@@ -1,9 +1,9 @@
 """The SQLite-backed provenance store.
 
 One database per workspace, at :attr:`~ginkgo.workspace_layout.WorkspaceLayout.db`.
-A write-mode open creates and migrates it; a read-only open never does either,
+A write-mode open creates it and its schema; a read-only open never does either,
 so ``ginkgo cache ls`` can run against a workspace mid-run without taking a
-lock or racing the writer's migration.
+lock or racing the writer's schema creation.
 """
 
 from __future__ import annotations
@@ -15,10 +15,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from ginkgo.store.errors import SchemaVersionError, StoreError, StoreLockedError
+from ginkgo.store.errors import (
+    CorruptStoreError,
+    StaleWorkspaceError,
+    StoreError,
+    StoreLockedError,
+    UninitializedStoreError,
+)
 from ginkgo.store.fs import warn_if_network_filesystem
 from ginkgo.store.protocol import ProjectionOp, StoredEvent
-from ginkgo.store.schema import SCHEMA_VERSION, migrate, schema_version
+from ginkgo.store.schema import SCHEMA_VERSION, create_schema, schema_version
 
 __all__ = ["BUSY_TIMEOUT_MS", "MEMORY", "SqliteStore", "open_store"]
 
@@ -45,8 +51,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 class SqliteStore:
     """A :class:`~ginkgo.store.protocol.ProvenanceStore` over one SQLite file.
 
-    Construct through :meth:`open`, which is where the pragmas, the migration
-    and the network-filesystem check happen. The instance owns its connection
+    Construct through :meth:`open`, which is where the pragmas, the schema
+    creation and the network-filesystem check happen. The instance owns its connection
     and is not safe to share across threads; a process that writes from a
     background thread gives that thread its own store.
     """
@@ -64,10 +70,10 @@ class SqliteStore:
         """Open the database at *path*.
 
         A write-mode open creates the parent directory and the file if they are
-        missing and brings the schema up to date. A read-only open requires
-        both to exist already, never creates or migrates anything, and refuses
-        a database the current ginkgo would have to migrate rather than reading
-        rows it may misinterpret. :data:`MEMORY` opens a private in-process
+        missing and creates the schema in an empty database. A read-only open
+        requires both to exist already and never creates anything. Either
+        refuses a database at another schema version rather than reading rows
+        it may misinterpret. :data:`MEMORY` opens a private in-process
         database instead, leaving the filesystem alone.
 
         Parameters
@@ -90,19 +96,30 @@ class SqliteStore:
         ------
         StoreError
             If the database cannot be opened.
-        SchemaVersionError
-            If a read-only open finds a schema older than this ginkgo's.
+        StaleWorkspaceError
+            If the database is at another schema version.
+        UninitializedStoreError
+            If a read-only open finds a database whose schema is not created yet.
         """
         if readonly:
             connection = cls._connect(
                 _uri(path, readonly=True), path=path, thread_shared=thread_shared
             )
-            _apply_pragmas(connection, writable=False)
             store = cls(path=path, connection=connection, readonly=True)
-            found = schema_version(connection)
-            if found < SCHEMA_VERSION:
+            try:
+                _apply_pragmas(connection, writable=False)
+                found = schema_version(connection)
+            except sqlite3.OperationalError:
                 store.close()
-                raise SchemaVersionError(path=path, found=found, expected=SCHEMA_VERSION)
+                raise
+            except sqlite3.DatabaseError as exc:
+                store.close()
+                raise CorruptStoreError(path=path, detail=str(exc)) from exc
+            if found != SCHEMA_VERSION:
+                store.close()
+                if found == 0:
+                    raise UninitializedStoreError(path=path)
+                raise StaleWorkspaceError(path=path, found=found, expected=SCHEMA_VERSION)
             return store
 
         if path != MEMORY:
@@ -117,13 +134,16 @@ class SqliteStore:
         store = cls(path=path, connection=connection, readonly=False)
         try:
             _apply_pragmas(connection, writable=True)
-            migrate(connection)
+            create_schema(connection)
         except sqlite3.OperationalError as exc:
             # A second ginkgo process may be creating the same database right
             # now. Reported as a lock rather than as a raw driver message, so
             # the user is told which database and what to do about it.
             store.close()
             raise store._locked_or(exc) from exc
+        except sqlite3.DatabaseError as exc:
+            store.close()
+            raise CorruptStoreError(path=path, detail=str(exc)) from exc
         return store
 
     @staticmethod
@@ -141,7 +161,7 @@ class SqliteStore:
         connection.row_factory = sqlite3.Row
         # Transaction control is explicit throughout the store, so the driver's
         # implicit BEGIN before every statement is turned off: it would open a
-        # transaction that neither transaction() nor migrate() knows about.
+        # transaction that neither transaction() nor create_schema() knows about.
         connection.isolation_level = None
         return connection
 
@@ -321,7 +341,7 @@ def open_store(path: Path, *, readonly: bool = False, thread_shared: bool = Fals
     path : Path
         The database file, normally ``WorkspaceLayout.db``.
     readonly : bool, optional
-        Open a reader that never migrates and never takes a write lock.
+        Open a reader that never creates the schema and never takes a write lock.
     thread_shared : bool, optional
         Let threads other than the opener use the connection, on the promise
         that the caller serialises them.

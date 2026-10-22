@@ -13,6 +13,13 @@ import pytest
 from ginkgo import file, shell, task
 from tests.conftest import Ledger
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler, _parse_cputime
+from ginkgo.runtime.worker import (
+    _TaskPeakRss,
+    _current_rss_bytes,
+    _max_rss_bytes,
+    _rusage_snapshot,
+    run_task,
+)
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
 
@@ -43,11 +50,90 @@ class TestSubprocessUsageSampler:
         assert usage["cpu_seconds"] >= 0.0
         assert usage["source"] == "sampled"
 
+    def test_a_command_shorter_than_the_interval_never_runs_ps(self, monkeypatch) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(
+            "ginkgo.runtime.environment.resources._sample_tree_usage",
+            lambda *, root_pid: calls.append(root_pid),
+        )
+        sampler = SubprocessUsageSampler(root_pid=1, interval_seconds=10.0)
+        sampler.start()
+        sampler.stop()
+
+        assert calls == []
+        assert sampler.result() is None
+
     def test_missing_process_yields_none(self) -> None:
         sampler = SubprocessUsageSampler(root_pid=-12345, interval_seconds=0.05)
         sampler.start()
         sampler.stop()
         assert sampler.result() is None
+
+
+class TestTaskPeakRss:
+    """A reused worker reports each task's own peak, not its lifetime one."""
+
+    def test_an_earlier_heavier_task_does_not_set_a_later_tasks_peak(self) -> None:
+        heavy = b"x" * 200_000_000
+        del heavy
+        lifetime = _max_rss_bytes(_rusage_snapshot().ru_maxrss)
+
+        tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
+        peak = tracker.stop(usage_end=_rusage_snapshot())
+
+        assert peak < lifetime - 100_000_000
+
+    def test_the_tasks_own_allocation_is_seen(self) -> None:
+        tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
+        held = b"x" * 100_000_000
+        peak = tracker.stop(usage_end=_rusage_snapshot())
+
+        assert held
+        assert peak >= 90_000_000
+
+    def test_the_workers_resident_memory_is_the_baseline_not_the_tasks(self) -> None:
+        tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
+        peak = tracker.stop(usage_end=_rusage_snapshot())
+
+        assert tracker.baseline_bytes >= _current_rss_bytes() // 2
+        assert peak < 10_000_000
+
+
+_held: list[bytes] = []
+
+
+def _returns_one() -> int:
+    return 1
+
+
+class TestBodyMeasurement:
+    """The measurement is the body's, not the worker's work around it."""
+
+    def test_encoding_the_result_is_not_charged_to_the_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A fresh worker's first encode imports and allocates; a task that
+        # allocates nothing must still read close to zero.
+        def heavy_encode(value: Any, *, base_dir: Path) -> Any:
+            _held.append(b"x" * 100_000_000)
+            return value
+
+        monkeypatch.setattr("ginkgo.runtime.worker.encode_value", heavy_encode)
+        try:
+            response = run_task(
+                {
+                    "transport_dir": str(tmp_path),
+                    "args": {},
+                    "module": __name__,
+                    "module_file": __file__,
+                    "binding_name": "_returns_one",
+                }
+            )
+        finally:
+            _held.clear()
+
+        assert response["ok"] is True
+        assert response["measured_resources"]["peak_rss_bytes"] < 20_000_000
 
 
 class TestUsageMerging:
@@ -109,10 +195,13 @@ class TestManifestRecording:
     def test_python_task_records_rusage(self, tmp_path: Path) -> None:
         usage = _run_with_ledger(_python_work(), tmp_path)
         assert usage["measured"]["source"] == "rusage"
-        assert usage["measured"]["peak_rss_bytes"] > 0
+        # The 4 MB the body allocates, not the worker's imports.
+        assert usage["measured"]["peak_rss_bytes"] < 50_000_000
+        assert usage["measured"]["baseline_rss_bytes"] > usage["measured"]["peak_rss_bytes"]
         assert usage["measured"]["cpu_seconds"] >= 0.0
         assert usage["declared"] == {
             "threads": 1,
+            "memory": "1Gi",
             "memory_gb": 1,
             "effective_memory_gb": 1,
         }
@@ -153,13 +242,13 @@ class TestManifestRecording:
         usage = _single_task_usage(ledger.finish(status="failed"))
         ledger.close()
         assert usage["measured"]["source"] == "rusage"
-        assert usage["measured"]["peak_rss_bytes"] > 0
+        assert usage["measured"]["baseline_rss_bytes"] > 0
 
 
 class TestRetryCarry:
     def test_schedule_retry_keeps_measurements(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1)
-        node_id = evaluator._register_expr(_retried_work())
+        (node_id,) = evaluator._register(_retried_work())
         node = evaluator.task_nodes[node_id]
         node.measured_resources = {"peak_rss_bytes": 42, "cpu_seconds": 0.1, "source": "rusage"}
 

@@ -17,6 +17,25 @@ ShellOutputItem: TypeAlias = str | OptionalOutput
 ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 
+def shell_argv(*, shell: str, cmd: str) -> list[str]:
+    """Return the argument vector that runs *cmd* under *shell* in strict mode.
+
+    Every shell task runs this way, local or in an environment, so one
+    command means the same thing wherever it runs. ``-e`` stops at the first
+    failing command and ``-o pipefail`` fails a pipeline when any stage
+    fails; without them a failing step can still exit 0 and be cached as a
+    success.
+
+    Parameters
+    ----------
+    shell : str
+        Shell executable, which must accept ``-o pipefail`` (bash, zsh, ash).
+    cmd : str
+        Shell command string.
+    """
+    return [shell, "-eo", "pipefail", "-c", cmd]
+
+
 @final
 @dataclass(frozen=True)
 class ShellDirective(ExecutionDirective):

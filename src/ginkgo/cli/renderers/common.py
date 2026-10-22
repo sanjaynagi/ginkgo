@@ -13,6 +13,7 @@ from ginkgo.cli.renderers.models import _TaskRow
 from ginkgo.plugins.api import EnvironmentType
 from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.runtime.backend import env_scheme
+from ginkgo.runtime.module_loader import task_base_name as task_base_name
 from ginkgo.formatting import format_duration
 
 
@@ -89,11 +90,6 @@ def environment_label(env: str | None) -> str:
     except PluginNotFoundError:
         return env
     return f"{label}:{env}"
-
-
-def task_base_name(task_name: str) -> str:
-    """Return the task name without its module prefix."""
-    return task_name.rsplit(".", 1)[-1]
 
 
 def _task_label_width(console: Console) -> int:

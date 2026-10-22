@@ -31,7 +31,7 @@ from ginkgo import flow, task
 
 @task()
 def slow(i: int) -> int:
-    time.sleep(3)
+    time.sleep(SLEEP_SECONDS)
     return i
 
 
@@ -127,13 +127,14 @@ print(f"{cancelled_at[0] - signalled_at[0]:.2f}")
 """
 
 
-def _write_project(root: Path) -> None:
-    """Write a workspace whose one workflow runs six three-second tasks."""
+def _write_project(root: Path, *, sleep_seconds: int = 3) -> None:
+    """Write a workspace whose one workflow runs six tasks of *sleep_seconds* each."""
     (root / "ginkgo.toml").write_text('[project]\nname = "interrupt"\n', encoding="utf-8")
     package = root / "workflow"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "flow.py").write_text(textwrap.dedent(_WORKFLOW), encoding="utf-8")
+    workflow = f"SLEEP_SECONDS = {sleep_seconds}\n" + textwrap.dedent(_WORKFLOW)
+    (package / "flow.py").write_text(workflow, encoding="utf-8")
 
 
 def _detach() -> None:
@@ -145,6 +146,26 @@ def _detach() -> None:
     """
     os.setsid()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+def _wait_for_a_succeeded_task(*, root: Path, timeout: float = 60.0) -> None:
+    """Block until the workspace's ledger records a succeeded task."""
+    import ginkgo.query as query
+    from ginkgo.store.errors import UninitializedStoreError
+    from ginkgo.workspace_layout import WorkspaceLayout
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        try:
+            with query.open(WorkspaceLayout(root=root / ".ginkgo"), missing_ok=True) as reader:
+                rows = reader.runs(limit=1)
+                if rows and reader.task_status_counts(rows[0].run_id).get("succeeded"):
+                    return
+        except UninitializedStoreError:
+            # The run has created the ledger but not yet its schema.
+            continue
+    pytest.fail("no task succeeded before the interrupt was due")
 
 
 class TestCpSatSignalHandling:
@@ -159,6 +180,32 @@ class TestCpSatSignalHandling:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "handled"
+
+    def test_the_solver_never_takes_an_interrupt(self, monkeypatch) -> None:
+        # A solver catching SIGINT would swallow a Ctrl-C that lands mid-solve.
+        from ortools.sat.python import cp_model
+
+        from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
+
+        seen: list[bool] = []
+        solve = cp_model.CpSolver.Solve
+
+        def recording_solve(self, *args, **kwargs):
+            seen.append(self.parameters.catch_sigint_signal)
+            return solve(self, *args, **kwargs)
+
+        monkeypatch.setattr(cp_model.CpSolver, "Solve", recording_solve)
+        select_dispatch_subset(
+            ready_tasks=[SchedulableTask(node_id=0, threads=1, memory_gb=0)],
+            jobs=1,
+            cores=1,
+            memory=1,
+            gpus=0,
+            available_group_slots=None,
+            custom_budgets=None,
+        )
+
+        assert seen == [False]
 
 
 class TestRemoteJobCancellation:
@@ -226,7 +273,9 @@ class TestInterruptedRunEndToEnd:
     def test_ctrl_c_records_the_run_cancelled_and_exits_130(self, tmp_path: Path) -> None:
         if not PYTHON.exists():  # pragma: no cover - depends on a prepared env
             pytest.skip("pixi environment not installed")
-        _write_project(tmp_path)
+        # Long enough that a slow runner still has tasks left to interrupt
+        # once it notices the first one has succeeded.
+        _write_project(tmp_path, sleep_seconds=10)
 
         process = subprocess.Popen(
             [str(PYTHON), "-m", "ginkgo.cli", "run", "--jobs", "2"],
@@ -236,9 +285,9 @@ class TestInterruptedRunEndToEnd:
             text=True,
             preexec_fn=_detach,
         )
-        # Long enough for the first wave to dispatch — which is what puts a
-        # CP-SAT solve between the run starting and the interrupt arriving.
-        time.sleep(6)
+        # Interrupted once the first wave has finished, which puts a CP-SAT
+        # solve between the run starting and the interrupt arriving.
+        _wait_for_a_succeeded_task(root=tmp_path)
         process.send_signal(signal.SIGINT)
         output = process.communicate(timeout=60)[0]
 
@@ -258,6 +307,13 @@ class TestInterruptedRunEndToEnd:
         # The tally of what had finished by the interrupt is part of the record.
         assert summary.status == "cancelled"
         assert 0 < summary.succeeded_count < len(summary.tasks)
+        # Every task ends terminal: what never started is skipped, not pending.
+        assert all(task.is_terminal() for task in summary.tasks)
+        # A task the interrupt stopped mid-flight did not fail: it is skipped too.
+        assert summary.failed_count == 0
+        assert any(
+            (task.skipped_because or {}).get("reason") == "interrupted" for task in summary.tasks
+        )
 
     def test_a_cancelled_run_is_listed_by_its_status(self, tmp_path: Path) -> None:
         if not PYTHON.exists():  # pragma: no cover - depends on a prepared env
@@ -276,3 +332,33 @@ class TestInterruptedRunEndToEnd:
             capture_output=True,
         )
         assert "20260101_000000_000000_abcdef12" in listing.stdout
+
+    @pytest.mark.parametrize("delay", [0.1, 0.8, 1.6, 2.4, 4.0])
+    def test_ctrl_c_at_any_moment_exits_promptly_with_130(
+        self, tmp_path: Path, delay: float
+    ) -> None:
+        # The delays land the signal while the CLI imports, while the run
+        # starts its pools, and while tasks run. Only the parent is signalled,
+        # as `kill -INT` would: the run must stop its minute-long tasks rather
+        # than wait for them.
+        if not PYTHON.exists():  # pragma: no cover - depends on a prepared env
+            pytest.skip("pixi environment not installed")
+        _write_project(tmp_path, sleep_seconds=60)
+
+        process = subprocess.Popen(
+            [str(PYTHON), "-m", "ginkgo.cli", "run", "--jobs", "2"],
+            cwd=tmp_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            preexec_fn=_detach,
+        )
+        time.sleep(delay)
+        process.send_signal(signal.SIGINT)
+        try:
+            output = process.communicate(timeout=15)[0]
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            pytest.fail(f"ginkgo run did not exit within 15s of SIGINT at {delay}s")
+
+        assert process.returncode == 130, output

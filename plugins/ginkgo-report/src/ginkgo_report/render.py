@@ -2,8 +2,10 @@
 
 The default output is a directory bundle containing ``index.html``, the
 stylesheet, bundled fonts, a small islands JS module, and copied artifacts
-(rendered pages, log files). ``single_file=True`` produces one HTML document
-with the stylesheet, fonts and script inlined.
+(rendered pages, log files), with a network-free static copy beside each
+marimo page. ``single_file=True`` produces one HTML document with the
+stylesheet, fonts and script inlined and each rendered page embedded, as its
+static copy when it is a marimo page; it links, but does not include, the logs.
 """
 
 from __future__ import annotations
@@ -12,12 +14,14 @@ import base64
 import json
 import mimetypes
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import jinja2
 
+from ginkgo.query import TaskRow
 from ginkgo.runtime.run_summary import RunSummary
 
 from ginkgo_report.model import ReportData, build_report_data
@@ -31,25 +35,46 @@ _STATIC_DIR = Path(__file__).parent / "static"
 #: directory as ginkgo-owned, so a later export may replace its contents.
 _MARKER_NAME = ".ginkgo-report.json"
 
+#: Everything a bundle export writes at its root. Re-rendering removes only
+#: these, so files a user keeps beside a report survive it.
+_BUNDLE_ENTRIES = (_MARKER_NAME, "index.html", "assets", "pages", "logs")
+
+#: Carried in the head of every report page, so a single-file export can tell
+#: its own earlier output from a user's file of the same name.
+_GENERATOR_META = '<meta name="generator" content="ginkgo-report">'
+
 
 @dataclass(frozen=True, kw_only=True)
 class ExportResult:
-    """Summary of a completed export."""
+    """Summary of a completed export.
 
-    bundle_root: Path
+    Parameters
+    ----------
+    index_path : Path
+        The report's HTML page.
+    single_file : bool
+        Whether the report is one self-contained HTML file.
+    omitted_links : tuple[str, ...]
+        Relative paths of files the report links but did not write: the logs
+        a single-file report leaves out.
+    """
+
     index_path: Path
     single_file: bool
+    omitted_links: tuple[str, ...] = ()
 
 
 def export_report(
     *,
     summary: RunSummary,
-    out_dir: Path,
+    out: Path,
     workspace_label: str | None = None,
     policy: SizingPolicy | None = None,
     single_file: bool = False,
     managed_destination: bool = False,
     force: bool = False,
+    measured_runs: Mapping[str, TaskRow] | None = None,
+    include_code: bool = True,
 ) -> ExportResult:
     """Export a bundle or single-file report for one run.
 
@@ -57,26 +82,33 @@ def export_report(
     ----------
     summary : RunSummary
         The run to report on, loaded from the ledger.
-    out_dir : Path
-        Destination directory. For the default bundle, the report is
-        written inside this directory. For ``single_file``, the HTML is
-        written at ``out_dir / "index.html"`` with its stylesheet, fonts
-        and script inlined.
+    out : Path
+        Destination. For the default bundle, the directory the report is
+        written into. For ``single_file``, the HTML file itself; nothing else
+        is written or removed.
     workspace_label : str | None
         Label for the workspace header. Inferred when omitted.
     policy : SizingPolicy | None
         Size caps applied at export time.
     single_file : bool
-        When True, emit one HTML file with CSS, fonts, and script inlined.
+        When True, emit one HTML file with CSS, fonts, and script inlined and
+        the rendered pages embedded. Logs are not, so their links are listed
+        in ``ExportResult.omitted_links``.
     managed_destination : bool
-        Set when ``out_dir`` is a path ginkgo derived rather than one a user
-        chose — the managed ``.ginkgo/reports/<run-id>/`` directory. Such a
-        directory is ginkgo's by construction and is replaced without needing
-        the ownership marker that later exports leave behind.
+        Set when ``out`` is a path ginkgo derived rather than one a user
+        chose, under ``.ginkgo/reports/``. Such a path is ginkgo's by
+        construction and is replaced without needing the ownership marker
+        that later exports leave behind.
     force : bool
-        Replace the contents of a non-empty ``out_dir`` that ginkgo did not
-        write. An empty, missing, or previously exported directory is always
-        replaced; anything else raises ``FileExistsError`` unless this is set.
+        Write into a destination that ginkgo did not write. A missing
+        destination, an empty directory, or a previous export is always
+        written; anything else raises ``FileExistsError`` unless this is set.
+        Either way only the report's own files are replaced.
+    measured_runs : Mapping[str, TaskRow] | None
+        The execution that measured each cache key's result, so a cache hit
+        can show the peak memory of the run that produced it.
+    include_code : bool
+        Whether the static copy of a notebook page shows each cell's code.
 
     Returns
     -------
@@ -85,24 +117,33 @@ def export_report(
     Raises
     ------
     FileExistsError
-        When ``out_dir`` is a user-chosen path holding files that no earlier
+        When ``out`` is a user-chosen path holding something no earlier
         export wrote and ``force`` is False.
     """
     report = build_report_data(
         summary=summary,
         workspace_label=workspace_label,
         policy=policy,
+        measured_runs=measured_runs,
+        include_code=include_code,
     )
-    out_dir = Path(out_dir)
-    _prepare_out_dir(out_dir, managed_destination=managed_destination, force=force)
-    _write_marker(out_dir, report=report)
+    out = Path(out)
 
     if single_file:
-        index_path = _render_single_file(report=report, out_path=out_dir / "index.html")
-    else:
-        index_path = _render_bundle(report=report, out_dir=out_dir)
+        _prepare_out_file(out, managed_destination=managed_destination, force=force)
+        index_path = _render_single_file(report=report, out_path=out)
+        embedded = {card.link_relpath for card in report.pages}
+        omitted = tuple(
+            copy.dest_relpath
+            for copy in report.artifact_copies
+            if copy.dest_relpath not in embedded
+        )
+        return ExportResult(index_path=index_path, single_file=True, omitted_links=omitted)
 
-    return ExportResult(bundle_root=out_dir, index_path=index_path, single_file=single_file)
+    _prepare_out_dir(out, managed_destination=managed_destination, force=force)
+    _write_marker(out, report=report)
+    index_path = _render_bundle(report=report, out_dir=out)
+    return ExportResult(index_path=index_path, single_file=False)
 
 
 # ----- Bundle mode --------------------------------------------------------
@@ -112,11 +153,13 @@ def _render_bundle(*, report: ReportData, out_dir: Path) -> Path:
     """Write a directory bundle at ``out_dir``."""
     _copy_static(out_dir=out_dir)
     _copy_artifacts(report=report, out_dir=out_dir)
+    _write_static_pages(report=report, out_dir=out_dir)
 
     env = _jinja_env()
     template = env.get_template("index.html.j2")
     html = template.render(
         report=report,
+        single_file=False,
         css_href="assets/report.css",
         islands_src="assets/islands.js",
         logo_src="assets/images/ginkgo-leaf.png",
@@ -166,11 +209,18 @@ def _copy_artifacts(*, report: ReportData, out_dir: Path) -> None:
         shutil.copyfile(copy.source, dest)
 
 
+def _write_static_pages(*, report: ReportData, out_dir: Path) -> None:
+    """Write the network-free copy of each marimo page beside the page."""
+    for card in report.pages:
+        if card.static_relpath is not None:
+            (out_dir / card.static_relpath).write_text(card.embed_html, encoding="utf-8")
+
+
 # ----- Single-file mode ---------------------------------------------------
 
 
 def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
-    """Render a single HTML file with its stylesheet, fonts and script inlined."""
+    """Render a single HTML file with its stylesheet, fonts, script and pages inlined."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     css_text = _load_text(_STATIC_DIR / "report.css")
@@ -185,6 +235,7 @@ def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
     template = env.get_template("index.html.j2")
     html = template.render(
         report=report,
+        single_file=True,
         css_href=None,
         islands_src=None,
         logo_src=logo_src,
@@ -245,7 +296,7 @@ def _jinja_env() -> jinja2.Environment:
     """Build the Jinja environment used for rendering."""
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(_TEMPLATES_DIR),
-        autoescape=jinja2.select_autoescape(["html", "htm", "xml"]),
+        autoescape=jinja2.select_autoescape(["html", "htm", "xml", "html.j2"]),
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,
@@ -272,22 +323,51 @@ def _is_report_dir(path: Path) -> bool:
     return (path / _MARKER_NAME).is_file()
 
 
+def _is_report_file(path: Path) -> bool:
+    """Report whether ``path`` is a single-file report an earlier export wrote."""
+    with path.open("rb") as handle:
+        head = handle.read(4096)
+    return _GENERATOR_META.encode("utf-8") in head
+
+
+def _prepare_out_file(out_path: Path, *, managed_destination: bool, force: bool) -> None:
+    """Check that ``out_path`` may be written, refusing to replace others' files.
+
+    Only the file itself is ever written: a single-file report shares its
+    directory with whatever else is there, such as the bundle of the same run.
+    """
+    if out_path.is_dir():
+        raise FileExistsError(
+            f"{out_path} is a directory; a single-file report needs a file path "
+            "such as report.html"
+        )
+    if out_path.exists() and not (force or managed_destination or _is_report_file(out_path)):
+        raise FileExistsError(
+            f"{out_path} exists and is not a ginkgo report; "
+            "refusing to replace a file ginkgo did not write"
+        )
+
+
 def _prepare_out_dir(out_dir: Path, *, managed_destination: bool, force: bool) -> None:
-    """Make ``out_dir`` an empty directory, refusing to destroy others' files.
+    """Ready ``out_dir`` for a bundle, never removing files the report does not write.
 
     A missing or empty directory is used as is. So is a destination ginkgo owns:
     either one it derived itself (``managed_destination``) or one an earlier
     export marked with ``_MARKER_NAME``, so re-rendering a report over itself
-    needs no opt-in. Any other non-empty directory belongs to the user and
-    raises ``FileExistsError`` unless ``force`` is set.
+    needs no opt-in; the earlier report's own entries are removed, so a page
+    or log it carried and this one does not is not left behind. Any other
+    non-empty directory belongs to the user and raises ``FileExistsError``
+    unless ``force`` is set, when the report is written in beside what is
+    there, replacing only files of the same name.
     """
     if out_dir.exists() and any(out_dir.iterdir()):
-        if not (force or managed_destination or _is_report_dir(out_dir)):
+        if managed_destination or _is_report_dir(out_dir):
+            _remove_bundle_entries(out_dir)
+        elif not force:
             raise FileExistsError(
                 f"{out_dir} is not empty and holds no ginkgo report; "
-                "refusing to delete files ginkgo did not write"
+                "refusing to write over files ginkgo did not write"
             )
-        _clean_dir(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -301,10 +381,11 @@ def _write_marker(out_dir: Path, *, report: ReportData) -> None:
     (out_dir / _MARKER_NAME).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _clean_dir(path: Path) -> None:
-    """Remove all contents of ``path`` without removing ``path`` itself."""
-    for entry in path.iterdir():
+def _remove_bundle_entries(path: Path) -> None:
+    """Remove what an earlier bundle export wrote into ``path``, and nothing else."""
+    for name in _BUNDLE_ENTRIES:
+        entry = path / name
         if entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry)
-        else:
+        elif entry.exists() or entry.is_symlink():
             entry.unlink()

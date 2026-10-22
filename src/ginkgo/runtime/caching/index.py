@@ -36,6 +36,13 @@ from ginkgo.store.protocol import ProjectionOp, ProvenanceStore
 __all__ = ["ENTRY_COLUMNS", "CacheEntry", "CacheIndex"]
 
 
+PRIOR_ENTRY_WINDOW = 50
+"""How many of a task's newest entries a cache miss is compared against.
+
+The newest entry of a fanned-out task is usually another branch, so a miss is
+explained against whichever of these differs from it least.
+"""
+
 ENTRY_COLUMNS = (
     "cache_key",
     "function",
@@ -241,6 +248,42 @@ class CacheIndex(DirectIndex):
         row = dict(rows[0])
         row["artifact_ids"] = {str(a["path"]): str(a["artifact_id"]) for a in artifacts}
         return CacheEntry(row)
+
+    def has_entry(self, cache_key: str) -> bool:
+        """Return whether the index holds a row for *cache_key*."""
+        with self._lock:
+            return bool(
+                self._query(
+                    "SELECT 1 FROM cache_entries WHERE cache_key = ? LIMIT 1", (cache_key,)
+                )
+            )
+
+    def recent_entries(
+        self, *, function: str, excluding: str, limit: int = PRIOR_ENTRY_WINDOW
+    ) -> list[CacheEntry]:
+        """Return the newest entries *function* wrote, other than *excluding*.
+
+        Parameters
+        ----------
+        function : str
+            The task's cache name, as entries record it.
+        excluding : str
+            A cache key to pass over, typically the one being explained.
+        limit : int
+            How many entries to return at most.
+
+        Returns
+        -------
+        list[CacheEntry]
+            The entries, newest first, without their artifact ids.
+        """
+        with self._lock:
+            rows = self._query(
+                f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries "  # noqa: S608
+                "WHERE function = ? AND cache_key != ? ORDER BY created_at DESC LIMIT ?",
+                (function, excluding, limit),
+            )
+        return [CacheEntry.from_row(row) for row in rows]
 
     def cache_keys(self) -> list[str]:
         """Return every cache key the index holds, sorted."""

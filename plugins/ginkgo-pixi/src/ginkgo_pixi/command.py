@@ -11,6 +11,8 @@ from pathlib import Path
 from rich.text import Text
 
 from ginkgo.cli.common import console, new_table
+from ginkgo.cli.errors import UsageError
+from ginkgo.errors import GinkgoError
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.envs.manifest import find_pixi_manifest
 from ginkgo_pixi.environment import PixiEnvNotFoundError, PixiRegistry, list_envs
@@ -145,7 +147,7 @@ def list_project_envs(*, registry: PixiRegistry) -> list[EnvEntryRow]:
         for child in sorted(envs_dir.iterdir(), key=lambda path: path.name):
             if not child.is_dir():
                 continue
-            manifest = find_pixi_manifest(child)
+            manifest = find_pixi_manifest(child) or _generated_conda_manifest(child)
             if manifest is None:
                 continue
             resolved_manifest = manifest.resolve()
@@ -165,12 +167,23 @@ def list_project_envs(*, registry: PixiRegistry) -> list[EnvEntryRow]:
     return entries
 
 
+def _generated_conda_manifest(env_dir: Path) -> Path | None:
+    """Return the Pixi manifest generated for a conda env spec in *env_dir*.
+
+    A conda environment's directory holds an ``environment.yml`` rather than
+    a ``pixi.toml``; ginkgo imports it into ``.ginkgo-pixi/`` on first use.
+    """
+    if not any((env_dir / name).is_file() for name in ("environment.yml", "environment.yaml")):
+        return None
+    return env_dir / ".ginkgo-pixi" / "pixi.toml"
+
+
 def _clear_targets(
     *, registry: PixiRegistry, env: str | None, clear_all: bool
 ) -> list[EnvEntryRow]:
     """Resolve the env install directories targeted by ``ginkgo env clear``."""
     if clear_all == (env is not None):
-        raise ValueError("Specify exactly one of <env> or --all.")
+        raise UsageError("Specify exactly one of <env> or --all.")
 
     if clear_all:
         return list_project_envs(registry=registry)
@@ -181,7 +194,7 @@ def _clear_targets(
     except PixiEnvNotFoundError:
         # Reported with the environments each discovery root holds, so "wrong
         # directory" is distinguishable from "env does not exist".
-        raise ValueError(
+        raise GinkgoError(
             f"Pixi environment {env!r} not found. Searched: {_searched_roots(registry=registry)}"
         ) from None
     install_dir = manifest.parent / ".pixi"

@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from dataclasses import dataclass
 
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,9 +15,11 @@ from typing import Any
 import pytest
 
 from ginkgo.cli import main
-from ginkgo_report.command import _resolve_output_dir
+from ginkgo_report.command import _resolve_destination
 from ginkgo.formatting import format_bytes, format_duration
-from ginkgo_report.model import build_report_data
+from ginkgo_report import command as report_command
+from ginkgo_report.model import _memory_label, build_report_data
+from ginkgo_report.notebook_page import static_notebook_page
 from ginkgo_report.render import _MARKER_NAME, export_report
 from ginkgo_report.sizing import SizingPolicy, build_log_tail
 from ginkgo.runtime.events import (
@@ -27,10 +30,12 @@ from ginkgo.runtime.events import (
     TaskFailed,
     TaskPlanned,
     TaskRetrying,
+    TaskSkipped,
     TaskStarted,
 )
 
-from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted
+from ginkgo.runtime.events import EventBus, RunCompleted, RunNotice, RunStarted
+from ginkgo.query import TaskRow
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
@@ -225,8 +230,67 @@ def _make_run(
     return run
 
 
-def _make_page_run(*, tmp_path: Path, run_id: str) -> _Run:
-    """Build a terminal run whose single task rendered a page."""
+def _marimo_page() -> str:
+    """Return a tiny page shaped like ``marimo export html`` output.
+
+    Its cells are drawn by marimo's frontend, loaded from a CDN; the cells'
+    code and outputs travel in the mount config.
+    """
+    notebook = {
+        "cells": [
+            {"id": "a", "code": "mo.md('# Cases')", "config": {"hide_code": False}},
+            {"id": "b", "code": "mo.ui.table(df)", "config": {"hide_code": False}},
+            {"id": "c", "code": "mo.image(fig)", "config": {"hide_code": True}},
+            {"id": "d", "code": "raise ValueError('boom')", "config": {"hide_code": False}},
+        ]
+    }
+    rows = json.dumps(json.dumps([{"_marimo_row_id": 0, "region": "north", "cases": 3}]))
+    table = (
+        "<marimo-ui-element object-id='b-0'><marimo-table data-label='null' "
+        f"data-data='{rows.replace(chr(34), '&quot;')}' data-total-rows='1'>"
+        "</marimo-table></marimo-ui-element>"
+    )
+    session = {
+        "cells": [
+            {
+                "id": "a",
+                "console": [{"name": "stdout", "text": "loaded 3 rows\n", "type": "stream"}],
+                "outputs": [{"type": "data", "data": {"text/markdown": "<h1>Cases</h1>"}}],
+            },
+            {
+                "id": "b",
+                "console": [],
+                "outputs": [{"type": "data", "data": {"text/html": table}}],
+            },
+            {
+                "id": "c",
+                "console": [],
+                "outputs": [
+                    {
+                        "type": "data",
+                        "data": {"text/html": "<img src='data:image/png;base64,AA=='>"},
+                    }
+                ],
+            },
+            {
+                "id": "d",
+                "console": [],
+                "outputs": [{"type": "error", "ename": "ValueError", "evalue": "boom"}],
+            },
+        ]
+    }
+    return (
+        "<!doctype html><html><head>"
+        '<script type="module" src="https://cdn.jsdelivr.net/npm/@marimo-team/frontend/i.js">'
+        "</script></head><body><div id='root'></div><script data-marimo='true'>"
+        'Object.defineProperty(window, "__MARIMO_MOUNT_CONFIG__", {value: Object.freeze({'
+        f'"notebook": {json.dumps(notebook)},\n"session": {json.dumps(session)},\n'
+        "})});</script></body></html>"
+    )
+
+
+def _make_page_run(*, tmp_path: Path, run_id: str, page: str = "<html>rendered</html>") -> _Run:
+    """Build a terminal run whose single task rendered *page*."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# demo\n", encoding="utf-8")
@@ -249,7 +313,7 @@ def _make_page_run(*, tmp_path: Path, run_id: str) -> _Run:
     )
     html_path = ledger.path / "notebooks" / "report.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text("<html>rendered</html>", encoding="utf-8")
+    html_path.write_text(page, encoding="utf-8")
     ledger.bus.emit(
         TaskAnnotated(
             run_id=run_id,
@@ -268,6 +332,16 @@ def _make_page_run(*, tmp_path: Path, run_id: str) -> _Run:
         )
     )
     return _Run(ledger=ledger, tmp_path=tmp_path)
+
+
+def _task_with_usage(resource_usage: dict[str, Any]) -> Any:
+    """Return a stand-in task carrying only *resource_usage*."""
+
+    @dataclass
+    class _Task:
+        resource_usage: dict[str, Any]
+
+    return _Task(resource_usage=resource_usage)
 
 
 # ----- Formatting --------------------------------------------------------
@@ -291,8 +365,8 @@ class TestFormatters:
 
     def test_bytes(self) -> None:
         assert format_bytes(512) == "512 B"
-        assert format_bytes(2048) == "2.0 KB"
-        assert format_bytes(5_368_709_120) == "5.0 GB"
+        assert format_bytes(2048) == "2.0 KiB"
+        assert format_bytes(5_368_709_120) == "5.0 GiB"
 
     def test_bytes_none(self) -> None:
         assert format_bytes(None) == "—"
@@ -410,8 +484,121 @@ class TestReportData:
             summary=summary, generated_at=datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC)
         )
 
-        assert [task.attempts_label for task in report.tasks] == ["3 / 3"]
-        assert [card.attempts_label for card in report.failures] == ["3 / 3"]
+        assert [task.attempts_label for task in report.tasks] == ["3 of 3 allowed"]
+        assert [card.attempts_label for card in report.failures] == ["3 of 3 allowed"]
+
+    def test_a_retried_attempts_error_is_shown_after_the_retry_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        ledger = _Ledger.start(root=tmp_path, run_id="run-retried")
+        ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id="run-retried",
+                task_id="task_0000",
+                node_id=0,
+                task_name="demo.flaky",
+                retries=1,
+            )
+        )
+        for attempt in (1, 2):
+            ledger.bus.emit(
+                TaskStarted(
+                    run_id="run-retried",
+                    task_id="task_0000",
+                    task_name="demo.flaky",
+                    attempt=attempt,
+                )
+            )
+        ledger.bus.emit(
+            TaskRetrying(
+                run_id="run-retried",
+                task_id="task_0000",
+                task_name="demo.flaky",
+                attempt=1,
+                failure={"kind": "user_code_error", "message": "RuntimeError: transient"},
+            )
+        )
+        ledger.bus.emit(
+            TaskCompleted(
+                run_id="run-retried", task_id="task_0000", task_name="demo.flaky", attempt=2
+            )
+        )
+        ledger.finish(status="success")
+        summary = ledger.summary()
+        ledger.close()
+
+        result = export_report(summary=summary, out=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert "Retried attempts" in html
+        assert "RuntimeError: transient" in html
+
+    def test_each_tasks_output_paths_are_listed(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-page")
+
+        report = build_report_data(summary=run.summary())
+
+        (row,) = report.outputs
+        assert (row.label, row.kind) == ("report", "file")
+        assert row.path.endswith("notebooks/report.html")
+
+    def test_the_cache_card_says_what_share_of_tasks_was_reused(self, tmp_path: Path) -> None:
+        executed = build_report_data(
+            summary=_make_run(tmp_path=tmp_path / "a", run_id="run-a", fail=False).summary()
+        )
+        cached = build_report_data(
+            summary=_make_run(
+                tmp_path=tmp_path / "b", run_id="run-b", fail=False, cached=True
+            ).summary()
+        )
+
+        assert executed.summary_cards[2].sub == "every task ran"
+        assert cached.summary_cards[2].sub == "every task reused from the cache"
+
+    def test_declared_memory_is_shown_as_written(self) -> None:
+        task = _task_with_usage(
+            {
+                "declared": {"memory": "64Mi", "memory_gb": 1, "effective_memory_gb": 1},
+                "measured": {"peak_rss_bytes": 2048, "baseline_rss_bytes": 120_000_000},
+            }
+        )
+
+        assert _memory_label(task) == "2.0 KiB / 64Mi"
+
+    def test_an_escalated_budget_is_shown_as_the_budget_the_attempt_ran_against(self) -> None:
+        task = _task_with_usage(
+            {
+                "declared": {"memory": "16Gi", "memory_gb": 16, "effective_memory_gb": 32},
+                "measured": {"peak_rss_bytes": 0},
+            }
+        )
+
+        assert _memory_label(task) == "0 B / 32 GiB"
+
+    def test_a_run_notice_is_shown_in_the_summary(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.ledger.bus.emit(RunNotice(run_id="run-ok", message="Slack notification failed"))
+
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
+
+        assert "<li>Slack notification failed</li>" in result.index_path.read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_run_status_uses_the_cli_vocabulary(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+
+        report = build_report_data(summary=run.summary())
+
+        assert report.status_label == "succeeded"
+        assert report.sidebar_status_label == "succeeded"
+
+    def test_the_workflow_is_shown_relative_to_the_project(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
+
+        report = build_report_data(summary=run.summary())
+
+        assert report.workflow == "workflow.py"
 
     def test_a_cancelled_run_can_be_reported_on(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-cancelled", fail=False)
@@ -494,6 +681,78 @@ class TestReportData:
         assert card.category == "user_code_error"
         assert card.log_tail is not None
         assert card.log_tail.total_lines > 0
+
+    def test_a_failed_run_leads_with_why_it_has_no_result(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+        run.error = "The workflow result depends on second[b], which failed."
+
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert "The workflow result depends on second[b], which failed." in html
+        assert "Run failed:" in html
+
+    def test_a_skipped_task_is_counted_and_says_what_blocked_it(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+        run.ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id="run-fail", task_id="task_0002", node_id=2, task_name="demo.third"
+            )
+        )
+        run.ledger.bus.emit(
+            TaskSkipped(
+                run_id="run-fail",
+                task_id="task_0002",
+                task_name="demo.third",
+                reason="upstream_failed",
+                blocked_by_task_id="task_0001",
+                blocked_by_task_name="demo.second",
+            )
+        )
+
+        report = build_report_data(summary=run.summary())
+
+        assert report.summary_cards[0].sub == "1 ok · 1 fail · 1 skipped"
+        assert report.sidebar_status_label == "failed · 1 failed · 1 skipped"
+        assert [(task.label, task.cause) for task in report.skipped] == [
+            ("third", "blocked by second")
+        ]
+
+    def test_a_traceback_names_project_files_relative_to_the_project(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+        steps = tmp_path.resolve() / "workflow" / "steps.py"
+        (run.ledger.run_dir.logs_dir / "task_0001.stderr.log").write_text(
+            f'  File "{steps}", line 3, in second\n', encoding="utf-8"
+        )
+
+        report = build_report_data(summary=run.summary())
+
+        (card,) = report.failures
+        assert card.log_tail is not None
+        assert card.log_tail.lines == ('  File "workflow/steps.py", line 3, in second',)
+
+    def test_a_cache_hit_shows_the_peak_of_the_run_that_measured_it(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-cached", fail=False, cached=True)
+        measured = TaskRow(
+            run_id="20260101_000000_000000_9e1f3e6c",
+            task_id="task_0000",
+            name="demo.first",
+            display_label=None,
+            status="succeeded",
+            cached=False,
+            cache_key="cache-demo.first",
+            started_at=None,
+            finished_at=None,
+            duration_s=None,
+            attempts=1,
+            peak_rss_bytes=2048,
+        )
+
+        report = build_report_data(
+            summary=run.summary(), measured_runs={"cache-demo.first": measured}
+        )
+
+        assert [task.memory_label for task in report.tasks] == ["2.0 KiB (run 9e1f3e6c)", "—"]
 
     def test_a_rendered_page_gets_a_card_titled_by_its_task(self, tmp_path: Path) -> None:
         run = _make_page_run(tmp_path=tmp_path, run_id="run-page")
@@ -599,7 +858,7 @@ class TestExport:
         run = _Run(ledger=ledger, tmp_path=tmp_path)
 
         out_dir = tmp_path / "out"
-        export_report(summary=run.summary(), out_dir=out_dir)
+        export_report(summary=run.summary(), out=out_dir)
         report = build_report_data(summary=run.summary())
 
         copies = [out_dir / card.link_relpath for card in report.pages]
@@ -611,7 +870,7 @@ class TestExport:
     def test_fan_out_branches_are_named_by_their_labels(self, tmp_path: Path) -> None:
         run = _make_fan_out_run(tmp_path=tmp_path, run_id="run-fan-out")
 
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
         task_names = re.findall(r'<td class="name">([^<]*)</td>', html)
@@ -623,7 +882,7 @@ class TestExport:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "out"
-        result = export_report(summary=run.summary(), out_dir=out_dir)
+        result = export_report(summary=run.summary(), out=out_dir)
 
         assert result.index_path == out_dir / "index.html"
         assert result.index_path.is_file()
@@ -640,19 +899,19 @@ class TestExport:
     def test_failure_section_present_only_when_failures_exist(self, tmp_path: Path) -> None:
         ok_run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         ok_out = tmp_path / "ok-out"
-        export_report(summary=ok_run.summary(), out_dir=ok_out)
+        export_report(summary=ok_run.summary(), out=ok_out)
         assert 'id="failure"' not in ok_out.joinpath("index.html").read_text(encoding="utf-8")
 
         fail_run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
         fail_out = tmp_path / "fail-out"
-        export_report(summary=fail_run.summary(), out_dir=fail_out)
+        export_report(summary=fail_run.summary(), out=fail_out)
         assert 'id="failure"' in fail_out.joinpath("index.html").read_text(encoding="utf-8")
 
     def test_single_file_inlines_css_and_fonts(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "sf"
-        result = export_report(summary=run.summary(), out_dir=out_dir, single_file=True)
+        result = export_report(summary=run.summary(), out=out_dir, single_file=True)
 
         assert result.single_file is True
         html = result.index_path.read_text(encoding="utf-8")
@@ -667,7 +926,7 @@ class TestExport:
         # numerals must run 01..05 with no hole where an omitted section sat.
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
         headings = re.findall(r'<span class="num">(\d+)</span>', html)
@@ -678,7 +937,7 @@ class TestExport:
 
     def test_rendered_section_numerals_include_the_failure_section(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
         assert re.findall(r'<span class="num">(\d+)</span>', html) == [
@@ -693,10 +952,11 @@ class TestExport:
 
     def test_the_pages_section_renders_when_the_run_produced_one(self, tmp_path: Path) -> None:
         run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
-        assert '<span class="num">05</span>Rendered pages' in html
+        assert '<span class="num">05</span>Outputs' in html
+        assert '<span class="num">06</span>Rendered pages' in html
         assert re.findall(r'<span class="num">(\d+)</span>', html) == [
             "01",
             "02",
@@ -704,13 +964,25 @@ class TestExport:
             "04",
             "05",
             "06",
+            "07",
         ]
+
+    def test_recorded_values_are_escaped(self, tmp_path: Path) -> None:
+        ledger = _Ledger.start(root=tmp_path, run_id="run-esc", params={"note": "<b>x</b>"})
+        ledger.finish(status="success")
+
+        result = export_report(summary=ledger.summary(), out=tmp_path / "out")
+        ledger.close()
+
+        html = result.index_path.read_text(encoding="utf-8")
+        assert "&lt;b&gt;x&lt;/b&gt;" in html
+        assert "<b>x</b>" not in html
 
     def test_no_network_references_in_rendered_html(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "out"
-        export_report(summary=run.summary(), out_dir=out_dir)
+        export_report(summary=run.summary(), out=out_dir)
         html = (out_dir / "index.html").read_text(encoding="utf-8")
 
         # Allow HTTP namespace URIs (xmlns) but forbid external asset URLs.
@@ -735,8 +1007,8 @@ class TestExport:
 
         monkeypatch.setattr(model_module, "datetime", _FixedDatetime)
 
-        first = export_report(summary=run.summary(), out_dir=tmp_path / "a")
-        second = export_report(summary=run.summary(), out_dir=tmp_path / "b")
+        first = export_report(summary=run.summary(), out=tmp_path / "a")
+        second = export_report(summary=run.summary(), out=tmp_path / "b")
         assert first.index_path.read_bytes() == second.index_path.read_bytes()
 
     def test_refuses_to_overwrite_foreign_directory_by_default(self, tmp_path: Path) -> None:
@@ -748,35 +1020,47 @@ class TestExport:
         (out_dir / "subdir" / "notes.txt").write_text("more data", encoding="utf-8")
 
         with pytest.raises(FileExistsError):
-            export_report(summary=run.summary(), out_dir=out_dir)
+            export_report(summary=run.summary(), out=out_dir)
 
         assert (out_dir / "my_thesis.txt").read_text(encoding="utf-8") == "important user data"
         assert (out_dir / "subdir" / "notes.txt").is_file()
         assert not (out_dir / "index.html").exists()
 
-    def test_force_replaces_foreign_directory(self, tmp_path: Path) -> None:
+    def test_force_writes_into_a_foreign_directory_and_keeps_its_files(
+        self, tmp_path: Path
+    ) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "precious"
         out_dir.mkdir()
-        (out_dir / "existing.txt").write_text("goodbye", encoding="utf-8")
+        (out_dir / "existing.txt").write_text("keep me", encoding="utf-8")
 
-        result = export_report(summary=run.summary(), out_dir=out_dir, force=True)
+        result = export_report(summary=run.summary(), out=out_dir, force=True)
 
         assert result.index_path.is_file()
-        assert not (out_dir / "existing.txt").exists()
+        assert (out_dir / "existing.txt").read_text(encoding="utf-8") == "keep me"
+
+    def test_rerendering_a_report_keeps_files_kept_beside_it(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        out_dir = tmp_path / "out"
+        export_report(summary=run.summary(), out=out_dir)
+        (out_dir / "notes.txt").write_text("mine", encoding="utf-8")
+
+        export_report(summary=run.summary(), out=out_dir)
+
+        assert (out_dir / "notes.txt").read_text(encoding="utf-8") == "mine"
 
     def test_rerender_into_own_report_dir_needs_no_flag(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "reports" / "run-ok"
 
-        first = export_report(summary=run.summary(), out_dir=out_dir)
+        first = export_report(summary=run.summary(), out=out_dir)
         assert (out_dir / _MARKER_NAME).is_file()
         stale = out_dir / "assets" / "stale-figure.png"
         stale.write_bytes(b"stale")
 
-        second = export_report(summary=run.summary(), out_dir=out_dir)
+        second = export_report(summary=run.summary(), out=out_dir)
 
         assert second.index_path == first.index_path
         assert second.index_path.is_file()
@@ -792,7 +1076,7 @@ class TestExport:
         (out_dir / "index.html").write_text("<html>old report</html>", encoding="utf-8")
         (out_dir / "assets" / "report.css").write_text("/* old */", encoding="utf-8")
 
-        result = export_report(summary=run.summary(), out_dir=out_dir, managed_destination=True)
+        result = export_report(summary=run.summary(), out=out_dir, managed_destination=True)
 
         assert result.index_path.is_file()
         assert "old report" not in result.index_path.read_text(encoding="utf-8")
@@ -804,30 +1088,126 @@ class TestExport:
         out_dir = tmp_path / "empty"
         out_dir.mkdir()
 
-        result = export_report(summary=run.summary(), out_dir=out_dir)
+        result = export_report(summary=run.summary(), out=out_dir)
 
         assert result.index_path.is_file()
 
-    def test_single_file_export_marks_its_directory(self, tmp_path: Path) -> None:
+    def test_single_file_export_writes_only_its_file(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
-        run.summary()
-        out_dir = tmp_path / "sf"
+        out_dir = tmp_path / "shared"
+        out_dir.mkdir()
+        (out_dir / "notes.txt").write_text("keep me", encoding="utf-8")
 
-        export_report(summary=run.summary(), out_dir=out_dir, single_file=True)
-        assert (out_dir / _MARKER_NAME).is_file()
+        export_report(summary=run.summary(), out=out_dir / "report.html", single_file=True)
+        # A second single-file export over its own file is allowed.
+        result = export_report(
+            summary=run.summary(), out=out_dir / "report.html", single_file=True
+        )
 
-        # A second single-file export over the same directory is allowed.
-        result = export_report(summary=run.summary(), out_dir=out_dir, single_file=True)
-        assert result.index_path.is_file()
+        assert result.index_path == out_dir / "report.html"
+        assert sorted(path.name for path in out_dir.iterdir()) == ["notes.txt", "report.html"]
+
+    def test_single_file_export_refuses_to_replace_a_foreign_file(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        target = tmp_path / "page.html"
+        target.write_text("<html>mine</html>", encoding="utf-8")
+
+        with pytest.raises(FileExistsError):
+            export_report(summary=run.summary(), out=target, single_file=True)
+
+        assert target.read_text(encoding="utf-8") == "<html>mine</html>"
+
+    def test_single_file_export_lists_the_links_it_omits(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+
+        result = export_report(summary=run.summary(), out=tmp_path / "r.html", single_file=True)
+
+        assert result.omitted_links == ("logs/task_0001.stderr.log",)
+
+    def test_single_file_embeds_a_marimo_page_as_a_static_copy(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb", page=_marimo_page())
+
+        result = export_report(summary=run.summary(), out=tmp_path / "r.html", single_file=True)
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert result.omitted_links == ()
+        # The page's rows reach the file; marimo's CDN-loaded frontend does not.
+        assert "&lt;td&gt;north&lt;/td&gt;" in html
+        assert 'src="https://' not in html
+        assert "<iframe" in html
+
+    def test_single_file_embeds_another_page_as_it_is(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
+
+        result = export_report(summary=run.summary(), out=tmp_path / "r.html", single_file=True)
+
+        assert 'srcdoc="&lt;html&gt;rendered&lt;/html&gt;"' in result.index_path.read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_bundle_writes_a_static_copy_beside_a_marimo_page(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb", page=_marimo_page())
+
+        export_report(summary=run.summary(), out=tmp_path / "out")
+
+        (static,) = (tmp_path / "out" / "pages").glob("*.static.html")
+        assert "<td>north</td>" in static.read_text(encoding="utf-8")
+
+
+class TestNotebookPage:
+    def test_a_marimo_page_is_drawn_without_its_frontend(self) -> None:
+        page = static_notebook_page(page=_marimo_page(), title="cases")
+
+        assert page is not None
+        assert "cdn.jsdelivr" not in page
+        assert "<h1>Cases</h1>" in page
+        assert "<td>north</td><td>3</td>" in page
+        assert "_marimo_row_id" not in page
+        assert "data:image/png;base64,AA==" in page
+        assert "loaded 3 rows" in page
+        assert "ValueError: boom" in page
+
+    def test_code_can_be_left_out(self) -> None:
+        page = static_notebook_page(page=_marimo_page(), title="cases", include_code=False)
+
+        assert page is not None
+        assert "mo.md(" not in page
+        assert "<h1>Cases</h1>" in page
+
+    def test_hidden_code_stays_hidden(self) -> None:
+        page = static_notebook_page(page=_marimo_page(), title="cases")
+
+        assert page is not None
+        assert "mo.ui.table(df)" in page
+        assert "mo.image(fig)" not in page
+
+    def test_a_page_that_is_not_a_marimo_export_has_no_static_copy(self) -> None:
+        assert static_notebook_page(page="<html>rendered</html>", title="x") is None
 
 
 class TestOutputDir:
     def test_the_default_lands_in_the_workspace_reports_directory(self, tmp_path: Path) -> None:
         run_dir = tmp_path / ".ginkgo" / "runs" / "run-abc"
 
-        resolved = _resolve_output_dir(run_dir=run_dir, out=None, single_file=False)
+        resolved = _resolve_destination(run_dir=run_dir, out=None, single_file=False)
 
         assert resolved == (tmp_path / ".ginkgo" / "reports" / "run-abc").resolve()
+
+    def test_a_single_file_defaults_beside_the_bundle(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / ".ginkgo" / "runs" / "run-abc"
+
+        resolved = _resolve_destination(run_dir=run_dir, out=None, single_file=True)
+
+        assert resolved == (tmp_path / ".ginkgo" / "reports" / "run-abc.html").resolve()
+
+    def test_a_single_file_out_ending_in_html_is_the_file(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / ".ginkgo" / "runs" / "run-abc"
+
+        resolved = _resolve_destination(
+            run_dir=run_dir, out=str(tmp_path / "x.html"), single_file=True
+        )
+
+        assert resolved == (tmp_path / "x.html").resolve()
 
 
 class TestReportCli:
@@ -855,19 +1235,43 @@ class TestReportCli:
         assert not (precious / "index.html").exists()
         assert "--force" in capsys.readouterr().out
 
-    def test_force_replaces_the_out_dir(
+    def test_force_writes_the_report_without_deleting_unrelated_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         target = tmp_path / "target"
         target.mkdir()
-        (target / "stale.txt").write_text("goodbye", encoding="utf-8")
+        (target / "thesis.txt").write_text("important", encoding="utf-8")
 
         assert main(["report", "--out", str(target), "--no-open", "--force"]) == 0
 
         assert (target / "index.html").is_file()
-        assert not (target / "stale.txt").exists()
+        assert (target / "thesis.txt").read_text(encoding="utf-8") == "important"
+
+    def test_a_single_file_out_naming_a_non_html_file_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+
+        assert main(["report", "--single-file", "--out", "x.txt", "--no-open"]) == 1
+
+        assert not (tmp_path / "x.txt").exists()
+        assert ".html" in capsys.readouterr().out
+
+    def test_hide_code_leaves_notebook_code_out_of_the_static_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb", page=_marimo_page())
+        run.summary()
+
+        assert main(["report", "--out", "out", "--hide-code", "--no-open"]) == 0
+
+        (static,) = (tmp_path / "out" / "pages").glob("*.static.html")
+        text = static.read_text(encoding="utf-8")
+        assert "<td>north</td>" in text
+        assert "mo.ui.table(df)" not in text
 
     def test_managed_report_dir_rerenders_without_a_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -878,6 +1282,43 @@ class TestReportCli:
         assert main(["report", "--no-open"]) == 0
         assert main(["report", "--no-open"]) == 0
 
+    def test_a_single_file_report_leaves_the_bundle_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+        bundle = _resolve_destination(run_dir=run.run_dir, out=None, single_file=False)
+
+        assert main(["report", "--no-open"]) == 0
+        assert main(["report", "--single-file", "--no-open"]) == 0
+
+        assert (bundle / "assets" / "report.css").is_file()
+        assert (bundle.parent / "run-ok.html").is_file()
+
+    def test_a_very_large_single_file_report_is_flagged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+        monkeypatch.setattr(report_command, "LARGE_SINGLE_FILE_BYTES", 1)
+
+        assert main(["report", "--single-file", "--no-open"]) == 0
+
+        assert "Export without --single-file" in " ".join(capsys.readouterr().out.split())
+
+    def test_single_file_out_writes_that_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+
+        assert main(["report", "--single-file", "--out", "x.html", "--no-open"]) == 0
+
+        assert (tmp_path / "x.html").is_file()
+
     def test_unmarked_bundle_at_the_default_location_rerenders_without_a_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -885,7 +1326,7 @@ class TestReportCli:
         # re-rendering: the default destination needs no proof of ownership.
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
-        managed_dir = _resolve_output_dir(run_dir=run.run_dir, out=None, single_file=False)
+        managed_dir = _resolve_destination(run_dir=run.run_dir, out=None, single_file=False)
         (managed_dir / "assets").mkdir(parents=True)
         (managed_dir / "index.html").write_text("<html>old report</html>", encoding="utf-8")
         (managed_dir / "assets" / "report.css").write_text("/* old */", encoding="utf-8")

@@ -22,11 +22,10 @@ from ginkgo.runtime.remote_executor import (
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import NodeRun
 
-# Payload keys that name driver-local state: the log queue proxy (not
-# JSON-safe) and paths on the driver's filesystem. A remote worker runs
-# elsewhere, so it writes task output to its own streams and keeps its own
-# transport directory.
-_DRIVER_LOCAL_KEYS = ("log_event_queue", "stdout_path", "stderr_path", "transport_dir")
+# Payload keys that name paths on the driver's filesystem. A remote worker
+# runs elsewhere, so it writes task output to its own streams and keeps its
+# own transport directory.
+_DRIVER_LOCAL_KEYS = ("stdout_path", "stderr_path", "transport_dir")
 
 
 @dataclass(kw_only=True)
@@ -131,12 +130,18 @@ class RemoteDispatchManager:
         """Remove and return the in-flight job handle for a node, if any."""
         return self._handles.pop(node_id, None)
 
+    def cancel(self, *, node_id: int) -> None:
+        """Cancel a node's in-flight remote job on its executor, if it has one."""
+        handle = self._handles.pop(node_id, None)
+        if handle is None:
+            return
+        with suppress(Exception):
+            handle.cancel()
+
     def cancel_all(self) -> None:
         """Cancel all in-flight remote job handles."""
-        for handle in self._handles.values():
-            with suppress(Exception):
-                handle.cancel()
-        self._handles.clear()
+        for node_id in list(self._handles):
+            self.cancel(node_id=node_id)
 
     def capture_logs(self, *, node: NodeRun, handle: RemoteJobHandle) -> None:
         """Fetch pod logs and write them to the standard task log paths."""

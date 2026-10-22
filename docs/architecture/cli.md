@@ -22,7 +22,6 @@ The current CLI supports:
 - `ginkgo cache clear`
 - `ginkgo cache prune`
 - `ginkgo env ls` / `ginkgo env clear` (from the `ginkgo-pixi` plugin)
-- `ginkgo db migrate`
 - `ginkgo db check`
 - `ginkgo db prune`
 - `ginkgo db vacuum`
@@ -52,13 +51,14 @@ is now only about a workflow's static graph.
 `ginkgo history <task-name>` crosses runs instead of staying inside one — one
 row per execution of that task, with status, duration, cache key and attempts,
 resolved through `Query.task_history`. The task is matched on its name, its
-fully qualified name, or the display label of one fan-out branch. Rows are
+qualified name (`TaskDef.name`: `<workflow>.align` for a single-file workflow),
+or the display label of one fan-out branch. `--limit` counts runs. Rows are
 ordered by the *run's* start time: a cached task never started, so its own
 timestamp is null and would sort out of the history it belongs to. A run in
-which the task is still pending and never started, such as one blocked by an
-upstream failure, is left out, because it holds no history of the task; a task
-waiting to retry has started and stays. `--include-pending` lists those runs
-too, and `--json` applies the same filter.
+which the task never started, such as one that skipped it after an upstream
+failure, is left out, because it holds no history of the task; a task waiting
+to retry has started and stays. `--include-unstarted` lists those runs too,
+and `--json` applies the same filter.
 
 `ginkgo query "<sql>"` runs one statement through `Query.sql` and prints a
 table, `--json`, or `--csv`. Three things are refused: a statement that is not a
@@ -136,6 +136,23 @@ plan builder (`runtime/dry_run.py`) is
 read-only: no task runs, no environment is prepared, and no cached output is
 materialised. Large fan-out groups collapse unless `--verbose` is passed.
 
+Three more things keep the preview in step with the run. A kind with
+`eager_source_hash` (script, notebook, subworkflow) folds its directive's
+`source_hash` into the key, and the run gets it by calling the body; the probe
+instead evaluates a body that is a single `return constructor(...)` over a
+whitelisted expression subset (`runtime/static_directive.py`), calls the real
+constructor, which only hashes files, and leaves anything else `[unknown]`.
+An upstream folder output the run would restore before a consumer hashes it
+is swapped, when the working copy has drifted from its artifact, for a
+symlinked copy of the stored tree in a temporary directory, since a folder's
+hash covers contents and relative paths only. And a missed key carries
+`CacheStore.miss_reasons` — the `cache explain` reason codes from diffing its
+components against the task's newest entry — rendered as
+`[will run: source changed]`. Separately from the probe, every task's
+declared resources go through `ConcurrentEvaluator.check_resource_budget`,
+the run's own check, so a task the `--cores`/`--memory`/`--resource` budgets
+can never fit is a `PlanDiagnostic` too.
+
 There is no separate command for a project's validation workflows. `ginkgo test`
 used to discover every `*.py` under `tests/workflows/` (or a legacy `.tests/`)
 and run each one, which duplicated `ginkgo run --dry-run` closely enough that
@@ -174,7 +191,8 @@ the end. `--dry-run` previews what would be removed without touching disk.
 
 `ginkgo cache clear <key>` removes one entry. `ginkgo cache clear --orphans`
 removes every entry directory the database has no row for, which is what a lost
-database leaves behind; `ginkgo db check` lists them first. `ginkgo cache stats`
+database leaves behind; `ginkgo db check` lists them first, and `cache prune` and
+`db check --fix` remove them too. `ginkgo cache stats`
 summarises the index — entries, bytes, hit histogram, never-hit bytes, and the
 functions holding the most — as a table or `--json`.
 
@@ -185,13 +203,19 @@ recorded as materializing two different ways across hosts — and exits 1 if it
 found anything. Like every other read path it opens the database read-only and
 never creates one; an empty workspace reports that and exits 0. A workspace
 with run directories but no database is warned about rather than called empty,
-still at exit 0. Creating the database is `db migrate`'s job.
+still at exit 0. Creating the database is `ginkgo run`'s job.
 
 `runs ls` and `doctor` report that same condition, from the one place that
-computes it (`rundir.runs_without_ledger_warning`): an empty run listing says
-so, and adds the warning when `.ginkgo/runs/` says otherwise; `doctor` reports
-it as a `runs_without_ledger` warning diagnostic, which leaves its exit status
-at 0.
+computes it (`rundir.runs_without_ledger_warning`), which also covers run
+directories older than a database recreated since (the next `ginkgo run` after
+a deletion starts a new one, and warns that it does): a run listing adds the
+warning when `.ginkgo/runs/` holds directories it has no row for; `doctor`
+reports it as a `runs_without_ledger` warning diagnostic, and recorded runs
+whose directories are gone (`rundir.runs_without_directory_warning`) as
+`runs_without_directory`. Both leave its exit status at 0. Everything else
+`db check` fails on reaches doctor through `db.ledger_problems`: a ledger SQLite
+cannot open, or whose integrity check fails, is a `corrupt_ledger` error, and
+cache drift a `ledger_drift` warning that points at `db check --fix`.
 
 `db prune` takes three cutoffs, at least one required.
 `--events-older-than <duration>` deletes the raw events of runs that finished
@@ -204,7 +228,7 @@ not. Durations are the same `30d` / `12h` / `45m` shape `cache prune
 --older-than` takes, parsed by `formatting.parse_duration`.
 
 Every command that prints a table builds it through `cli/common.py`'s
-`stdout_console()` and `new_table()`, so column style and the terminal-versus-pipe
+`console()` and `new_table()`, so column style and the terminal-versus-pipe
 width rule are written down once rather than in each command module.
 
 Three rules keep the live run table from flickering, all in

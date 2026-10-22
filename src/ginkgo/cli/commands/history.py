@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import json
+import math
+import sys
 
 from rich.console import Group
 from rich.table import Table
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli.common import stdout_console, new_table
-from ginkgo.cli.renderers.common import task_base_name
+from ginkgo.cli.common import console, new_table
 from ginkgo.formatting import format_bytes, format_duration, format_timestamp, parse_timestamp
+from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.query import TaskRow
 from ginkgo.resource_history import (
     ResourceHistory,
@@ -28,19 +30,19 @@ _KEY_PREFIX = 12
 
 def command_history(args) -> int:
     """Handle ``ginkgo history`` — how one task has fared over its runs."""
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     limit = getattr(args, "limit", 20)
     resources = getattr(args, "resources", False)
     by_label = getattr(args, "by_label", False)
-    include_pending = getattr(args, "include_pending", False)
+    include_unstarted = getattr(args, "include_unstarted", False)
 
     with query.open(missing_ok=True) as reader:
-        rows = reader.task_history(args.task, limit=limit, include_pending=include_pending)
+        rows = reader.task_history(args.task, limit=limit, include_unstarted=include_unstarted)
         # The distribution covers all of the task's history; --limit bounds the
         # table under it, and a percentile that moved with a display setting
         # would be a percentile of nothing in particular.
         history = (
-            reader.task_resource_history(args.task, include_pending=include_pending)
+            reader.task_history(args.task, limit=None, include_unstarted=include_unstarted)
             if resources
             else []
         )
@@ -111,7 +113,9 @@ def _summary_block(history: ResourceHistory) -> Text:
     declared = history.declared_memory_gb
     if declared:
         text.append(f"  declared {_gib(declared)}")
-        if history.effective_memory_gb and history.effective_memory_gb != declared:
+        # The scheduler budgets whole GiB, so only a budget above the
+        # declaration rounded up is an escalation.
+        if history.effective_memory_gb and history.effective_memory_gb > math.ceil(declared):
             text.append(f"  ·  ran against {_gib(history.effective_memory_gb)} after escalation")
         headroom = history.headroom
         if headroom is not None:
@@ -159,7 +163,7 @@ def _censored_line(history: ResourceHistory) -> str:
 
 
 def _gib(value: float) -> str:
-    """Render a declared memory figure, which is whole GiB in practice."""
+    """Render a memory figure in GiB, such as ``0.5 GiB`` for a ``512Mi`` declaration."""
     return f"{value:g} GiB"
 
 

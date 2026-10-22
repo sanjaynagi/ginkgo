@@ -51,6 +51,7 @@ BUILTIN = Plugin(
             allows_env=True,
             remote_capable=False,
             exit_code_retries=True,
+            user_built_command=True,
             runner=build_shell_runner,
         ),
         TaskKind(
@@ -70,6 +71,7 @@ BUILTIN = Plugin(
             execution_mode="worker",
             allows_env=False,
             remote_capable=False,
+            eager_source_hash=True,
             runner=build_subworkflow_runner,
         ),
     ),

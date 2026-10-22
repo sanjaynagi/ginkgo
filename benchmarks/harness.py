@@ -24,6 +24,7 @@ from benchmarks.bioinfo import prepare_bioinfo_benchmark_dataset
 from ginkgo.cli.commands.init import write_starter_project
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.cli.workspace import discover_default_workflow
+from ginkgo.core.shell import shell_argv
 from ginkgo.envs.container import ContainerBackend
 import ginkgo.query as ginkgo_query
 from ginkgo.runtime.run_summary import RunSummary
@@ -615,33 +616,17 @@ def _mock_docker() -> Iterator[None]:
     def _patched_run_subprocess(
         self_runner: Any,
         *,
-        argv: str | list[str],
-        use_shell: bool,
+        argv: list[str],
         on_stdout: Any = None,
         on_stderr: Any = None,
         **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
-        if isinstance(argv, list) and argv and argv[0] == "docker":
-            completed = subprocess.run(
-                argv[-1],
-                shell=True,
-                text=True,
-                capture_output=True,
-            )
-            if on_stdout is not None and completed.stdout:
-                on_stdout(completed.stdout)
-            if on_stderr is not None and completed.stderr:
-                on_stderr(completed.stderr)
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=completed.returncode,
-                stdout=completed.stdout or "",
-                stderr=completed.stderr or "",
-            )
+        # Run the command the container would have run on the host instead.
+        if argv[0] == "docker":
+            argv = shell_argv(shell="bash", cmd=argv[-1])
         return original_run_subprocess(
             self_runner,
             argv=argv,
-            use_shell=use_shell,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
         )
@@ -665,14 +650,13 @@ def _mock_notebook_tools() -> Iterator[None]:
     def _patched_run_subprocess(
         self_runner: Any,
         *,
-        argv: str | list[str],
-        use_shell: bool,
+        argv: list[str],
         on_stdout: Any = None,
         on_stderr: Any = None,
         **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
-        if isinstance(argv, str) and "marimo export html" in argv:
-            parts = shlex.split(argv)
+        if "marimo export html" in argv[-1]:
+            parts = shlex.split(argv[-1])
             html_path = Path(parts[parts.index("-o") + 1])
             html_path.parent.mkdir(parents=True, exist_ok=True)
             html_path.write_text("<html><body>notebook report</body></html>", encoding="utf-8")
@@ -680,7 +664,6 @@ def _mock_notebook_tools() -> Iterator[None]:
         return original_run_subprocess(
             self_runner,
             argv=argv,
-            use_shell=use_shell,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
         )

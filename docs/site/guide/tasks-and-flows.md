@@ -37,6 +37,11 @@ The flow should primarily:
 
 Heavy transformation logic belongs in task bodies, not in the flow.
 
+Task calls are keyword-only: write `count_reads(sample="a", reads_path=path)`,
+not `count_reads("a", path)`. Each value names the parameter it fills, which is
+what fan-out, partial calls and cache keys are built from; a positional call
+fails with a message saying so.
+
 ## Task Kinds
 
 Ginkgo has five task kinds. They share the same `@task` decorator, typed inputs
@@ -122,6 +127,11 @@ Key points:
 
 - task functions must live at module scope
 - inputs and outputs should be explicit and typed
+- a plain `int`, `float`, `str` or `bool` annotation is checked, on every task
+  kind's arguments and on the return value: `n: int` given `"30"` or `3.0`
+  fails before the task runs. `float` accepts an `int`, `str` a `Path`, and a
+  NumPy scalar satisfies the matching Python annotation (it is passed on
+  unchanged, still a NumPy scalar); `None` is not checked
 - top-level source and statically imported local-helper changes participate in
   cache invalidation
 - return ordinary Python values or supported Ginkgo marker types
@@ -131,6 +141,8 @@ Key points:
 Use `@task(kind="shell")` when the real work is an external command.
 
 ```python
+from shlex import quote
+
 from ginkgo import file, shell, task
 
 
@@ -138,7 +150,7 @@ from ginkgo import file, shell, task
 def fastq_stats(sample_id: str, fastq: file) -> file:
     output = f"results/qc/{sample_id}.stats.tsv"
     return shell(
-        cmd=f"seqkit stats -T {fastq} > {output}",
+        cmd=f"seqkit stats -T {quote(fastq)} > {quote(output)}",
         output=output,
         log=f"logs/stats_{sample_id}.log",
     )
@@ -149,38 +161,55 @@ payload from resolved values, and only that payload is executed in the foreign
 environment. Shell, script, and notebook tasks can all declare an `env`; Python
 tasks cannot.
 
-### Which shell runs the command
+### A background process keeps the task running
 
-Which shell runs `cmd=` depends on where the task runs, and none of them is
-strict by default:
+A shell task finishes when its command has exited *and* everything it
+started has closed the task's output. A process left running in the
+background with `&` inherits stdout and stderr, so the task keeps waiting
+until that process exits too. Redirect a background process's output away
+from the task, or `wait` for it:
 
-- **No `env` (local).** The command runs under `/bin/sh -c`, with no options.
-  That is whatever `/bin/sh` is on your machine (`dash` on Debian and Ubuntu,
-  `bash` in POSIX mode on macOS), so bash-only syntax such as `<(...)` is not
-  available.
-- **A Pixi or Conda `env`.** The command runs under `bash -c`.
-- **A container `env`.** The command runs under the shell named by
-  `[container] shell` in `ginkgo.toml`, `bash` by default (see
-  [Environments](environments.md)).
-
-In every case the shell is started without `errexit` or `pipefail`. In a
-multi-line command a failing line does not stop the ones after it, and in a
-pipeline only the last command's exit status counts, so
-`nosuchtool | cat > out` exits 0, the task is recorded as succeeded, and the
-result is cached. Turn strict mode on at the top of the command:
-
-```python
-from ginkgo import Out, file, shell, task
-
-
-@task(kind="shell")
-def align(reads: file, bam: Out[file]):
-    return shell(cmd=f"set -eo pipefail; bwa mem ref.fa {reads} | samtools sort -o {bam}")
+```bash
+long_running_server > server.log 2>&1 &
 ```
 
-`set -e` is portable. `pipefail` is not part of POSIX `sh`, so a local `/bin/sh`
-that is `dash` may reject `set -o pipefail`; give the task a Pixi or container
-`env`, which run bash, when you need it.
+### Quoting values in the command
+
+`cmd=` is one string, and the shell splits it on whitespace and expands `$`,
+`*`, `;` and quotes in it. Ginkgo cannot quote what the body formats into that
+string, so wrap each interpolated value in `shlex.quote`, as above: a sample
+name like `a;b` or `x*` then reaches the command as one literal word.
+
+A shell task's `file`, `folder` and `Out[...]` paths must also not contain
+spaces; the task fails before it runs if one does. Python tasks have no such
+rule, and neither do script and notebook tasks, whose arguments Ginkgo quotes
+itself.
+
+### Which shell runs the command
+
+Every shell task runs its `cmd=` under strict mode, `-eo pipefail`: the
+command stops at the first line that fails, and a pipeline fails when any
+stage fails, so `nosuchtool | cat > out` fails the task rather than caching an
+empty file. The shell itself depends on where the task runs:
+
+- **No `env` (local), or a Pixi or Conda `env`.** `bash`, so bash syntax such
+  as `<(...)` works.
+- **A container `env`.** The shell named by `[container] shell` in
+  `ginkgo.toml`, `bash` by default (see [Environments](environments.md)). It
+  must accept `-o pipefail`; bash, zsh and Alpine's `sh` do, Debian's `dash`
+  does not.
+
+When a command fails, ginkgo removes whatever it left at its declared output
+paths, so a partial or empty file never reads as a result.
+
+A command that expects a failing step has to say so. `grep` finding no match
+exits 1, and a stage that `head` stops reading early is killed by `SIGPIPE`
+(exit 141), which `pipefail` reports as a failure:
+
+```bash
+grep pattern in.txt > out.txt || true
+(gzip -cd reads.fq.gz || true) | head -n 4000 > sample.fq
+```
 
 ### Declaring outputs with `Out[...]` instead of `output=`
 
@@ -190,12 +219,16 @@ declared paths, and the task's return is inferred too (see
 [Reads vs. Writes](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)):
 
 ```python
+from shlex import quote
+
 from ginkgo import Out, file, shell, task
 
 
 @task(kind="shell")
 def normalize(src: file, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+    return shell(
+        cmd=f"tr a-z A-Z < {quote(src)} > {quote(dest)} && shasum {quote(dest)} > {quote(check)}"
+    )
 
 
 norm = normalize().map(src=[...], dest=[...], check=[...])
@@ -206,6 +239,48 @@ If `output=` is given explicitly alongside `Out[...]` parameters, its paths
 must match the declared `Out[...]` paths exactly (in either order) — a shell
 task with `Out[...]` parameters and no `output=` at all is only an error if
 it declares none.
+
+### Outputs that may not be written
+
+Every declared output must exist once the task finishes, or the task fails.
+When a command writes a file only sometimes, wrap that entry of `output=` in
+`optional()`. A written file is hashed, cached and restored like any other
+output. A missing one resolves to `None`, so annotate that element
+`file | None` and have consumers check for `None`:
+
+```python
+from pathlib import Path
+
+from ginkgo import file, flow, optional, shell, task
+
+
+@task("shell")
+def call_variants(sample: str, emit_warnings: bool) -> tuple[file, file | None]:
+    warn = f" && echo low-depth > results/{sample}.warnings.txt" if emit_warnings else ""
+    return shell(
+        cmd=f"mkdir -p results && echo {sample} > results/{sample}.vcf{warn}",
+        output=(f"results/{sample}.vcf", optional(f"results/{sample}.warnings.txt")),
+    )
+
+
+@task()
+def report(vcf: file, warnings: file | None) -> str:
+    if warnings is None:
+        return f"{Path(vcf).name}: no warnings"
+    return f"{Path(vcf).name}: {Path(warnings).read_text().strip()}"
+
+
+@flow
+def main():
+    calls = call_variants(sample="s1", emit_warnings=False)
+    return report(vcf=calls.output[0], warnings=calls.output[1])
+```
+
+`optional()` works the same way on `script()` and `notebook()` outputs. It
+takes a path string; wrapping a `Path` is an error. It applies only to
+`output=` entries. An `Out[file | None]` parameter does not make its path
+optional: it lets the caller pass `None`, but a path that is passed must
+still be written, whether or not it also appears in `optional()`.
 
 ## Script Tasks
 
@@ -293,7 +368,10 @@ def render_overview(summary_path: file, run_label: str) -> file:
 ```
 
 `notebook()` takes a marimo notebook, which is a `.py` file; any other file is
-refused. The decorated function defines the typed parameter schema; its
+refused. Jupyter `.ipynb` notebooks are not supported: convert one with
+`marimo convert notebook.ipynb -o notebook.py`. `ginkgo doctor` and
+`ginkgo run --dry-run` both report a refused path as an error when the body is
+a plain `return notebook(...)`. The decorated function defines the typed parameter schema; its
 resolved inputs are passed to the notebook as command-line arguments, which the
 notebook reads with `mo.cli_args()`. As with script tasks, underscores become
 hyphens, so `summary_path` is read as `summary-path`:
@@ -329,9 +407,16 @@ if __name__ == "__main__":
 ```
 
 The fallbacks are what you get when you open the notebook by hand with
-`marimo edit`; during a run the task's arguments win. The notebook file is
+`marimo edit`; during a run the task's arguments win. A key the task does not
+pass reads `None`, so a run warns, once per task, about each literal key the
+notebook reads (`args.get("k")`, `args.get_all("k")`, `args["k"]`, `"k" in args`)
+that is not one of the task's arguments, such as `summary_path` written with an
+underscore. `ginkgo doctor` and `ginkgo run --dry-run` give the same warning
+before anything runs, when the body is a plain `return notebook(...)` whose
+path does not depend on an upstream result. The notebook file is
 source material for both execution and cache identity — when the notebook
-changes, the task's cache key changes.
+changes, the task's cache key changes. Nothing else the notebook opens is, so
+pass every file it reads in as an argument.
 
 `mo.cli_args()` collects a repeated option into a list but joins
 space-separated values into one string. So a `list`/`tuple` parameter of
@@ -360,20 +445,66 @@ writes a session file under `__marimo__/` beside the notebook, which you can
 ignore in version control. A
 notebook task can declare an `env`, and then runs `python -m marimo` inside
 that environment, which must therefore provide marimo. Without `env=`, the
-notebook runs under Ginkgo's own interpreter.
+notebook runs under Ginkgo's own interpreter. A notebook environment with
+marimo, pandas and a plotting library is several hundred MB on disk, and the
+first run that needs it installs it and says how long that took; see
+[Where An Environment Is Installed](environments.md#where-an-environment-is-installed).
 
 If a cell fails, the task fails, but marimo still writes the page, showing the
-failing cell; the error message points at it. The rendered page is recorded
+failing cell; the error message points at it. Some mistakes stop marimo before
+any cell runs, such as two cells defining the same name
+(`MultipleDefinitionError`) or a cycle between cells; the task then fails with
+marimo's message in its log. `marimo check notebooks/overview.py` reports
+those in a second, without running the workflow, so it is worth running after
+editing a notebook by hand. The rendered page is recorded
 against the task, listed under "Rendered pages" at the end of the run, and
 linked from the [run report](reports.md).
 
-Inside the run directory the rendered page is stored under
-`.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To
-export it under the task's name, build the report bundle with the
-`ginkgo-report` plugin installed: `ginkgo report --out deliver` writes
-`deliver/pages/<task_key>_<task>.html` next to `deliver/index.html`. See
-[Reports](reports.md). A cache hit does not re-render: the task points at the
-page the producing run rendered.
+The rendered page is a single HTML file, so an image a markdown cell links by
+a relative path (`![plot](results/plot.png)`) does not resolve from where the
+page is stored: embed it instead, with `mo.image(...)` or a `data:` URI, which
+carries the bytes in the page. Pass the image's path in as an argument rather
+than writing it into the notebook, as below. marimo's exported page loads its
+frontend from the `cdn.jsdelivr.net` CDN, so it renders blank without a network
+connection.
+
+### Figures From Another Task
+
+A figure one task draws and another notebook shows is a dependency like any
+other file, so declare it at both ends. The task that draws it declares the
+figure as an `Out[file]` output, and the notebook task that shows it takes the
+figure as a `file` argument:
+
+```python
+@task("notebook")
+def region_report(region: str, cases: file, figure: Out[file]):
+    """Render one region's report and draw its figure."""
+    return notebook(_NOTEBOOKS_DIR / "region.py")
+
+
+@task("notebook")
+def overview(figures: list[file]) -> file:
+    """Render the overview of every region's figure."""
+    return notebook(_NOTEBOOKS_DIR / "overview.py")
+
+
+@flow
+def main():
+    regions = ["north", "south"]
+    reports = region_report(cases="data/cases.csv").map(
+        region=regions,
+        figure=expand("results/figures/{region}.png", region=regions),
+    )
+    return overview(figures=reports.output["figure"])
+```
+
+`region.py` saves its figure to `mo.cli_args().get("figure")`, and
+`overview.py` reads the paths with `mo.cli_args().get_all("figures")` and
+embeds each with `mo.image(path)`. The figures are then content-hashed inputs
+of `overview`, so a redrawn figure re-runs it, and Ginkgo runs `overview` after
+the tasks that draw them. A notebook that builds the path itself
+(`mo.image(f"results/figures/{region}.png")`) gets neither: it is served from
+the cache with the old figure, and may run before the figure exists.
 
 ### Staging A Python Value For A Notebook
 
@@ -462,6 +593,11 @@ def run_child(dataset: file) -> SubWorkflowResult:
 a config file) and `config` (additional `--config` paths). Subworkflows let you
 compose large pipelines from independently runnable units.
 
+The parent task's cache key includes every `.py` file under the child
+workflow's directory and the `config` files, so editing the child, or a module
+beside it, re-runs the parent task. The child's own tasks keep their cache, so
+that re-run repeats only what the edit changed.
+
 ## Fan-Out With `.map()`
 
 A plain task call runs the task once. To run a task across many inputs, split
@@ -490,7 +626,10 @@ length. `.map()` returns an `ExprList` — one task expression per row.
 
 Supplying only some of a task's arguments is what makes this work: the call
 returns a `PartialCall` instead of running, and `.map()` then fills in the rest,
-one set of values per fanned-out call.
+one set of values per fanned-out call. So `.map()` is refused, with a pointer to
+this pattern, on a call that already has every required argument and on the
+bare task (`filter_fastq.map(...)`). A single value such as `.map(min_length=8)`
+is refused too, naming the argument: it belongs on the call, not in `.map()`.
 
 ### `.product_map()` — Every Combination
 
@@ -540,7 +679,9 @@ contradict its contents.
 
 `per_branch()` works with `.map()` too, and its placeholders can also name
 arguments fixed on the task call. A template with no placeholders is an error:
-every branch would receive the same value.
+every branch would receive the same value. So is a placeholder naming an
+argument that holds another task's result, including a selected output such as
+`t.output[1]`: it has no value until that task runs.
 
 Do **not** pass an `expand()` list to `.product_map()`. `expand()` already
 returns one string per combination, so `.product_map()` would treat it as a
@@ -676,13 +817,19 @@ label from the most recent run that recorded each cache entry.
   has a usable value, a branch takes the label of the upstream branch it was
   mapped over, or else the first varying argument's value in full.
 - Chained fan-out joins the labels: `train[sample_a,lr=0.01,epochs=10]`.
-- A call that is neither mapped nor product-mapped has no label and is shown by
-  its task name.
+- Plain calls of one task gathered in one list are labelled as a `.map()`
+  over the arguments whose values differ would be: `[score(name=n) for n in
+  ["ann", "bo"]]` gives `score[ann]` and `score[bo]`, in a flow and in the
+  list a dynamic task returns alike.
+- Any other call that is neither mapped nor product-mapped has no label and is
+  shown by its task name.
 
 When two tasks would be shown under the same name or label, the second and
-later take an ordinal in graph order: `child`, `child[2]`, `child[3]`. This
-covers plain calls, branches whose values do not tell them apart, and the tasks
-a dynamic task returns.
+later take an ordinal in the order they run, each after its upstream calls:
+`child`, `child[2]`, `child[3]`. In a chain such as
+`step(x=step(x=step(x=0)))` the innermost call runs first and is `step`, and the
+one the flow returns is `step[3]`. This covers plain calls outside a shared
+list, and calls or branches whose values do not tell them apart.
 
 A `.map()` label comes from the values, so changing the `.map()` arguments can
 move a label onto different inputs. Compare cache keys before reading two
@@ -699,6 +846,72 @@ Tasks can return:
 - nested containers containing expressions
 
 Returning expressions is how a workflow's graph expands at runtime.
+
+A task that returns expressions completes once they have run, with the value
+they resolve to. Its cache entry keeps the expressions themselves, so when the
+task is a cache hit they are replayed: each returned task is looked up in the
+cache on its own, a child whose code, script, module or inputs changed runs
+again, and an unchanged child is served from the cache with its outputs
+restored. The parent's own key covers only its own code and inputs, so a
+change that reaches only a child, such as an edited script, re-runs the child
+and not the parent.
+
+### Fanning Out Over Data A Task Writes (Checkpoints)
+
+When how many tasks to run depends on data, write the data in one task and
+return one task per piece. The writing task declares the folder as its
+`Out[folder]` and returns the readers of the files inside it:
+
+```python
+from pathlib import Path
+
+from ginkgo import Out, file, flow, folder, task
+
+
+@task()
+def sort_chunk(chunk: file, sorted_path: Out[file]) -> file:
+    lines = sorted(Path(chunk).read_text().splitlines())
+    Path(sorted_path).write_text("\n".join(lines) + "\n")
+    return file(sorted_path)
+
+
+@task()
+def split(table: file, chunks: Out[folder]) -> list[file]:
+    Path(chunks).mkdir(parents=True)
+    for i, block in enumerate(Path(table).read_text().split("\n\n")):
+        (Path(chunks) / f"chunk{i}.txt").write_text(block + "\n")
+    return [
+        sort_chunk(chunk=str(path), sorted_path=f"results/sorted/{path.name}")
+        for path in sorted(Path(chunks).glob("chunk*.txt"))
+    ]
+
+
+@task()
+def combine(parts: list[file], merged: Out[file]) -> file:
+    Path(merged).write_text("".join(Path(part).read_text() for part in parts))
+    return file(merged)
+
+
+@flow
+def main():
+    parts = split(table="data/table.txt", chunks="results/chunks")
+    return combine(parts=parts, merged="results/merged.txt")
+```
+
+Ginkgo removes `results/chunks` before `split` runs, as it does every
+declared `Out[...]` path before any task runs, so the glob sees only the
+chunks this run wrote, never ones left by an earlier run with a different
+table.
+
+The returned tasks read files the parent has already written, so they do not
+wait on it as a producer of `results/chunks`; the parent waits on them, and
+completes with the list of their results. A downstream task such as `combine`
+takes that list like any other `list[file]` input, and runs once every chunk
+is sorted. A later run with an unchanged `table.txt` is a cache hit on
+`split`, whose returned tasks are replayed and hit in turn. A returned task
+that reads a path produced by a task downstream of its parent cannot run
+before that task, which waits on the parent: the expansion fails with a cycle
+error naming the task that returned it.
 
 ### Selecting One Output With `.output[i]`
 
@@ -750,12 +963,16 @@ can select one of them by *name* instead of by position — no need to remember
 which index a shell task's `output=[...]` put it at:
 
 ```python
+from shlex import quote
+
 from ginkgo import Out, file, shell, task
 
 
 @task(kind="shell")
 def normalize(src: file, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+    return shell(
+        cmd=f"tr a-z A-Z < {quote(src)} > {quote(dest)} && shasum {quote(dest)} > {quote(check)}"
+    )
 
 
 norm = normalize().map(src=seed_cards, dest=normalized_paths, check=check_paths)
@@ -769,7 +986,8 @@ task's return is explicit or inferred from its `Out[...]` parameters — and
 creates a dependency edge on the producing node exactly like `.output[i]`
 does, including on an `ExprList`. A name that is not one of the task's
 `Out[...]` parameters is a `KeyError` at flow-construction time, naming the
-task's actual `Out[...]` parameters.
+task's actual `Out[...]` parameters. Reading one as an attribute, as in
+`norm.dest` on a single call, is refused with a pointer to `.output["dest"]`.
 
 ## See Also
 

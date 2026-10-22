@@ -87,10 +87,15 @@ class TaskCacheHit(TaskEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class TaskCacheMiss(TaskEvent):
-    """Cache miss event."""
+    """Cache miss event.
+
+    ``rerun_requested`` marks a miss forced by ``--rerun``: the cache was never
+    consulted, so ``ginkgo cache explain`` says so rather than diffing keys.
+    """
 
     event: str = "task_cache_miss"
     cache_key: str = ""
+    rerun_requested: bool = False
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -256,26 +261,42 @@ class TaskFailed(TaskEvent):
     ignored: bool = False
 
 
+SkipReason = Literal["upstream_failed", "run_stopped", "interrupted"]
+"""Why a task produced no result without failing itself:
+
+- ``upstream_failed``: a task it waits on failed, or was skipped for that.
+- ``run_stopped``: the run stopped, at a failure it does not wait on, before
+  the task started.
+- ``interrupted``: the run was interrupted before the task finished, whether
+  or not it had started.
+"""
+
+
 @dataclass(kw_only=True, frozen=True)
 class TaskSkipped(TaskEvent):
-    """A task that produced no result, because a task it waits on failed.
+    """A task that produced no result without failing itself.
 
-    Terminal, like completion and failure. Most such tasks never started at
-    all. One kind did: a task whose body returned further task expressions
-    runs, then waits for them, so a failure inside its own expansion leaves
-    it started, attempted, and still resultless. Its attempt, timings and
-    logs are the run's record of work that really happened and are left
-    alone; only the outcome is a skip.
+    Terminal, like completion and failure: once a run ends, every task it
+    registered has one of the three. Most skipped tasks never started at all.
+    One kind did: a task whose body returned further task expressions runs,
+    then waits for them, so a failure inside its own expansion leaves it
+    started, attempted, and still resultless. Its attempt, timings and logs
+    are the run's record of work that really happened and are left alone;
+    only the outcome is a skip.
 
-    ``blocked_by_task_id`` / ``blocked_by_task_name`` name the failed task
-    the skip is attributed to, reached through any intervening skips. It is
-    whichever task this one was waiting on, upstream or expanded, so the
-    naming does not claim a direction.
+    ``reason`` says why (see :data:`SkipReason`). ``blocked_by_task_id`` /
+    ``blocked_by_task_name`` name the failed task the skip is attributed to:
+    for ``upstream_failed`` the one this task was waiting on, reached through
+    any intervening skips, upstream or expanded, so the naming does not claim
+    a direction; for ``run_stopped`` the one whose failure stopped the run,
+    when a task's failure did. They are ``None`` when no task caused the skip.
     """
 
     event: str = "task_skipped"
-    blocked_by_task_id: str = ""
-    blocked_by_task_name: str = ""
+    v: int = 2
+    reason: SkipReason = "upstream_failed"
+    blocked_by_task_id: str | None = None
+    blocked_by_task_name: str | None = None
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -353,19 +374,33 @@ class RunResourcesSampled(RunEvent):
 
 
 @dataclass(kw_only=True, frozen=True)
+class RunNotice(RunEvent):
+    """A problem worth keeping with the run that is not any one task's.
+
+    Such as a notification that could not be configured or delivered. It may
+    arrive after ``RunCompleted``: a notification posted at the end of the run
+    fails after the run has finished.
+    """
+
+    event: str = "run_notice"
+    message: str = ""
+
+
+@dataclass(kw_only=True, frozen=True)
 class RunCompleted(RunEvent):
     """Run completion event.
 
     ``cancelled`` is the terminal status of a run an interrupt ended. It is
     kept apart from ``failed`` because the two are different events: one is
     the workflow going wrong, the other is a person changing their mind.
+
+    The event's ``ts`` is when the run finished.
     """
 
     event: str = "run_completed"
-    v: int = 2
+    v: int = 3
     status: Literal["success", "failed", "cancelled"] = "success"
     task_counts: dict[str, int] = field(default_factory=dict)
-    finished_at: str | None = None
     resources: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 

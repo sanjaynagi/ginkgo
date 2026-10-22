@@ -9,10 +9,13 @@ validation independently testable.
 
 from __future__ import annotations
 
+import numbers
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Iterable, get_args, get_origin
+from typing import Any, ClassVar, Iterable, Literal, get_args, get_origin
+
+import numpy as np
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
@@ -22,12 +25,16 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import (
     annotation_includes,
     file,
+    PLAIN_SCALAR_TYPES,
     folder,
+    holds_only_plain_scalars,
     is_path_like,
     is_path_shaped_annotation,
     is_untracked_annotation,
     looks_like_path_string,
     pair_elements_with_annotations,
+    plain_data_strings,
+    rebuild_sequence,
     require_path_value,
     tmp_dir,
     untracked,
@@ -45,7 +52,7 @@ from ginkgo.plugins.registry import plugin_registry
 class EnvNotAllowedError(GinkgoError, TypeError):
     """Raised when a task declares ``env=`` on a kind that cannot take one."""
 
-    diagnostic_code: ClassVar[str] = "INVALID_ENV_KIND"
+    diagnostic_code: ClassVar[str] = "invalid_env_kind"
     diagnostic_suggestion: ClassVar[str] = (
         "Declare the task with a kind that runs in a foreign environment."
     )
@@ -55,7 +62,7 @@ class EnvNotAllowedError(GinkgoError, TypeError):
             f"@task({kind.name!r})" for kind in plugin_registry().all(TaskKind) if kind.allows_env
         )
         super().__init__(
-            f"{task_def.name} uses env {task_def.env!r} but is declared with "
+            f"{task_def.base_name} uses env {task_def.env!r} but is declared with "
             f"kind={task_def.kind!r}, which cannot run in a foreign environment. "
             f"Use one that can: {allowed or 'none is installed'}."
         )
@@ -153,6 +160,10 @@ def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
         ``True`` when the value should be content-hashed as a root path
         input.
     """
+    # The textual test first: it settles most strings without a stat or a
+    # walk over the annotation.
+    if not is_path_like(value) or not looks_like_path_string(str(value)):
+        return False
     if (
         annotation is tmp_dir
         or is_untracked_annotation(annotation)
@@ -162,11 +173,7 @@ def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
     if isinstance(value, (file, folder, tmp_dir, untracked)):
         return False
     text = _resolved_existing_path_text(value)
-    if text is None:
-        return False
-    if not looks_like_path_string(text):
-        return False
-    return os.path.isfile(text)
+    return text is not None and os.path.isfile(text)
 
 
 def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
@@ -197,6 +204,9 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     bool
         ``True`` when the value is a path the cache key does not track.
     """
+    # Most values name nothing on disk, which one stat settles.
+    if _resolved_existing_path_text(value) is None:
+        return False
     if (
         annotation is tmp_dir
         or is_untracked_annotation(annotation)
@@ -204,8 +214,6 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     ):
         return False
     if isinstance(value, (file, folder, tmp_dir, untracked)):
-        return False
-    if _resolved_existing_path_text(value) is None:
         return False
     if is_content_trackable_path_value(annotation=annotation, value=value):
         return False
@@ -243,6 +251,17 @@ def is_untracked_directory_value(*, annotation: Any, value: Any) -> bool:
 #: The tracking labels ``label_input_value`` returns, in the order a mixed
 #: container's label is chosen from (see its docstring).
 INPUT_TRACKING_LABELS = ("path", "output", "value", "version", "content", "untracked")
+
+# Values each scalar annotation accepts. ``float`` takes any real number,
+# ``str`` a path object and ``bool`` a NumPy bool (what a pandas comparison
+# returns), the widenings a caller would expect; ``bool`` is excluded from the
+# numbers below in ``_validate_scalar``.
+_SCALAR_TYPES: dict[type, tuple[type, ...]] = {
+    int: (numbers.Integral,),
+    float: (numbers.Real,),
+    bool: (bool, np.bool_),
+    str: (str, os.PathLike),
+}
 
 
 def _combine_container_labels(labels: list[str]) -> str:
@@ -330,6 +349,24 @@ def label_input_value(
         return "version"
     if isinstance(value, SecretRef):
         return "value"
+    # A long list of numbers is labelled without a call per element.
+    if holds_only_plain_scalars(value) and not annotation_includes(
+        annotation=annotation, expected=tmp_dir
+    ):
+        return "value"
+    # A nested container of plain data is labelled from its distinct strings,
+    # with one existence check each rather than a call per element: under an
+    # annotation binding nothing to a path, a string that does not read as a
+    # path is labelled "path" exactly when it names something on disk.
+    if (
+        type(value) in (list, tuple, dict)
+        and get_origin(annotation) is None
+        and annotation not in (file, folder, tmp_dir)
+        and not is_untracked_annotation(annotation)
+    ):
+        strings = plain_data_strings(value)
+        if strings is not None and not any(looks_like_path_string(text) for text in strings):
+            return "path" if any(os.path.exists(text) for text in strings if text) else "value"
 
     origin = get_origin(annotation)
     if origin in {list, tuple}:
@@ -374,6 +411,52 @@ def label_input_value(
         return "value"
 
     return "value"
+
+
+def _reject_list_for_single_value(*, annotation: Any, label: str) -> None:
+    """Raise ``TypeError`` if *annotation* declares one scalar or path, given a list.
+
+    The caller has already found the value to be a list, tuple or fan-out.
+    """
+    annotation = unwrap_optional_annotation(annotation)[0]
+    if annotation not in _SCALAR_TYPES and annotation not in (file, folder):
+        return
+    raise TypeError(
+        f"{label} is annotated {annotation.__name__!r} but was given a list. "
+        "To run the task once per element, fan out with "
+        "`task(...).map(name=[...])`; to pass the whole list, annotate it "
+        f"`list[{annotation.__name__}]`."
+    )
+
+
+def _is_exact_scalar(*, annotation: Any, value: Any) -> bool:
+    """Return whether *value* is exactly the scalar type *annotation* names.
+
+    Settles each element of a long ``list[int]`` with a type check, where the
+    general check costs an ABC ``isinstance`` and a walk for secrets.
+    """
+    if type(value) is annotation:
+        return annotation in _SCALAR_TYPES
+    return annotation is float and type(value) is int
+
+
+def _validate_scalar(*, annotation: type, value: Any, label: str) -> None:
+    """Raise ``TypeError`` when *value* does not match a scalar annotation.
+
+    A secret or remote reference stands in for a value resolved later, so it
+    is not checked.
+    """
+    if _is_exact_scalar(annotation=annotation, value=value):
+        return
+    if collect_secret_refs(value) or is_remote_path_value(value):
+        return
+    accepted = _SCALAR_TYPES[annotation]
+    if isinstance(value, accepted) and not (isinstance(value, bool) and annotation is not bool):
+        return
+    raise TypeError(
+        f"{label} is annotated {annotation.__name__!r} but was given "
+        f"{type(value).__name__} {value!r}."
+    )
 
 
 def is_remote_path_value(value: Any) -> bool:
@@ -548,10 +631,17 @@ class TaskValidator:
         Execution environment used to validate declared task environments.
     secret_resolver : SecretResolver | None
         Resolver used to verify declared secret references resolve.
+
+    Attributes
+    ----------
+    env_warnings : list[Exception]
+        What env validation found that fails a task only if it has to run (a
+        stopped container daemon), for the caller to report as warnings.
     """
 
     backend: ExecutionEnvironment | None = None
     secret_resolver: SecretResolver | None = None
+    env_warnings: list[Exception] = field(default_factory=list, init=False)
 
     # Static graph validation -------------------------------------------------
 
@@ -572,7 +662,7 @@ class TaskValidator:
             node.task_def.env for node in node_list if node.task_def.env is not None
         }
         if env_names:
-            self.backend.validate_envs(env_names=env_names)
+            self.env_warnings = self.backend.validate_envs(env_names=env_names)
 
     def validate_declared_secrets(self, *, nodes: Iterable[Any]) -> None:
         """Raise if any statically declared secrets are missing."""
@@ -619,7 +709,7 @@ class TaskValidator:
                 continue
             self.validate_process_safe_value(
                 value=value,
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
             )
 
     def validate_static_inputs(
@@ -636,11 +726,18 @@ class TaskValidator:
             here, but not when its path is one of these — a real run would
             produce it first, since an edge was inferred for it (#280).
         """
+        self.validate_command_paths(task_def=node.task_def, args=node.expr.args)
         for name, parameter in node.task_def.signature.parameters.items():
             annotation = node.task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir or name not in node.expr.args:
                 continue
             value = node.expr.args[name]
+            # A fan-out result is dynamic, so it is checked here, before the
+            # skip below, when it lands on a parameter declared to hold one value.
+            if isinstance(value, ExprList | list | tuple):
+                _reject_list_for_single_value(
+                    annotation=annotation, label=f"{node.task_def.base_name}.{name}"
+                )
             if contains_dynamic_expression(value):
                 continue
             if collect_secret_refs(value):
@@ -649,16 +746,57 @@ class TaskValidator:
                 self.validate_output_argument(
                     annotation=annotation,
                     value=value,
-                    label=f"{node.task_def.name}.{name}",
+                    label=f"{node.task_def.base_name}.{name}",
                 )
                 continue
             self.validate_annotated_value(
                 annotation=annotation,
                 value=value,
-                label=f"{node.task_def.name}.{name}",
+                label=f"{node.task_def.base_name}.{name}",
                 execution_mode=task_kind(node.task_def).execution_mode,
                 produced_paths=produced_paths,
+                is_input=True,
             )
+
+    def validate_command_paths(self, *, task_def: TaskDef, args: dict[str, Any]) -> None:
+        """Reject a path with a space in a task whose body writes its command.
+
+        A ``shell(cmd=...)`` command is a string the shell splits on
+        whitespace, and ginkgo cannot quote the paths a body formats into
+        it, so a ``file``, ``folder`` or ``Out[...]`` path containing a space
+        would reach the command as two words. Other kinds receive their
+        paths as Python values or as arguments ginkgo quotes itself, and may
+        use any path.
+
+        Parameters
+        ----------
+        task_def : TaskDef
+            The task whose kind decides whether the rule applies.
+        args : dict[str, Any]
+            The task's arguments; a value not resolved yet is skipped.
+
+        Raises
+        ------
+        ValueError
+            If the kind builds its own command and a path contains a space.
+        """
+        if not task_kind(task_def).user_built_command:
+            return
+        for name, value in args.items():
+            annotation = task_def.type_hints.get(name)
+            if name not in task_def.output_params and not is_path_shaped_annotation(annotation):
+                continue
+            if contains_dynamic_expression(value) or collect_secret_refs(value):
+                continue
+            entries: list[tuple[str, str, str]] = []
+            _collect_output_paths(annotation=annotation, value=value, name=name, entries=entries)
+            for _name, path, _kind in entries:
+                if " " in path:
+                    raise ValueError(
+                        f"{task_def.base_name}.{name} must not contain spaces: {path!r}. "
+                        f"A {task_def.kind} task's command is a string the shell splits "
+                        "on whitespace; rename the path, or use a python or script task."
+                    )
 
     def validate_task_importable(self, *, task_def: TaskDef) -> None:
         """Require Python tasks to be plain top-level importable functions."""
@@ -668,13 +806,13 @@ class TaskValidator:
         fn = task_def.fn
         if fn.__qualname__ != fn.__name__:
             raise TypeError(
-                f"{task_def.name} is not a top-level function. "
+                f"{task_def.base_name} is not a top-level function. "
                 "Define tasks at module scope for process execution."
             )
 
         if fn.__closure__:
             raise TypeError(
-                f"{task_def.name} closes over local state. "
+                f"{task_def.base_name} closes over local state. "
                 "Pass required values as task arguments instead."
             )
 
@@ -682,13 +820,15 @@ class TaskValidator:
         imported = getattr(module, fn.__name__, None)
         if imported is not fn and getattr(imported, "fn", None) is not fn:
             raise TypeError(
-                f"{task_def.name} is not importable by module path. "
+                f"{task_def.base_name} is not importable by module path. "
                 "Define tasks as plain module-level functions."
             )
 
     def validate_process_safe_value(self, *, value: Any, label: str) -> None:
         """Reject values that are not supported across process and cache boundaries."""
         if isinstance(value, (Expr, ExprList, ExecutionDirective, SecretRef)):
+            return
+        if plain_data_strings(value) is not None:
             return
         if collect_secret_refs(value):
             return
@@ -704,6 +844,7 @@ class TaskValidator:
         resolved_args: dict[str, Any],
     ) -> None:
         """Validate resolved task inputs against Ginkgo path types."""
+        self.validate_command_paths(task_def=task_def, args=resolved_args)
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir or name not in resolved_args:
@@ -712,14 +853,19 @@ class TaskValidator:
                 self.validate_output_argument(
                     annotation=annotation,
                     value=resolved_args[name],
-                    label=f"{task_def.name}.{name}",
+                    label=f"{task_def.base_name}.{name}",
                 )
                 continue
+            if isinstance(resolved_args[name], list | tuple):
+                _reject_list_for_single_value(
+                    annotation=annotation, label=f"{task_def.name}.{name}"
+                )
             self.validate_annotated_value(
                 annotation=annotation,
                 value=resolved_args[name],
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
                 execution_mode=task_kind(task_def).execution_mode,
+                is_input=True,
             )
 
     def validate_output_argument(
@@ -781,9 +927,6 @@ class TaskValidator:
             )
 
         path_str = str(value)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
-
         is_file_kind = annotation_includes(annotation=annotation, expected=file)
         path_obj = Path(path_str)
         if not path_obj.exists():
@@ -814,19 +957,50 @@ class TaskValidator:
         for name, path, kind in declared_output_paths(
             task_def=task_def, resolved_args=resolved_args
         ):
-            if not output_path_matches_kind(path=path, kind=kind):
-                raise DeclaredOutputNotWrittenError(
-                    f"{task_def.name}.{name} is declared `Out[{kind}]` but "
-                    f"{path!r} was not written."
+            if output_path_matches_kind(path=path, kind=kind):
+                continue
+            # Something of the other kind at the path is a different mistake
+            # from nothing at all: the task wrote, just not what it declared.
+            found = Path(path)
+            written = "a directory" if found.is_dir() else "a file" if found.exists() else None
+            if written is None:
+                detail = "was not written."
+            else:
+                detail = f"is {written}; `Out[{kind}]` needs " + (
+                    "a regular file there." if kind == "file" else "a directory there."
                 )
+            raise DeclaredOutputNotWrittenError(
+                f"{task_def.base_name}.{name} is declared `Out[{kind}]` but {path!r} {detail}"
+            )
 
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
-        """Validate a task return value when it uses a Ginkgo path type."""
+        """Validate a task return value against its path or scalar annotation."""
         annotation = task_def.effective_return_annotation
+        inner, admits_none = unwrap_optional_annotation(annotation)
+        if (
+            value is None
+            and task_kind(task_def).directive is None
+            and not admits_none
+            and is_path_shaped_annotation(inner)
+        ):
+            # A Python task whose body has no return statement: `optional(...)`
+            # belongs to driver kinds, so the generic advice below would mislead.
+            outputs = task_def.output_params_in_order
+            fix = (
+                f"Return the output it wrote (`return {outputs[0]}`), or drop the return "
+                "annotation so the task returns its Out[...] parameters itself."
+                if outputs
+                else "Return the path it wrote, or annotate the return `... | None` if "
+                "returning nothing is expected."
+            )
+            raise TypeError(
+                f"{task_def.base_name} returned None, but its return annotation does not "
+                f"admit None. {fix}"
+            )
         self.validate_annotated_value(
             annotation=annotation,
             value=value,
-            label=f"{task_def.name}.return",
+            label=f"{task_def.base_name}.return",
             execution_mode=task_kind(task_def).execution_mode,
         )
 
@@ -838,6 +1012,7 @@ class TaskValidator:
         label: str,
         execution_mode: str | None = None,
         produced_paths: frozenset[str] | set[str] = frozenset(),
+        is_input: bool = False,
     ) -> None:
         """Validate a value for direct and container-wrapped Ginkgo types.
 
@@ -847,6 +1022,8 @@ class TaskValidator:
         existence check only (see :meth:`validate_static_inputs`); real
         execution never passes it, since by dispatch time the producer has
         actually run and the path either exists or the task fails honestly.
+        ``is_input`` marks a task argument rather than a return value, so a
+        missing path can suggest ``Out[...]`` for a path the task writes.
         """
         if annotation in {None, Any}:
             return
@@ -869,16 +1046,31 @@ class TaskValidator:
         if origin in {list, tuple}:
             paired = pair_elements_with_annotations(annotation=annotation, value=value)
             for index, (item_annotation, item) in enumerate(paired):
+                if _is_exact_scalar(annotation=item_annotation, value=item):
+                    continue
                 self.validate_annotated_value(
                     annotation=item_annotation,
                     value=item,
                     label=f"{label}[{index}]",
                     execution_mode=execution_mode,
                     produced_paths=produced_paths,
+                    is_input=is_input,
                 )
             return
 
+        if annotation in _SCALAR_TYPES and isinstance(value, list | tuple):
+            _reject_list_for_single_value(annotation=annotation, label=label)
+
         if isinstance(value, list | tuple):
+            # Each element is checked against this same annotation, which
+            # only checks a leaf when it is a path, scratch or scalar type:
+            # under any other, a long list has nothing to check.
+            if not (
+                annotation in {file, folder, tmp_dir}
+                or annotation in _SCALAR_TYPES
+                or is_path_annotation(annotation)
+            ):
+                return
             for index, item in enumerate(value):
                 self.validate_annotated_value(
                     annotation=annotation,
@@ -886,6 +1078,7 @@ class TaskValidator:
                     label=f"{label}[{index}]",
                     execution_mode=execution_mode,
                     produced_paths=produced_paths,
+                    is_input=is_input,
                 )
             return
 
@@ -899,7 +1092,7 @@ class TaskValidator:
                 execution_mode=execution_mode,
             )
             if _normalized(value) not in produced_paths:
-                self._validate_file_path(path=value, label=label)
+                self._validate_path(path=value, label=label, kind="file", is_input=is_input)
             return
 
         if annotation is folder:
@@ -912,35 +1105,41 @@ class TaskValidator:
                 execution_mode=execution_mode,
             )
             if _normalized(value) not in produced_paths:
-                self._validate_folder_path(path=value, label=label)
+                self._validate_path(path=value, label=label, kind="folder", is_input=is_input)
             return
 
         if annotation is tmp_dir:
             self._validate_tmp_dir_path(path=value, label=label)
             return
 
+        if annotation in _SCALAR_TYPES:
+            _validate_scalar(annotation=annotation, value=value, label=label)
+            return
+
         if is_path_annotation(annotation):
             if not Path(value).exists():
                 raise FileNotFoundError(f"{label} must exist: {str(value)!r}")
 
-    def _validate_file_path(self, *, path: Any, label: str) -> None:
-        """Validate a concrete file path argument or return value."""
+    def _validate_path(
+        self, *, path: Any, label: str, kind: Literal["file", "folder"], is_input: bool
+    ) -> None:
+        """Validate a concrete file or folder path argument or return value.
+
+        A missing input may be one the task means to write, which ``file``
+        and ``folder`` cannot express, so the error then names ``Out[...]``.
+        """
         path_str = str(path)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
-
-        if not Path(path_str).is_file():
-            raise FileNotFoundError(f"{label} must exist and be a file: {path_str!r}")
-
-    def _validate_folder_path(self, *, path: Any, label: str) -> None:
-        """Validate a concrete folder path argument or return value."""
-        path_str = str(path)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
-
         path_obj = Path(path_str)
-        if not path_obj.exists() or not path_obj.is_dir():
-            raise FileNotFoundError(f"{label} must exist and be a directory: {path_str!r}")
+        if path_obj.is_file() if kind == "file" else path_obj.is_dir():
+            return
+        noun = "a file" if kind == "file" else "a directory"
+        message = f"{label} must exist and be {noun}: {path_str!r}"
+        if is_input:
+            message += (
+                f". If the task writes this path, annotate the parameter `Out[{kind}]`; "
+                f"`{kind}` declares a path the task reads."
+            )
+        raise FileNotFoundError(message)
 
     def _validate_tmp_dir_path(self, *, path: Any, label: str) -> None:
         """Validate an auto-created scratch directory."""
@@ -956,8 +1155,12 @@ class TaskValidator:
         return self.coerce_annotated_value(annotation=annotation, value=value)
 
     def coerce_annotated_value(self, *, annotation: Any, value: Any) -> Any:
-        """Coerce values recursively for direct and container-wrapped path types."""
-        if annotation in {None, Any}:
+        """Coerce values recursively for direct and container-wrapped path types.
+
+        A rewritten ``list`` or ``tuple`` keeps its own type, so a
+        ``namedtuple`` is not turned into the builtin the codec would not.
+        """
+        if annotation in {None, Any} or type(value) in PLAIN_SCALAR_TYPES:
             return value
 
         # An absent optional output stays None; a present one coerces against
@@ -967,43 +1170,24 @@ class TaskValidator:
             return None
 
         origin = get_origin(annotation)
-        if origin is list and isinstance(value, list):
-            inner_annotations = get_args(annotation)
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            return [
-                self.coerce_annotated_value(annotation=inner_annotation, value=item)
-                for item in value
-            ]
-
-        if origin is tuple and isinstance(value, tuple):
-            inner_annotations = get_args(annotation)
-            if len(inner_annotations) == 2 and inner_annotations[1] is Ellipsis:
-                inner_annotation = inner_annotations[0]
-                return tuple(
-                    self.coerce_annotated_value(annotation=inner_annotation, value=item)
-                    for item in value
-                )
-
-            if inner_annotations and len(inner_annotations) == len(value):
-                return tuple(
+        if origin in {list, tuple} and isinstance(value, (list, tuple)):
+            return rebuild_sequence(
+                like=value,
+                items=(
                     self.coerce_annotated_value(annotation=item_annotation, value=item)
-                    for item_annotation, item in zip(inner_annotations, value, strict=True)
-                )
-
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            return tuple(
-                self.coerce_annotated_value(annotation=inner_annotation, value=item)
-                for item in value
+                    for item_annotation, item in pair_elements_with_annotations(
+                        annotation=annotation, value=value
+                    )
+                ),
             )
 
-        if isinstance(value, list):
-            return [
-                self.coerce_annotated_value(annotation=annotation, value=item) for item in value
-            ]
-
-        if isinstance(value, tuple):
-            return tuple(
-                self.coerce_annotated_value(annotation=annotation, value=item) for item in value
+        if isinstance(value, (list, tuple)):
+            return rebuild_sequence(
+                like=value,
+                items=(
+                    self.coerce_annotated_value(annotation=annotation, value=item)
+                    for item in value
+                ),
             )
 
         if annotation in {file, folder, tmp_dir} and isinstance(value, str):

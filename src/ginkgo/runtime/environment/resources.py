@@ -335,6 +335,11 @@ class SubprocessUsageSampler:
     :meth:`stop`. Descendants that exit between samples stop contributing,
     so both numbers are lower bounds — good enough for right-sizing
     declarations, not accounting.
+
+    The first sample is taken one interval after :meth:`start`: a full
+    ``ps`` costs tens of milliseconds, which a command that finishes sooner
+    would otherwise pay on every run, for a measurement too short to size
+    anything by.
     """
 
     def __init__(self, *, root_pid: int, interval_seconds: float = 0.25) -> None:
@@ -347,8 +352,7 @@ class SubprocessUsageSampler:
         self._sampled = False
 
     def start(self) -> None:
-        """Take a first sample and begin sampling on a daemon thread."""
-        self._sample_once()
+        """Begin sampling on a daemon thread, the first sample one interval in."""
         self._thread = Thread(target=self._run, name="ginkgo-usage-sampler", daemon=True)
         self._thread.start()
 

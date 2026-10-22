@@ -107,7 +107,7 @@ def collect_access_diagnostics(
     if not Path("/dev/fuse").exists():
         diagnostics.append(
             AccessDiagnostic(
-                code="FUSE_DEVICE_MISSING",
+                code="fuse_device_missing",
                 severity="warning",
                 message="/dev/fuse is not present on this host.",
                 suggestion=(
@@ -125,7 +125,7 @@ def collect_access_diagnostics(
         if isinstance(executor_config, dict) and not executor_config.get("fuse_image"):
             diagnostics.append(
                 AccessDiagnostic(
-                    code="FUSE_IMAGE_NOT_CONFIGURED",
+                    code="fuse_image_not_configured",
                     severity="warning",
                     message=(
                         f"Remote streaming is enabled but no fuse_image is "
@@ -173,7 +173,7 @@ def _probe_driver_binaries() -> list[AccessDiagnostic]:
     if missing:
         results.append(
             AccessDiagnostic(
-                code="FUSE_DRIVERS_NOT_ON_HOST",
+                code="fuse_drivers_not_on_host",
                 severity="info",
                 message=(
                     "These FUSE drivers are not on the driver host's PATH: " + ", ".join(missing)

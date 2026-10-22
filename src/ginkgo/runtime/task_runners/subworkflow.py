@@ -22,7 +22,7 @@ import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 import yaml
 
@@ -35,6 +35,7 @@ from ginkgo.runtime.task_runners.shell import ShellRunner
 from ginkgo.store.sqlite import open_store
 
 if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
     from ginkgo.plugins.api import RunnerContext
 
 
@@ -108,7 +109,7 @@ class SubworkflowRunner:
     def run(
         self,
         *,
-        node: Any,
+        node: TaskInvocation,
         directive: SubWorkflowDirective,
     ) -> SubWorkflowResult:
         """Dispatch a child ``ginkgo run`` subprocess for one sub-workflow."""
@@ -129,7 +130,9 @@ class SubworkflowRunner:
         tmp_dir = Path(tempfile.mkdtemp(prefix="ginkgo-subworkflow-"))
         tmp_params_path: Path | None = None
         try:
-            config_paths: list[str] = []
+            # Later files layer over earlier ones, so the parent's params go
+            # last and win over anything the forwarded config files set.
+            config_paths: list[str] = list(directive.config)
             if directive.params:
                 tmp_params_path = tmp_dir / "child-parameters.yaml"
                 # Written as a [params] table so the child resolves them through
@@ -144,7 +147,6 @@ class SubworkflowRunner:
                     encoding="utf-8",
                 )
                 config_paths.append(str(tmp_params_path))
-            config_paths.extend(directive.config)
 
             parts = [
                 shlex.quote(self.python_executable),
@@ -178,7 +180,7 @@ class SubworkflowRunner:
 
             if completed.returncode != 0:
                 raise SubWorkflowError(
-                    task_name=node.task_def.name,
+                    task_name=node.task_def.base_name,
                     path=str(workflow_path),
                     exit_code=completed.returncode,
                     child_run_id=child_run_id,
@@ -186,7 +188,7 @@ class SubworkflowRunner:
 
             if child_run_id is None:
                 raise RuntimeError(
-                    f"Sub-workflow {node.task_def.name} ({workflow_path!r}) exited "
+                    f"Sub-workflow {node.task_def.base_name} ({workflow_path!r}) exited "
                     f"successfully but recorded no run in {self.db_path}."
                 )
 

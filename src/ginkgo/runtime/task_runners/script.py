@@ -21,11 +21,13 @@ from ginkgo.runtime.task_runners.shell import (
     declared_output_mounts,
     iter_output_values,
     remove_declared_output,
+    remove_failed_outputs,
     render_cli_tokens,
     resolve_declared_output,
 )
 
 if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
     from ginkgo.plugins.api import RunnerContext
 
 
@@ -33,7 +35,7 @@ if TYPE_CHECKING:
 class ScriptRunner(DriverTaskRunner):
     """Execute script driver tasks."""
 
-    def run(self, *, node: Any, directive: ScriptDirective) -> Any:
+    def run(self, *, node: TaskInvocation, directive: ScriptDirective) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
         assert node.resolved_args is not None
@@ -68,7 +70,7 @@ class ScriptRunner(DriverTaskRunner):
                 render_cli_tokens(
                     option=option,
                     value=value,
-                    label=f"{node.task_def.name}.{name}",
+                    label=f"{node.task_def.base_name}.{name}",
                     # This runner *is* the script boundary: every argument
                     # crosses into the script process here.
                     task_kind="script",
@@ -84,8 +86,10 @@ class ScriptRunner(DriverTaskRunner):
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
+            remove_failed_outputs(output)
             raise ShellTaskError(
-                task_name=node.task_def.name,
+                task_kind="script",
+                task_name=node.display_label or node.task_def.base_name,
                 cmd=redact_text(text=cmd, secret_values=node.secret_values),
                 exit_code=completed.returncode,
                 output=combined_output,
@@ -98,7 +102,7 @@ class ScriptRunner(DriverTaskRunner):
         if output is None:
             return None
         return self._validate_and_return_output(
-            task_name=node.task_def.name,
+            task_name=node.task_def.base_name,
             task_def=node.task_def,
             output=output,
         )

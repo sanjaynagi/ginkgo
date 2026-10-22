@@ -1,5 +1,8 @@
 {% from "_section.html.j2" import section_heading %}
 {{ section_heading(report, "summary") -}}
+{% if report.outcome %}
+<p class="outcome {{ report.status_tone }}"><strong>Run {{ report.status_label }}:</strong> {{ report.outcome }}</p>
+{% endif %}
 <div class="stats">
   {% for card in report.summary_cards %}
   <div class="stat {{ card.tone }}">
@@ -9,3 +12,10 @@
   </div>
   {% endfor %}
 </div>
+{% if report.notices %}
+<ul class="notices">
+  {% for notice in report.notices %}
+  <li>{{ notice }}</li>
+  {% endfor %}
+</ul>
+{% endif %}

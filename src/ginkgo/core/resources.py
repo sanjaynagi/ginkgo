@@ -42,10 +42,40 @@ def parse_memory(value: str | None) -> int:
     Raises
     ------
     ValueError
-        If the string cannot be parsed.
+        If *value* is not a string, or cannot be parsed.
     """
     if value is None:
         return 0
+    gib = memory_gib(value)
+    return max(1, math.ceil(gib)) if gib > 0 else 0
+
+
+def memory_gib(value: str) -> float:
+    """Return a Kubernetes-style memory string in GiB, exactly as written.
+
+    The scheduler budgets in whole GiB (:func:`parse_memory`); this is the
+    declaration itself, so ``"512Mi"`` is ``0.5`` rather than ``1``.
+
+    Parameters
+    ----------
+    value : str
+        Memory specification (e.g. ``"4Gi"``, ``"512Mi"``).
+
+    Returns
+    -------
+    float
+        Memory in GiB.
+
+    Raises
+    ------
+    ValueError
+        If *value* is not a string, or cannot be parsed.
+    """
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Invalid memory specification {value!r}: memory must be a string with a "
+            f"unit, e.g. memory='{value}Gi' for {value} GiB."
+        )
 
     match = _MEMORY_PATTERN.match(value.strip())
     if match is None:
@@ -53,11 +83,7 @@ def parse_memory(value: str | None) -> int:
             f"Invalid memory specification {value!r}. "
             "Use Kubernetes resource notation, e.g. '4Gi', '512Mi', '8G'."
         )
-
-    amount = float(match.group(1))
-    unit = match.group(2)
-    gib = amount * _MEMORY_MULTIPLIERS[unit]
-    return max(1, math.ceil(gib)) if gib > 0 else 0
+    return float(match.group(1)) * _MEMORY_MULTIPLIERS[match.group(2)]
 
 
 @dataclass(frozen=True)

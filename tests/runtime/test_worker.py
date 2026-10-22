@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 from ginkgo.runtime.worker import _RedactingWriter, _task_log_context, _traceback_from_task
@@ -97,3 +99,20 @@ def test_a_traceback_not_from_the_task_keeps_every_frame() -> None:
 
     assert _traceback_from_task(exc=exc, fn=None) is exc.__traceback__
     assert _traceback_from_task(exc=exc, fn=_user_task) is exc.__traceback__
+
+
+def test_a_worker_starts_without_importing_numpy_or_pandas() -> None:
+    # A fresh process, as a spawned worker is: what it imports to load the
+    # worker and a workflow's public API is charged to its first task.
+    script = (
+        "import sys\n"
+        "import ginkgo.runtime.worker\n"
+        "from ginkgo import Out, file, flow, folder, shell, task\n"
+        "print(sorted({'numpy', 'pandas'} & set(sys.modules)))\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script], check=True, text=True, capture_output=True
+    )
+
+    assert result.stdout.strip() == "[]"

@@ -9,7 +9,13 @@ import sys
 
 from rich.markup import escape
 
-from ginkgo.plugins.api import EnvironmentContext
+from ginkgo.plugins.api import (
+    EnvironmentContext,
+    EventSubscriberCheckContext,
+    EventSubscriberType,
+)
+from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
+from ginkgo.cli.commands.db import ledger_problems
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
@@ -17,9 +23,22 @@ from ginkgo.envs.interpreter import EnvironmentFinding, detect_import_problem
 from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnostics
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.diagnostics import WorkflowDiagnostic, collect_workflow_diagnostics
-from ginkgo.runtime.environment.secrets import build_secret_resolver
-from ginkgo.runtime.rundir import RUNS_WITHOUT_LEDGER_CODE, runs_without_ledger_warning
+from ginkgo.runtime.environment.secrets import SecretResolver, build_secret_resolver
+from ginkgo.runtime.rundir import (
+    RUNS_WITHOUT_DIRECTORY_CODE,
+    RUNS_WITHOUT_LEDGER_CODE,
+    runs_without_directory_warning,
+    runs_without_ledger_warning,
+)
+from ginkgo.store.maintenance import LARGE_LEDGER_CODE, large_ledger_warning
+from ginkgo.store.errors import StoreError
 from ginkgo.workspace_layout import WorkspaceLayout
+
+CORRUPT_LEDGER_CODE = "corrupt_ledger"
+"""Diagnostic code for a ledger SQLite cannot read or calls corrupt."""
+
+LEDGER_DRIFT_CODE = "ledger_drift"
+"""Diagnostic code for cache bytes and ledger rows that disagree."""
 
 
 def command_doctor(args) -> int:
@@ -45,6 +64,9 @@ def command_doctor(args) -> int:
     # diagnostics below, because collecting those builds the run machinery,
     # which creates the ledger the question is about.
     ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
+    run_directory_warning = runs_without_directory_warning(layout=WorkspaceLayout.relative())
+    size_warning = large_ledger_warning(WorkspaceLayout.relative().db)
+    ledger_diagnostics = _ledger_diagnostics(layout=WorkspaceLayout.relative())
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
@@ -67,17 +89,23 @@ def command_doctor(args) -> int:
             )
         )
 
-    diagnostics = collect_workflow_diagnostics(
+    secret_resolver = build_secret_resolver(
+        project_root=Path.cwd(),
+        config=config,
+        environ=os.environ,
+    )
+    check = collect_workflow_diagnostics(
         workflow_path=workflow_path,
         config_paths=[Path(path).resolve() for path in args.config],
-        secret_resolver=build_secret_resolver(
-            project_root=Path.cwd(),
-            config=config,
-            environ=os.environ,
-        ),
+        secret_resolver=secret_resolver,
         backend_factory=build_backend,
         param_extras=getattr(args, "param_extras", ()),
+        command_flags=getattr(args, "command_flags", ()),
     )
+    diagnostics = check.diagnostics
+    # A run only warns about a notification table it cannot use, once the run
+    # is under way; doctor is where to find out beforehand.
+    diagnostics.extend(_notification_diagnostics(config=config, secret_resolver=secret_resolver))
 
     # A warning, not an error: nothing is corrupt, and the workflow is still
     # runnable.
@@ -89,6 +117,29 @@ def command_doctor(args) -> int:
                 message=ledger_warning,
                 suggestion="Restore .ginkgo/ginkgo.db, or delete the run directories "
                 "if their history is not wanted.",
+            )
+        )
+    if run_directory_warning is not None:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=RUNS_WITHOUT_DIRECTORY_CODE,
+                message=run_directory_warning,
+                suggestion="Restore .ginkgo/runs from a backup if the logs are wanted; "
+                "`ginkgo runs show` still reads what the ledger recorded.",
+            )
+        )
+
+    diagnostics.extend(ledger_diagnostics)
+
+    if size_warning is not None:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=LARGE_LEDGER_CODE,
+                message=size_warning,
+                suggestion="Drop old runs' events with `ginkgo db prune --events-older-than "
+                "90d`, then `ginkgo db vacuum`; the runs themselves stay listed.",
             )
         )
 
@@ -106,7 +157,13 @@ def command_doctor(args) -> int:
     # task imports first. Reported here, where it is cheap to see. Running
     # from the project's own environment gets the other finding: the same
     # missing import, but a fix that edits the manifest instead.
-    import_problem = detect_import_problem(workflow_path=workflow_path, project_root=Path.cwd())
+    # A notebook or script a task runs in its own ``env=`` imports from that
+    # environment, so its imports are not this interpreter's to supply.
+    import_problem = detect_import_problem(
+        workflow_path=workflow_path,
+        project_root=Path.cwd(),
+        excluded_sources=check.env_sources,
+    )
     environment_diagnostics: list[AccessDiagnostic | EnvironmentFinding] = [
         *([] if import_problem is None else [import_problem]),
         *access_diagnostics,
@@ -159,14 +216,108 @@ def command_doctor(args) -> int:
     for item in environment_diagnostics:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]![/]"}.get(item.severity, "[cyan]ℹ[/]")
         target = rich_console_err if item.severity == "error" else rich_console_out
+        # The suggestion is soft-wrapped: it names interpreter and manifest
+        # paths, and Rich would otherwise break a long one onto a line of its
+        # own, leaving its label ("project:") looking empty.
         target.print(f"{marker} {item.code}: {escape(item.message)}")
         if item.suggestion:
-            target.print(f"[dim]{escape(item.suggestion)}[/]")
+            target.print(f"[dim]{escape(item.suggestion)}[/]", soft_wrap=True)
 
     has_errors = bool(workflow_errors) or any(
         item.severity == "error" for item in environment_diagnostics
     )
     return 1 if has_errors else 0
+
+
+def _ledger_diagnostics(*, layout: WorkspaceLayout) -> list[WorkflowDiagnostic]:
+    """Return what ``ginkgo db check`` would fail on, beside the run-directory warnings.
+
+    A corrupt or unreadable ledger is an error: every read surface and the
+    next run depend on it. Drift between the ledger and the cache's bytes is a
+    warning — each such entry only misses — that points at ``db check --fix``.
+    Runs and run directories without a counterpart are left to the warnings
+    doctor already gives for them.
+    """
+    if not layout.db.is_file():
+        return []
+    suggestion = "Run `ginkgo db check` for the full list."
+    try:
+        found = ledger_problems(layout)
+    except StoreError as exc:
+        return [
+            WorkflowDiagnostic(
+                severity="error",
+                code=CORRUPT_LEDGER_CODE,
+                message=f"The ledger {layout.db} cannot be read: {exc}",
+                suggestion="Move it aside and run again to start a new one; "
+                "`ginkgo db check --fix` then clears what the old one recorded.",
+            )
+        ]
+    diagnostics = []
+    if found.corrupt:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="error",
+                code=CORRUPT_LEDGER_CODE,
+                message=f"The ledger {layout.db} fails SQLite's integrity check: "
+                f"{found.corrupt[0]}",
+                suggestion=suggestion,
+            )
+        )
+    if found.drift:
+        count = len(found.drift)
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=LEDGER_DRIFT_CODE,
+                message=f"`ginkgo db check` finds {count} problem{'' if count == 1 else 's'} "
+                f"with the cache beside the ledger, the first: {found.drift[0]}",
+                suggestion=f"{suggestion} `ginkgo db check --fix` removes what nothing can "
+                "use any more.",
+            )
+        )
+    return diagnostics
+
+
+def _notification_diagnostics(
+    *, config: dict, secret_resolver: SecretResolver
+) -> list[WorkflowDiagnostic]:
+    """Check each ``[notifications.<name>]`` table with the subscriber that reads it.
+
+    A table no installed subscriber reads is a warning, as it is at run time.
+    A problem a subscriber's ``check`` finds is an error when the run would
+    send nothing through that table, and a warning when it would still send,
+    such as an unknown event name ignored beside valid ones.
+    """
+    notifications = config.get("notifications") if isinstance(config, dict) else None
+    if not isinstance(notifications, dict):
+        return []
+    diagnostics: list[WorkflowDiagnostic] = []
+    for name in sorted(notifications):
+        try:
+            subscriber_type = plugin_registry().get(EventSubscriberType, name)
+        except PluginNotFoundError as exc:
+            diagnostics.append(
+                WorkflowDiagnostic(
+                    severity="warning",
+                    code="unserved_notification",
+                    message=f"[notifications.{name}] is configured but nothing will send it.",
+                    suggestion=str(exc),
+                )
+            )
+            continue
+        if subscriber_type.check is None:
+            continue
+        context = EventSubscriberCheckContext(config=config, secret_resolver=secret_resolver)
+        diagnostics.extend(
+            WorkflowDiagnostic(
+                severity="error" if problem.blocking else "warning",
+                code="notification_config",
+                message=problem.message,
+            )
+            for problem in subscriber_type.check(context)
+        )
+    return diagnostics
 
 
 def _extract_executor_configs(*, config: dict) -> dict[str, dict]:

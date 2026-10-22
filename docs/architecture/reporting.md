@@ -41,6 +41,7 @@ ginkgo_report/
 ├── command.py           # argument parsing and command_report
 ├── model.py             # ReportData dataclass + builder
 ├── sizing.py            # log-tail cap and builder
+├── notebook_page.py     # network-free static copy of a marimo page
 ├── render.py            # Jinja env, bundle writer, single-file writer
 ├── templates/
 │   ├── index.html.j2    # master document shell
@@ -52,12 +53,14 @@ ginkgo_report/
 │   ├── _graph.html.j2
 │   ├── _tasks.html.j2
 │   ├── _failure.html.j2
-│   ├── _notebooks.html.j2   # the "Rendered pages" section
+│   ├── _retries.html.j2     # attempts of tasks that ran more than once
+│   ├── _outputs.html.j2     # files and folders each task produced
+│   ├── _pages.html.j2       # the "Rendered pages" section
 │   ├── _environment.html.j2
 │   └── _footer.html.j2
 └── static/
     ├── report.css       # tokens + component styles
-    ├── islands.js       # scrollspy + sortable task table
+    ├── islands.js       # scrollspy, sortable tables, embedded page sizing
     └── fonts/           # Commissioner, JetBrains Mono (woff2)
 ```
 
@@ -75,8 +78,15 @@ directly — everything they render lives as a typed field on the report.
 This constraint is what keeps the document provenance-bound: if a field
 isn't present on `ReportData`, it can't show up on the page.
 
-`ReportData` consumes only `RunSummary` (the shared post-run data model used
-by the CLI renderers). The report and the CLI renderers build their own payloads from
+`ReportData` consumes `RunSummary` (the shared post-run data model used
+by the CLI renderers), plus one ledger lookup the run itself cannot answer:
+`measured_runs`, from `Query.measured_executions`, the earlier execution that
+measured each cache hit's result, so a cached task's peak memory is that run's,
+named after it. A run that did not succeed carries `outcome` (its recorded
+error) at the head of the summary, and `skipped` lists each task left without
+a result with the cause `TaskSummary.skip_cause` gives, the same wording the
+CLI's end-of-run report uses. Failure messages and log tails have paths under
+the project made relative to it. The report and the CLI renderers build their own payloads from
 the same `RunSummary`, so the two presentation layers diverge cleanly
 without duplicating parsing logic.
 
@@ -106,6 +116,7 @@ uses Rich styles and icons, the report uses tone tokens (`ok` / `fail` /
 │       ├── fraunces-italic.woff2
 │       └── jetbrains-mono.woff2
 ├── pages/<task_key>_<task>.html                # copied rendered_html pages
+├── pages/<task_key>_<task>.static.html         # static copy of a marimo page
 └── logs/<log_filename>                         # failed-task logs
 ```
 
@@ -113,9 +124,18 @@ Rendered pages and logs are copied rather than inlined. A task that records a
 `rendered_html` annotation (`TaskSummary.rendered_html`) gets a card in the
 "Rendered pages" section, titled by the task's label; a page a cache hit
 reused carries `from run <id>` in its sub-line. The report knows nothing about
-notebooks: any task kind that records the annotation is listed. The `--single-file` mode
-inlines the stylesheet, fonts and islands script so the document stands on
-its own.
+notebooks: any task kind that records the annotation is listed.
+
+A page `marimo export html` wrote is drawn by marimo's frontend, which the page
+loads from cdn.jsdelivr.net, so it is blank offline. `notebook_page.py` makes a
+static copy from the cell code and outputs the page carries in its mount
+config: markdown, HTML and images as marimo rendered them, `marimo-table`
+widgets as plain tables (first 200 rows), console output and errors as text,
+and any other widget named as needing marimo. A page that is not a marimo
+export has no static copy. The bundle writes the copy beside the page and links
+both; `PageCard.embed_html` is what a single-file report embeds. Each cell's
+code is folded above its output unless the notebook hides it or `--hide-code`
+(`include_code=False`) leaves it out.
 
 ## Destination safety
 
@@ -131,13 +151,18 @@ and `_prepare_out_dir` accepts either:
   what lets a user's own `--out` directory be re-rendered once ginkgo has
   written a report into it.
 
-| `out_dir` state                       | Behaviour                             |
+| `out` state (bundle)                  | Behaviour                             |
 | ------------------------------------- | ------------------------------------- |
 | missing or empty                      | used as is                            |
-| `managed_destination`                 | emptied and rewritten                 |
-| holds `.ginkgo-report.json`           | emptied and rewritten                 |
+| `managed_destination`                 | report entries removed, rewritten     |
+| holds `.ginkgo-report.json`           | report entries removed, rewritten     |
 | non-empty, neither signal             | `FileExistsError`, nothing is touched |
-| non-empty, neither signal, `force`    | emptied and rewritten                 |
+| non-empty, neither signal, `force`    | written in; nothing removed           |
+
+The report entries are what a bundle writes at its root (`_BUNDLE_ENTRIES`:
+the marker, `index.html`, `assets/`, `pages/`, `logs/`). Nothing else is ever
+removed, so a user's files kept beside a report survive re-rendering, and
+`--force` into a foreign directory replaces only files of the same name.
 
 The marker alone would not do: a report directory written before the marker
 existed carries none, so inferring ownership from it would break re-rendering
@@ -148,10 +173,12 @@ original hole for any `--out` target that happens to hold one.
 `force=False` and `managed_destination=False` are the library defaults, so the
 Python API cannot lose a caller's files by omission either.
 
-In `--single-file` mode the marker sits beside `index.html` as the directory's
-only companion file. The HTML stays self-contained, so sharing it alone still
-works; the dotfile is what allows a second `--single-file` export over the same
-directory.
+In `--single-file` mode `out` is the HTML file, and nothing else is written or
+removed: the file often shares a directory, such as `.ginkgo/reports/`, with the
+bundle of the same run. `_prepare_out_file` replaces an existing file only when
+it is managed, `force` is set, or its head carries the
+`<meta name="generator" content="ginkgo-report">` tag every report page has; a
+directory at that path is refused.
 
 ## Size caps (`SizingPolicy`)
 
@@ -239,10 +266,18 @@ enhancement. There is no framework, no bundler, no build step.
 - Fonts rewritten to `data:font/woff2;base64,…` URIs inside `@font-face`.
 - Islands script inlined in a `<script type="module">` block.
 
-Rendered pages remain as relative references (their content is too
-large to reasonably base64 into a single document); `--single-file` is
-intended for short, self-contained report sharing. Logs copied into the
-bundle default mode are also referenced by relative path.
+- Each rendered page in an `<iframe srcdoc>`, sandboxed without scripts: the
+  static copy of a marimo page, or any other page as it is. The frame shares
+  the report's origin, so the islands script sizes it to its content.
+
+So the file opens offline, pages included. What it cannot carry is a marimo
+page's interactivity, since marimo's frontend comes from its CDN and is
+neither small nor a single file (hundreds of lazily imported modules, about
+27 MB). Logs copied into the bundle are referenced by relative path.
+`ExportResult.omitted_links` lists those references, and `ginkgo report`
+warns with them, since the links will not open from the single file. The
+command also warns when the file is over 25 MB, which takes pages embedding
+large figures or tables.
 
 ## Determinism
 
@@ -262,9 +297,13 @@ ordering hooks worth knowing about:
 
 ```
 ginkgo report <run-id>
-    [--out DIR]                 # default: <workspace>/.ginkgo/reports/<run-id>/
-    [--force]                   # replace an --out dir ginkgo did not write
-    [--single-file]             # inline CSS, fonts and script
+    [--out PATH]                # bundle dir, default <workspace>/.ginkgo/reports/<run-id>/;
+                                # with --single-file, the .html file (default <run-id>.html)
+    [--force]                   # write into an --out dir ginkgo did not write,
+                                # replacing only the report's own files
+    [--single-file]             # inline CSS, fonts and script; --out must end
+                                # .html, or name a directory
+    [--hide-code]               # leave cell code out of notebook static copies
     [--max-log-lines N]         # default 80
     [--open]                    # open the result in the browser
 ```
@@ -283,11 +322,13 @@ ginkgo report <run-id>
   strings, absence of external URLs, contiguous section numerals,
   conditional failure section,
   the destination guard (foreign directory refused, `force=True`
-  replaces it, an own report directory re-renders, a
+  writes into it without removing its files, an own report directory
+  re-renders and keeps files kept beside it, a
   `managed_destination` replaces an unmarked bundle), deterministic
   re-render.
 - `ginkgo report` end to end — `--out` at a directory holding unrelated
-  files leaves them intact and exits 1, `--force` replaces it, and the
+  files leaves them intact and exits 1, `--force` writes the report in
+  without deleting them, a non-HTML `--single-file --out` is refused, and the
   managed report directory re-renders with no flag whether or not it
   carries the marker.
 

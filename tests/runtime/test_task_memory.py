@@ -75,3 +75,10 @@ class TestTaskDefMemory:
             @task(memory="lots")
             def my_task(x: int) -> int:
                 return x
+
+    def test_a_number_without_a_unit_is_refused_with_the_string_form(self) -> None:
+        with pytest.raises(ValueError, match="memory must be a string .* memory='64Gi'"):
+
+            @task(memory=64)
+            def my_task(x: int) -> int:
+                return x

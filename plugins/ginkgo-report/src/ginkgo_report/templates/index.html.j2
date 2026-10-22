@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="generator" content="ginkgo-report">
 <title>run · {{ report.run_id }} · {{ report.workflow_label }}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 {% if inline_css %}
@@ -26,8 +27,16 @@
 
     {% include "_tasks.html.j2" %}
 
-    {% if report.has_failures %}
+    {% if report.has_failures or report.skipped %}
       {% include "_failure.html.j2" %}
+    {% endif %}
+
+    {% if report.retried %}
+      {% include "_retries.html.j2" %}
+    {% endif %}
+
+    {% if report.outputs %}
+      {% include "_outputs.html.j2" %}
     {% endif %}
 
     {% if report.pages %}

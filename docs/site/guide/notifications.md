@@ -12,11 +12,11 @@ The current implementation supports Slack incoming webhooks only.
 Supported notification events:
 
 - `run_started`
-- `run_completed`
+- `run_succeeded` (`run_completed` is accepted as another name for it)
 - `run_failed`
 - `retry_exhausted`
 
-`run_completed` is the success notification event. `run_failed` is the terminal
+`run_succeeded` is the success notification event. `run_failed` is the terminal
 run-level failure notification. `retry_exhausted` is a task-level notification
 sent when a task fails after using all configured retries.
 
@@ -28,7 +28,7 @@ Add notification settings to `ginkgo.toml`:
 [notifications.slack]
 enabled = true
 webhook = { env = "GINKGO_SLACK_WEBHOOK" }
-events = ["run_started", "run_completed", "run_failed", "retry_exhausted"]
+events = ["run_started", "run_succeeded", "run_failed", "retry_exhausted"]
 log_tail_lines = 10
 max_failed_tasks = 3
 ```
@@ -42,13 +42,28 @@ ginkgo run flow.py
 
 Notes:
 
-- `webhook` must be provided through the secrets layer as a secret reference.
-- `log_tail_lines` controls how many lines of task log tail are included in
-  failure notifications.
-- `max_failed_tasks` controls how many failed tasks are summarized in one
-  failure notification.
-- Notification delivery is best-effort. Slack failures log a warning but do not
-  fail the run.
+- `webhook` must be a secret reference such as `{ env = "GINKGO_SLACK_WEBHOOK" }`,
+  naming where the URL is kept. A literal URL is refused: the URL is a
+  credential and does not belong in config.
+- `log_tail_lines` (1 to 25, default 10) controls how many lines of task log
+  tail are included in failure notifications.
+- `max_failed_tasks` (1 to 10, default 3) controls how many failed tasks are
+  summarized in one failure notification.
+- `events` defaults to `["run_failed"]`.
+- A table with an unknown setting, an out-of-range number, no valid event, or
+  a webhook secret that is unset or empty sends nothing. `ginkgo run` warns with
+  each problem, and `ginkgo doctor` reports them as errors before you run.
+- An unknown name in `events` beside valid ones is ignored: `ginkgo run` warns
+  about it and still sends the valid events, and `ginkgo doctor` reports it as
+  a warning rather than an error.
+- Notification delivery is best-effort. A Slack failure warns, naming the event
+  it was for, but does not fail the run, and the warning is kept with the run:
+  `ginkgo runs show` and `ginkgo report` list it as a notice.
+- Notifications are posted on a background thread while the workflow runs, and
+  the run waits for any still outstanding as it finishes. Each post waits at
+  most 3 seconds for Slack. Once one fails because Slack cannot be reached, the
+  later notifications of that run are not attempted (each still warns), so an
+  unreachable or blocked host adds at most about 3 seconds to a run.
 
 ## Set Up The Slack Webhook
 

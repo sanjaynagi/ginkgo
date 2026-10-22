@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from ginkgo.cli.common import open_run, stdout_console
+from ginkgo.cli.common import console, open_run
 from ginkgo.cli.renderers.debug import (
     render_debug_failure_panel,
     render_debug_header,
+    render_log_tail,
     render_run_failure_panel,
 )
 from ginkgo.cli.renderers.models import FailureDetails
@@ -18,18 +20,19 @@ from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 def command_debug(args) -> int:
     """Handle ``ginkgo debug``."""
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     with open_run(args.run_id) as (reader, run_id):
         summary = reader.run(run_id)
 
     failed_tasks = list(summary.failed_tasks)
     run_failed = summary.status == "failed"
+    run_error = _run_level_error(summary=summary, failed_tasks=failed_tasks)
     if args.json:
         payload = {
             "run_id": summary.run_id,
             "workflow": summary.workflow,
             "status": summary.status,
-            "error": summary.error,
+            "error": run_error,
             "failures": _debug_failure_payload(summary=summary, failed_tasks=failed_tasks),
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -46,12 +49,25 @@ def command_debug(args) -> int:
     rich_console.print(render_debug_header(summary=summary, failures=failures))
     for item in _debug_failure_details(summary=summary, failed_tasks=failed_tasks):
         rich_console.print(render_debug_failure_panel(item))
+        if item.log_tail:
+            rich_console.print(render_log_tail(item.log_tail), soft_wrap=True)
 
     # A run can fail without any task failing (for example an env that cannot be
     # resolved for a dynamically expanded node), so surface the recorded error too.
-    if run_failed:
-        rich_console.print(render_run_failure_panel(summary.error))
+    if run_failed and (run_error is not None or not failed_tasks):
+        rich_console.print(render_run_failure_panel(run_error))
     return 0
+
+
+def _run_level_error(*, summary: RunSummary, failed_tasks: list[TaskSummary]) -> str | None:
+    """Return the run's recorded error, unless it only restates a task's.
+
+    A run a task failure ended records that failure's message as its own
+    error; the failure is already reported once, with its task.
+    """
+    if summary.error in {task.error for task in failed_tasks}:
+        return None
+    return summary.error
 
 
 def _log_tail(*, run_dir: Path, task: TaskSummary) -> list[str]:
@@ -90,14 +106,18 @@ def _debug_failure_payload(
     summary: RunSummary,
     failed_tasks: list[TaskSummary],
 ) -> list[dict[str, object]]:
-    """Return JSON-serializable failure details."""
+    """Return JSON-serializable failure details.
+
+    The task's error message is ``failure.message``; it is not repeated
+    beside it.
+    """
     return [
         {
             "task_id": task.task_key,
             "task_name": task.base_name,
             "display_label": task.display_label,
+            "status": task.status,
             "exit_code": task.exit_code,
-            "error": task.error,
             "failure": task.failure,
             "ignored": task.ignored,
             "inputs": task.inputs,

@@ -19,6 +19,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
+from ginkgo.cli.renderers.debug import render_log_tail
 from ginkgo.cli.renderers.common import (
     _MultiStateBar,
     _format_cpu_percent,
@@ -34,7 +35,7 @@ from ginkgo.cli.renderers.common import (
 )
 from ginkgo.envs.interpreter import EnvironmentFinding, explain_import_failure
 from ginkgo.formatting import format_bytes, format_duration
-from ginkgo.runtime.run_summary import TERMINAL_STATUSES
+from ginkgo.runtime.run_summary import DONE_STATUSES, TERMINAL_STATUSES
 from ginkgo.cli.renderers.models import (
     FailureDetails,
     CliRenderedPage,
@@ -93,8 +94,9 @@ class _RunEventState:
         self.row_order: list[int] = []
         self.notices: list[str] = []
         self.env_prepare_seconds = 0.0
-        self.prepared_envs: list[str] = []
-        self._env_prepare_started: dict[int, float] = {}
+        self.env_prepare_by_env: dict[str, float] = {}
+        self.failed_envs: set[str] = set()
+        self._env_prepare_started: dict[int, tuple[float, str | None]] = {}
 
     def seed(self, *, planned_tasks: list[tuple[int, str, str, str]]) -> None:
         """Register the planned task set before any events arrive.
@@ -192,17 +194,31 @@ class _RunEventState:
         env: object,
         event_time: float,
     ) -> None:
-        """Accumulate time a node spent preparing its execution environment."""
+        """Accumulate time a node spent preparing its execution environment.
+
+        Time is kept per environment, and a preparation that ended in failure
+        marks its environment, so the summary does not attribute one slow or
+        failed pull to every environment the run touched.
+        """
         if status == _ENV_PREPARE_STATUS:
-            self._env_prepare_started[node_id] = event_time
-            if isinstance(env, str) and env not in self.prepared_envs:
-                self.prepared_envs.append(env)
+            self._env_prepare_started[node_id] = (
+                event_time,
+                env if isinstance(env, str) else None,
+            )
             return
 
         started = self._env_prepare_started.pop(node_id, None)
         if started is None:
             return
-        self.env_prepare_seconds += max(0.0, event_time - started)
+        started_at, started_env = started
+        seconds = max(0.0, event_time - started_at)
+        self.env_prepare_seconds += seconds
+        if started_env is not None:
+            self.env_prepare_by_env[started_env] = (
+                self.env_prepare_by_env.get(started_env, 0.0) + seconds
+            )
+            if status == "failed":
+                self.failed_envs.add(started_env)
 
     def _apply_display_label(self, *, node_id: int, display_label: str) -> None:
         """Replace a fallback duplicate label with a richer runtime label."""
@@ -274,10 +290,10 @@ class _RunEventState:
             counts.setdefault(status, 0)
         return counts
 
-    def terminal_count(self) -> int:
-        """Return the number of task rows in a terminal status."""
+    def done_count(self) -> int:
+        """Return the number of task rows that produced a result: succeeded or cached."""
         counts = self.status_counts()
-        return sum(counts[status] for status in TERMINAL_STATUSES)
+        return sum(counts[status] for status in DONE_STATUSES)
 
 
 class _RunLayoutRenderer:
@@ -435,15 +451,15 @@ class _RunLayoutRenderer:
                 # Collapsed group row with multi-state progress bar.
                 counts = item.status_counts()
                 total = len(item.rows)
-                terminal = item.terminal_count()
-                bar_width = max(16, self.status_column_width() - len(f" {terminal}/{total}") - 1)
+                done = item.done_count()
+                bar_width = max(16, self.status_column_width() - len(f" {done}/{total}") - 1)
                 bar = _MultiStateBar(counts=counts, total=total, width=bar_width)
                 # Build status cell: bar + count label.
                 bar_text = Text()
                 for chunk in bar.__rich_console__(self._console, self._console.options):
                     if isinstance(chunk, Text):
                         bar_text.append_text(chunk)
-                bar_text.append(f" {terminal}/{total}", style="bold #134e4a")
+                bar_text.append(f" {done}/{total}", style="bold #134e4a")
                 elapsed = item.elapsed(now=now)
                 time_str = format_duration(elapsed) if elapsed is not None else "--"
                 table.add_row(
@@ -470,12 +486,20 @@ class _RunLayoutRenderer:
         return table
 
     def render_progress_section(self) -> Table:
-        completed = self._state.terminal_count()
+        # Only a task with a result counts as complete; one that failed or
+        # was skipped is terminal too, but is shown beside the count instead.
+        completed = self._state.done_count()
+        counts = self._state.status_counts()
         total = max(1, len(self._state.rows))
         progress = Table.grid(padding=(0, 1))
         progress.add_column()
         progress.add_column(no_wrap=True)
         progress_text = f"{completed}/{len(self._state.rows)} complete"
+        unfinished = [
+            f"{counts[status]} {status}" for status in ("failed", "skipped") if counts[status]
+        ]
+        if unfinished:
+            progress_text += f" ({', '.join(unfinished)})"
         progress.add_row(
             ProgressBar(
                 total=total,
@@ -515,11 +539,12 @@ class _RunLayoutRenderer:
         """
         text = Text()
         replayed = [page for page in pages if page.replayed_from_run_id is not None]
-        text.append(f"\n📄 Rendered pages ({len(pages) - len(replayed)})", style="bold")
+        text.append(f"\n📄 Rendered pages ({len(pages)})", style="bold")
         if replayed:
             source_count = len({page.replayed_from_run_id for page in replayed})
             source = "an earlier run" if source_count == 1 else "earlier runs"
-            text.append(f"  ↺ {len(replayed)} from {source}", style="bold #0f766e")
+            reused = "all" if len(replayed) == len(pages) else str(len(replayed))
+            text.append(f"  ↺ {reused} reused from {source}", style="bold #0f766e")
         text.append("\n")
         for page in pages:
             text.append(f"  {page.task_label}  ", style="bold #134e4a")
@@ -560,13 +585,17 @@ class _RunLayoutRenderer:
                     same_failures=group[1:],
                 )
             )
+            if group[0].log_tail:
+                parts.append(render_log_tail(group[0].log_tail))
         if ignored:
             parts.append(Text(f"Failed, run continued ({len(ignored)})", style="bold #7f1d1d"))
             panelled = _panelled_with(items=ignored, kept=hinted, limit=_IGNORED_PANEL_LIMIT)
-            parts.extend(
-                self.render_failure_panel(item, hint=hint if item is hinted else None)
-                for item in panelled
-            )
+            for item in panelled:
+                parts.append(
+                    self.render_failure_panel(item, hint=hint if item is hinted else None)
+                )
+                if item.log_tail:
+                    parts.append(render_log_tail(item.log_tail))
             remaining = len(ignored) - len(panelled)
             if remaining > 0:
                 parts.append(
@@ -578,19 +607,19 @@ class _RunLayoutRenderer:
         """Name the tasks a failure left without a result.
 
         Listed one per line while that stays readable; beyond that, counted
-        per blocking failure, because a handful of failures at the head of a
-        wide fan-out costs thousands of branches.
+        per cause, because a handful of failures at the head of a wide
+        fan-out costs thousands of branches.
         """
         text = Text()
         text.append(f"\n⊘ Left unrun by a failure ({len(skipped)})\n", style="bold")
         if len(skipped) <= _SKIP_REPORT_LIST_LIMIT:
             for item in skipped:
                 text.append(f"  {item.task_label}", style="dim")
-                text.append(f"  ← blocked by {item.blocker_label}\n", style="dim")
+                text.append(f"  ← {item.cause}\n", style="dim")
             return text
-        counts = Counter(item.blocker_label for item in skipped)
-        for blocker, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
-            text.append(f"  {count} blocked by {blocker}\n", style="dim")
+        counts = Counter(item.cause for item in skipped)
+        for cause, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            text.append(f"  {count} {cause}\n", style="dim")
         return text
 
     def render_failure_category_summary(self, details: list[FailureDetails]) -> Text | None:
@@ -661,11 +690,6 @@ class _RunLayoutRenderer:
                     style="#7f1d1d",
                 )
             )
-        if details.log_tail:
-            sections.append(Text(""))
-            sections.append(Text("Log tail", style="bold #7f1d1d"))
-            sections.append(Text("\n".join(details.log_tail), style="#7f1d1d"))
-
         count_suffix = f" (×{len(same_failures) + 1})" if same_failures else ""
         return Panel(
             Group(*sections),
@@ -679,12 +703,30 @@ class _RunLayoutRenderer:
         """Explain a slow first run caused by environment preparation."""
         if self._state.env_prepare_seconds < _ENV_PREPARE_REPORT_THRESHOLD_SECONDS:
             return None
-        envs = ", ".join(self._state.prepared_envs)
+        state = self._state
+        # Environments that were already installed take a moment to check;
+        # only the ones that cost real time, or failed, are worth naming.
+        named = sorted(
+            (
+                (env, seconds)
+                for env, seconds in state.env_prepare_by_env.items()
+                if env in state.failed_envs or seconds >= _ENV_PREPARE_REPORT_THRESHOLD_SECONDS
+            ),
+            key=lambda item: -item[1],
+        )
+        envs = ", ".join(
+            f"{env} failed after {format_duration(seconds)}"
+            if env in state.failed_envs
+            else f"{env} {format_duration(seconds)}"
+            for env, seconds in named
+        )
         env_part = f" ({envs})" if envs else ""
         return Text(
             f"⚙ Environment preparation took "
             f"{format_duration(self._state.env_prepare_seconds)}{env_part} - "
-            f"first runs install environments, later runs reuse them",
+            "first runs install environments, later runs reuse them. A task's first "
+            "start in a new environment can be slower still while the system loads its "
+            "libraries, and counts as the task's time",
             style="dim",
         )
 
@@ -718,8 +760,8 @@ class _RunLayoutRenderer:
             if isinstance(item, _TaskGroup):
                 task_widths.append(len(_truncate_task_label(item.label, max_width=max_label)))
                 total = len(item.rows)
-                terminal = item.terminal_count()
-                status_widths.append(self.status_column_width() + len(f" {terminal}/{total}") + 1)
+                done = item.done_count()
+                status_widths.append(self.status_column_width() + len(f" {done}/{total}") + 1)
                 env_widths.append(len(item.env_label))
                 elapsed = item.elapsed(now=clock)
                 time_widths.append(len(format_duration(elapsed)) if elapsed is not None else 2)
@@ -756,7 +798,12 @@ class _RunLayoutRenderer:
         return self._resources.provider()
 
     def render_resource_footer(self, resources: dict[str, object]) -> Text | None:
-        """Render the final CPU/RSS summary line."""
+        """Render the final CPU/RSS summary line.
+
+        The figures sum the whole process tree — ginkgo, its worker pool and
+        every command — so the line says so and names the most processes it
+        saw: a pool of idle workers is most of a small run's RSS.
+        """
         average = resources.get("average")
         peak = resources.get("peak")
         if not isinstance(average, dict) or not isinstance(peak, dict):
@@ -766,8 +813,10 @@ class _RunLayoutRenderer:
         peak_cpu = _format_cpu_percent(_as_float(peak.get("cpu_percent")))
         avg_rss = format_bytes(_as_int(average.get("rss_bytes")))
         peak_rss = format_bytes(_as_int(peak.get("rss_bytes")))
+        processes = _format_count(peak.get("process_count"))
         return Text(
-            f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss}",
+            f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss} "
+            f"(process-tree total, up to {processes} processes)",
             style="dim",
         )
 
@@ -938,7 +987,10 @@ class CliRunRenderer:
             )
         if not success and failure_details:
             self._console.print(self._layout.render_failure_separator())
-            self._console.print(self._layout.render_failure_details(failure_details))
+            # Text parts, the log tails among them, print unwrapped so a
+            # traceback's paths stay whole; panels fold to the console.
+            for part in self._layout.render_failure_details(failure_details).renderables:
+                self._console.print(part, soft_wrap=isinstance(part, Text))
         if skipped:
             self._console.print(self._layout.render_skip_report(skipped))
         # A run that failed under its failure policy still produced whatever

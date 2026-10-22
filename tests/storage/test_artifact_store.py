@@ -248,6 +248,55 @@ class TestRestore:
         assert (dest / "sub" / "b.txt").read_text() == "bbb"
 
 
+def _corrupt(path: Path) -> None:
+    """Overwrite a read-only stored file in place, as bit rot would."""
+    path.chmod(0o644)
+    path.write_bytes(b"BAD")
+
+
+class TestRestoreVerification:
+    def test_corrupt_blob_is_not_restored_and_its_bytes_are_discarded(self, store, tmp_path):
+        src = tmp_path / "good.txt"
+        src.write_text("GOOD")
+        record = store.store(src_path=src)
+        blob = store.artifact_path(artifact_id=record.artifact_id)
+        _corrupt(blob)
+
+        dest = tmp_path / "out.txt"
+        assert store.restore(artifact_id=record.artifact_id, dest_path=dest) is False
+        assert not dest.exists()
+        assert not blob.exists()
+        assert not store.matches(artifact_id=record.artifact_id, path=dest)
+
+        # The re-run stores the good bytes again and they restore.
+        store.store(src_path=src)
+        assert store.restore(artifact_id=record.artifact_id, dest_path=dest) is True
+        assert dest.read_text() == "GOOD"
+
+    def test_corrupt_tree_member_fails_the_whole_restore(self, store, tmp_path):
+        src_dir = tmp_path / "tree"
+        src_dir.mkdir()
+        (src_dir / "a.txt").write_text("aaa")
+        record = store.store(src_path=src_dir)
+        _corrupt(next((tmp_path / "artifacts" / "blobs").iterdir()))
+
+        dest = tmp_path / "tree_copy"
+        assert store.restore(artifact_id=record.artifact_id, dest_path=dest) is False
+        assert not dest.exists()
+
+    def test_verify_reports_corrupt_bytes(self, store, tmp_path):
+        src = tmp_path / "good.txt"
+        src.write_text("GOOD")
+        record = store.store(src_path=src)
+        assert store.integrity_problems(verify=True) == []
+
+        _corrupt(store.artifact_path(artifact_id=record.artifact_id))
+        assert store.integrity_problems() == []
+        assert store.integrity_problems(verify=True) == [
+            f"artifact {record.artifact_id}: bytes do not match its digest"
+        ]
+
+
 class TestMatches:
     def test_matches_blob_content(self, store, tmp_path):
         src = tmp_path / "data.txt"

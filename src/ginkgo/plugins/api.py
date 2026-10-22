@@ -20,7 +20,7 @@ version, and the specs here may change in step with them.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 if TYPE_CHECKING:
     from ginkgo.core.directive import ExecutionDirective
     from ginkgo.core.remote import RemoteLocation
+    from ginkgo.core.task import TaskDef
     from ginkgo.remote.access.drivers.base import MountDriver
     from ginkgo.remote.backend import ObjectStore
     from ginkgo.runtime.backend import ExecutionEnvironment
@@ -46,16 +47,20 @@ __all__ = [
     "EnvironmentContext",
     "EnvironmentType",
     "EventSubscriber",
+    "EventSubscriberCheckContext",
+    "EventSubscriberConfigProblem",
     "EventSubscriberContext",
     "EventSubscriberType",
     "ExecutorType",
     "MountDriverType",
+    "Notice",
     "ObjectStoreContext",
     "ObjectStoreType",
     "Plugin",
     "RunnerContext",
     "SecretBackendContext",
     "SecretBackendType",
+    "TaskInvocation",
     "TaskKind",
     "TaskRunner",
 ]
@@ -233,7 +238,9 @@ class EventSubscriberContext:
     workflow_path : Path
         The workflow file being run.
     warn : Callable[[str], None]
-        Report a non-fatal problem to the user.
+        Report a non-fatal problem to the user. The message is also recorded
+        with the run as a notice, which ``ginkgo runs show`` and reports
+        display, so it may be called from ``close`` after the run has ended.
     """
 
     config: Mapping[str, Any] | None
@@ -258,22 +265,64 @@ class EventSubscriber(Protocol):
 
 
 @dataclass(frozen=True, kw_only=True)
+class EventSubscriberConfigProblem:
+    """One problem an event subscriber's ``check`` finds in its config.
+
+    Parameters
+    ----------
+    message : str
+        What is wrong, and how to fix it.
+    blocking : bool
+        Whether the problem leaves the subscriber sending nothing. ``ginkgo
+        doctor`` reports a blocking problem as an error and any other, such as
+        a setting the subscriber ignores while still sending, as a warning.
+    """
+
+    message: str
+    blocking: bool = True
+
+
+@dataclass(frozen=True, kw_only=True)
+class EventSubscriberCheckContext:
+    """What ``ginkgo doctor`` hands an event subscriber's config check.
+
+    Parameters
+    ----------
+    config : Mapping[str, Any]
+        Merged runtime config; each subscriber reads its own table.
+    secret_resolver : SecretResolver | None
+        The secret resolver a run would use.
+    """
+
+    config: Mapping[str, Any]
+    secret_resolver: SecretResolver | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class EventSubscriberType:
     """A run observer, such as a notification channel.
 
     Parameters
     ----------
     name : str
-        Identifies the subscriber, e.g. ``"slack"``.
+        Identifies the subscriber, e.g. ``"slack"``. Its config is the
+        ``[notifications.<name>]`` table.
     build : Callable[[EventSubscriberContext], EventSubscriber | None]
         Return a subscriber for this run, or ``None`` when its config leaves
         it disabled.
+    check : Callable[[EventSubscriberCheckContext], Sequence[EventSubscriberConfigProblem]] | None
+        Return one problem per thing wrong with the subscriber's config, so
+        ``ginkgo doctor`` reports what a run would only warn about. ``None``
+        when there is nothing to check.
     """
 
     point_name: ClassVar[str] = "event subscriber"
 
     name: str
     build: Callable[[EventSubscriberContext], EventSubscriber | None]
+    check: (
+        Callable[[EventSubscriberCheckContext], Sequence[EventSubscriberConfigProblem]] | None
+    ) = None
 
     @property
     def keys(self) -> tuple[str, ...]:
@@ -343,10 +392,76 @@ class EnvironmentType:
 # ----- Task kinds ------------------------------------------------------------
 
 
+class TaskInvocation(Protocol):
+    """One attempt of a task, as a runner sees it.
+
+    Everything but ``runner_extras`` is read-only. A runner records in
+    ``runner_extras`` what it wants back on a cache hit.
+    """
+
+    @property
+    def node_id(self) -> int:
+        """The task's node id in the run's graph."""
+        ...
+
+    @property
+    def task_def(self) -> TaskDef:
+        """The task's definition."""
+        ...
+
+    @property
+    def attempt(self) -> int:
+        """The attempt number, from 1."""
+        ...
+
+    @property
+    def display_label(self) -> str | None:
+        """The task's display label, if it has one."""
+        ...
+
+    @property
+    def resolved_args(self) -> dict[str, Any] | None:
+        """The task's arguments, with secrets still as references."""
+        ...
+
+    @property
+    def execution_args(self) -> dict[str, Any] | None:
+        """The task's arguments, with secrets resolved."""
+        ...
+
+    @property
+    def stdout_path(self) -> Path | None:
+        """Where the task's stdout is logged."""
+        ...
+
+    @property
+    def stderr_path(self) -> Path | None:
+        """Where the task's stderr is logged."""
+        ...
+
+    @property
+    def threads(self) -> int:
+        """The threads the task was granted."""
+        ...
+
+    @property
+    def secret_values(self) -> tuple[str, ...]:
+        """Resolved secret values, to redact from logs and errors."""
+        ...
+
+    runner_extras: dict[str, Any] | None
+
+
 class Annotate(Protocol):
     """Record open-ended facts against a task, as a ``TaskAnnotated`` event."""
 
-    def __call__(self, *, node: Any, fields: dict[str, Any]) -> None: ...
+    def __call__(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None: ...
+
+
+class Notice(Protocol):
+    """Report a task-scoped problem to the user, as a ``TaskNotice`` event."""
+
+    def __call__(self, *, node: TaskInvocation, message: str) -> None: ...
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -364,6 +479,8 @@ class RunnerContext:
         The run directory; ``None`` for dry runs and validation.
     annotate : Annotate
         Records facts against a task.
+    notice : Notice
+        Shows the user a task-scoped warning that does not fail the task.
     run_id : Callable[[], str]
         Returns the current run id.
     db_path : Path
@@ -374,6 +491,7 @@ class RunnerContext:
     shell_runner: ShellRunner
     run_dir: RunDir | None
     annotate: Annotate
+    notice: Notice
     run_id: Callable[[], str]
     db_path: Path
 
@@ -387,7 +505,7 @@ class TaskRunner(Protocol):
     the cache, so a runner never handles cache hits itself.
     """
 
-    def run(self, *, node: Any, directive: Any) -> Any:
+    def run(self, *, node: TaskInvocation, directive: Any) -> Any:
         """Execute *directive* for *node* and return the task's result."""
         ...
 
@@ -420,8 +538,17 @@ class TaskKind:
         key.
     exit_code_retries : bool
         Whether ``retry_on_exit_codes`` applies.
+    user_built_command : bool
+        Whether the body formats its own command line (``shell(cmd=...)``),
+        which ginkgo cannot quote. The kind's ``file``, ``folder`` and
+        ``Out[...]`` paths must then not contain spaces.
     runner : Callable[[RunnerContext], TaskRunner] | None
         Build the runner for a run. ``None`` exactly when ``directive`` is.
+    static_notices : Callable[[ExecutionDirective, str, Sequence[str]], Sequence[str]] | None
+        Check a directive before anything runs, given the task's name and the
+        names of the arguments it passes, and return warnings about what the
+        run would get wrong. ``doctor`` and ``--dry-run`` call it for each
+        task whose directive they can work out without running the body.
 
     Raises
     ------
@@ -440,7 +567,9 @@ class TaskKind:
     remote_capable: bool
     eager_source_hash: bool = False
     exit_code_retries: bool = False
+    user_built_command: bool = False
     runner: Callable[[RunnerContext], TaskRunner] | None = None
+    static_notices: Callable[[ExecutionDirective, str, Sequence[str]], Sequence[str]] | None = None
 
     def __post_init__(self) -> None:
         returns_directive = self.directive is not None

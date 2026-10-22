@@ -37,9 +37,12 @@ def build_brief(
     return script(_SCRIPTS_DIR / "build_brief.py")
 
 
-@task(kind="shell", env="docker://ubuntu:24.04")
+# Runs on this machine, so the starter needs no container runtime. To run it
+# in a container instead, name an image: env="docker://ubuntu:24.04". Ginkgo
+# then pulls the image and runs the command inside it with Docker or Podman.
+@task(kind="shell")
 def package_brief(brief: file, output_path: Out[file]) -> file:
-    """Package one Markdown brief in a Docker-backed shell task.
+    """Package one Markdown brief in a shell task.
 
     Parameters
     ----------
@@ -71,6 +74,7 @@ def write_summary(
     checksums: list[file],
     briefs: list[file],
     packages: list[file],
+    output_path: Out[file],
 ) -> file:
     """Assemble a compact JSON summary across all fan-out artifacts.
 
@@ -87,7 +91,9 @@ def write_summary(
     briefs : list[file]
         Pixi-built Markdown briefs.
     packages : list[file]
-        Docker-built packaging reports.
+        Packaging reports from the shell task.
+    output_path : Out[file]
+        Where the JSON summary is written.
 
     Returns
     -------
@@ -115,9 +121,7 @@ def write_summary(
             }
         )
 
-    output = Path("results/summary.json")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
+    Path(output_path).write_text(
         json.dumps(
             {
                 "row_count": len(rows),
@@ -128,4 +132,4 @@ def write_summary(
         ),
         encoding="utf-8",
     )
-    return file(str(output))
+    return file(output_path)

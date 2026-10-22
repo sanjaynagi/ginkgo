@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ginkgo.core.secret import SecretRef
+from ginkgo.core.types import rebuild_sequence
 from ginkgo.errors import GinkgoError
 from ginkgo.plugins.api import SecretBackendContext, SecretBackendType
 from ginkgo.plugins.registry import plugin_registry
@@ -151,14 +152,20 @@ def contains_secret_refs(value: Any) -> bool:
 
 
 def resolve_secret_refs(*, value: Any, resolver: SecretResolver) -> Any:
-    """Resolve all secret references nested within *value*."""
+    """Resolve all secret references nested within *value*.
+
+    A rewritten sequence keeps its own type, so a ``namedtuple`` is not turned
+    into the builtin. Only an exact ``dict`` is rebuilt: a subclass such as a
+    ``defaultdict`` is passed through whole, as the value codec carries it.
+    """
     if isinstance(value, SecretRef):
         return resolver.resolve(ref=value)
-    if isinstance(value, list):
-        return [resolve_secret_refs(value=item, resolver=resolver) for item in value]
-    if isinstance(value, tuple):
-        return tuple(resolve_secret_refs(value=item, resolver=resolver) for item in value)
-    if isinstance(value, dict):
+    if isinstance(value, (list, tuple)):
+        return rebuild_sequence(
+            like=value,
+            items=(resolve_secret_refs(value=item, resolver=resolver) for item in value),
+        )
+    if type(value) is dict:
         return {
             resolve_secret_refs(value=key, resolver=resolver): resolve_secret_refs(
                 value=item, resolver=resolver
@@ -196,11 +203,11 @@ def redact_value(value: Any) -> Any:
             "secret": secret_identity(value),
             "redacted": True,
         }
-    if isinstance(value, list):
+    # Exact containers only, as ``resolve_secret_refs`` rebuilds them: a
+    # ``namedtuple`` or ``defaultdict`` keeps its type for the summary.
+    if type(value) in (list, tuple):
         return [redact_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [redact_value(item) for item in value]
-    if isinstance(value, dict):
+    if type(value) is dict:
         return {str(redact_value(key)): redact_value(item) for key, item in value.items()}
     return value
 

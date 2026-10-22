@@ -27,11 +27,15 @@ coding agents working in the repository:
 
 Point an agent at `skills/index.md` and it has enough context to author and run
 workflows correctly without rediscovering the project's conventions each time.
+`init` also writes a short `AGENTS.md` at the project root that does this,
+since many agents read that file first; a project that already has an
+`AGENTS.md` keeps its own. Claude Code reads `CLAUDE.md` instead: add a line
+`@AGENTS.md` to it to pull the pointer in.
 
 Two flags control what `init` writes:
 
 ```bash
-ginkgo init my-project --no-skills   # project scaffold only, no skills/
+ginkgo init my-project --no-skills   # project scaffold only, no skills/ or AGENTS.md
 ginkgo init --skills-only            # add skills/ to an existing project
 ```
 
@@ -50,6 +54,11 @@ Each line is one JSON event — graph registration, task started, cache hit, tas
 completed, run completed, and so on. An agent can parse the stream to follow run
 progress, detect failures, and read task results without scraping a rendered
 terminal UI.
+
+A run rejected before it starts — a missing workflow file, an unknown parameter,
+a graph that does not validate — prints a single `run_rejected` event, with the
+`error` message and its `error_type`, and no `run_id`: there is no run. The
+command exits non-zero, and the same message is on stderr.
 
 Add `--verbose` (`ginkgo run --agent-output --verbose`) to also include task log output
 in the event stream.

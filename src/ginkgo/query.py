@@ -3,7 +3,7 @@
 The public way to ask ginkgo what has happened. Every CLI read path goes
 through here, so there is one place that knows the schema and one place to
 change when it moves. Readers open the database read-only, which means they
-work while a run is writing and can never migrate it out from under one.
+work while a run is writing and can never change it out from under one.
 
 Every method returns either a core type ginkgo already models — a
 :class:`~ginkgo.runtime.run_summary.RunSummary` — or a frozen row dataclass
@@ -21,17 +21,20 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from ginkgo.core.resources import memory_gib
 from ginkgo.formatting import duration_seconds, parse_timestamp
-from ginkgo.runtime.caching.cache import key_components
-from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
+from ginkgo.runtime.caching.cache import coarse_reasons, diff_key_components, key_components
+from ginkgo.runtime.caching.index import ENTRY_COLUMNS, PRIOR_ENTRY_WINDOW, CacheEntry
+from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.rundir import runs_without_ledger_warning
 from ginkgo.store.errors import StoreError
-from ginkgo.store.protocol import ProvenanceStore
+from ginkgo.store.protocol import ProvenanceStore, event_fields
 from ginkgo.store.sqlite import MEMORY, open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -41,6 +44,7 @@ __all__ = [
     "EventRow",
     "Provenance",
     "Query",
+    "RUN_STATUSES",
     "RerunExplanation",
     "RunRow",
     "SqlResult",
@@ -50,6 +54,9 @@ __all__ = [
 
 SQL_ROW_LIMIT = 1000
 """Rows :meth:`Query.sql` returns when the caller names no limit of its own."""
+
+RUN_STATUSES = ("running", "succeeded", "failed", "cancelled")
+"""Every status the ledger records for a run, for filters to validate against."""
 
 _READ_VERBS = frozenset({"SELECT", "WITH", "VALUES", "EXPLAIN"})
 """The statements :meth:`Query.sql` will run. Everything else is refused."""
@@ -115,7 +122,7 @@ class TaskRow:
     run_id, task_id : str
         Where this execution happened.
     name : str
-        The task's fully qualified name.
+        The task's qualified name, as the ledger records it.
     display_label : str | None
         The label the run rendered, when fan-out gave it one.
     status : str
@@ -140,11 +147,12 @@ class TaskRow:
         Threads the task declared, after site overrides.
     declared_memory_gb : float | None
         Memory the task declared, after site overrides and before any retry
-        escalation. This is the number a user would edit.
+        escalation, in GiB as written: ``512Mi`` is ``0.5``. This is the
+        number a user would edit.
     effective_memory_gb : float | None
-        Memory the last attempt actually ran against. Higher than
-        :attr:`declared_memory_gb` when ``memory_retry_multiplier`` escalated a
-        retry, and the honest denominator for a measured peak.
+        Whole GiB the last attempt actually ran against: the declaration
+        rounded up by the scheduler, or more when ``memory_retry_multiplier``
+        escalated a retry.
     """
 
     run_id: str
@@ -169,7 +177,8 @@ class TaskRow:
         return {
             "run_id": self.run_id,
             "task_id": self.task_id,
-            "name": self.name,
+            "task_name": task_base_name(self.name),
+            "qualified_name": self.name,
             "display_label": self.display_label,
             "status": self.status,
             "cached": self.cached,
@@ -225,6 +234,20 @@ class SqlResult:
         }
 
 
+_ENTRY_ARTIFACT_BYTES = (
+    "coalesce((SELECT sum(a.size) FROM artifacts a WHERE a.artifact_id IN ("
+    "  SELECT ca.artifact_id FROM cache_artifacts ca WHERE ca.cache_key = c.cache_key)"
+    "  AND coalesce(a.storage_backend, 'local') = 'local'), 0)"
+)
+"""SQL for the local artifact bytes one cache entry ``c`` names, each counted once."""
+
+_SIZED_ENTRIES = (
+    "WITH sized AS (SELECT c.function, c.hit_count, "
+    f"coalesce(c.size_bytes, 0) + {_ENTRY_ARTIFACT_BYTES} AS bytes FROM cache_entries c)"
+)
+"""A ``sized`` CTE: every cache entry with the bytes it accounts for."""
+
+
 @dataclass(frozen=True, kw_only=True)
 class CacheEntryRow:
     """One cache entry, as the cache commands display it.
@@ -234,9 +257,12 @@ class CacheEntryRow:
     cache_key : str
         The entry's content-addressed key.
     function : str
-        Fully qualified name of the task that wrote it.
-    size_bytes : int
-        Bytes the entry's stored output occupies.
+        Qualified name of the task that wrote it, as the ledger records it.
+    output_bytes : int
+        Bytes the entry's own stored output occupies.
+    artifact_bytes : int
+        Bytes of the local artifacts the entry names: the files and folders
+        it restores. An artifact two entries share counts toward both.
     created_at, last_hit_at : str | None
         ISO-8601 UTC timestamps; ``last_hit_at`` is ``None`` until a run hits it.
     hit_count : int
@@ -248,11 +274,32 @@ class CacheEntryRow:
 
     cache_key: str
     function: str
-    size_bytes: int
+    output_bytes: int
+    artifact_bytes: int
     created_at: str | None
     hit_count: int
     last_hit_at: str | None
     display_label: str | None
+
+    @property
+    def size_bytes(self) -> int:
+        """Bytes the entry accounts for: its output and the artifacts it names."""
+        return self.output_bytes + self.artifact_bytes
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the entry as ``ginkgo cache ls --json`` prints it."""
+        return {
+            "cache_key": self.cache_key,
+            "task_name": task_base_name(self.function),
+            "qualified_name": self.function,
+            "display_label": self.display_label,
+            "size_bytes": self.size_bytes,
+            "output_bytes": self.output_bytes,
+            "artifact_bytes": self.artifact_bytes,
+            "created_at": self.created_at,
+            "hit_count": self.hit_count,
+            "last_hit_at": self.last_hit_at,
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -264,12 +311,11 @@ class CacheStats:
     entries : int
         Entries in the index.
     total_bytes : int
-        Bytes across all of them.
+        Bytes across all of them, each entry counting its output and the
+        artifacts it names (see :attr:`CacheEntryRow.size_bytes`).
     artifact_bytes : int
-        Bytes in the local artifact store, which the entries point into and
-        which holds more than they do: bytes no entry names count here too.
-        Reported apart from ``total_bytes`` because pruning entries does not
-        bound it.
+        Bytes in the local artifact store, counted once each, including
+        bytes no entry names.
     never_hit : int
         Entries no run has ever served from.
     never_hit_bytes : int
@@ -308,17 +354,34 @@ class RerunExplanation:
 
     Attributes
     ----------
+    task_name : str
+        The task's base name; *display_label* names the branch.
     reason : str
-        The summary code: ``all_inputs_match``, ``no_entry_for_key``,
-        ``no_prior_entry``, or the first of *details*.
+        The summary code: ``all_inputs_match``, ``rerun_requested`` (forced
+        by ``--rerun``), ``no_entry_for_key`` (the node ran under this key
+        before and its entry is gone), ``prior_entry_removed`` (the key moved
+        but the entry it moved from is gone), ``no_prior_entry``,
+        ``task_moved``, or the first of *details*. A node with no earlier
+        entry of its own is ``no_prior_entry`` even when a sibling's entry
+        was compared against.
     details : list[str]
-        Every summary code the component diff implies.
+        Every summary code the component diff implies, in the order source,
+        version, environment, inputs. A source change where the task's own
+        text is unchanged is ``module_source_changed``: something else in its
+        module or its local imports moved.
     compared_with : dict[str, str] | None
         The entry compared against and how it was found — ``cache_key`` and a
-        ``strategy`` of ``same_node`` or ``newest_by_function`` — or ``None``
-        when there was nothing to compare with.
+        ``strategy`` of ``same_node`` (this node's previous entry) or
+        ``most_similar_by_function`` (the earlier entry of the same task that
+        differs from this one least, for a node that has none) — or ``None`` when there was nothing to compare
+        with.
     components : list[dict[str, Any]]
         One entry per cache-key component that differs.
+    moved_from : str | None
+        With reason ``task_moved``: the qualified name (``module.task``) an
+        earlier run of the same workflow knew this task by. A task's cache
+        identity includes its module and name, so moving or renaming it
+        starts it without a cache entry.
     input_labels : dict[str, str]
         Each input parameter's cache-tracking label (``content``, ``version``,
         ``path``, ``value``, ``output``, ``untracked`` — see
@@ -336,6 +399,7 @@ class RerunExplanation:
     details: list[str]
     compared_with: dict[str, str] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
+    moved_from: str | None = None
     input_labels: dict[str, str] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
@@ -349,6 +413,8 @@ class RerunExplanation:
         }
         if self.input_labels:
             payload["input_labels"] = self.input_labels
+        if self.moved_from is not None:
+            payload["moved_from"] = self.moved_from
         if self.compared_with is None and not self.components:
             return payload
         return payload | {
@@ -426,6 +492,36 @@ class Provenance:
             "cache_key": self.cache_key,
             "inputs": [dict(entry) for entry in self.inputs],
         }
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PriorEntry:
+    """The earlier cache key ``ginkgo cache explain`` compares a task against.
+
+    Attributes
+    ----------
+    cache_key : str
+        The earlier key.
+    strategy : str
+        ``same_node`` (this node's previous run) or ``most_similar_by_function``
+        (the closest entry of the same task, for a node with no history).
+    task_name : str
+        The qualified name the earlier run knew the task by.
+    """
+
+    cache_key: str
+    strategy: str
+    task_name: str
+
+
+def _own_source_unchanged(*, current: CacheEntry, prior: CacheEntry) -> bool:
+    """Return whether two entries record the same task text.
+
+    Their source hashes can still differ: each also covers the task's module
+    and local imports, so an edit to a neighbouring task moves it.
+    """
+    current_own = (current.extra or {}).get("own_source_hash")
+    return current_own is not None and current_own == (prior.extra or {}).get("own_source_hash")
 
 
 class Query:
@@ -535,25 +631,62 @@ class Query:
         )
         return {row["status"]: int(row["n"]) for row in rows}
 
-    def task_history(
-        self, name: str, *, limit: int = 20, include_pending: bool = False
-    ) -> list[TaskRow]:
-        """Return every run of one task, newest first.
+    def measured_executions(self, cache_keys: Iterable[str]) -> dict[str, TaskRow]:
+        """Return, per cache key, the newest execution that produced and measured it.
 
-        The task is matched on its display label as well as its name, so the
-        label ``ginkgo run`` printed for a fanned-out branch is what a user can
-        ask about afterwards.
+        A cache hit measures nothing: the result it serves was made, and its
+        memory measured, by an earlier run. This finds that run.
+
+        Parameters
+        ----------
+        cache_keys : Iterable[str]
+            The cache keys to look up.
+
+        Returns
+        -------
+        dict[str, TaskRow]
+            Keyed by cache key; a key no measured execution produced is absent.
+        """
+        keys = sorted(set(cache_keys))
+        if not keys:
+            return {}
+        placeholders = ", ".join("?" for _ in keys)
+        rows = self._store.query(
+            f"SELECT {_TASK_COLUMNS} "
+            "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
+            f"WHERE t.cache_key IN ({placeholders}) AND t.cached = 0 "
+            "AND t.status = 'succeeded' AND t.peak_rss_bytes IS NOT NULL "
+            "ORDER BY r.started_at DESC, t.run_id DESC",
+            tuple(keys),
+        )
+        found: dict[str, TaskRow] = {}
+        for row in rows:
+            found.setdefault(str(row["cache_key"]), _task_row(row))
+        return found
+
+    def task_history(
+        self, name: str, *, limit: int | None = 20, include_unstarted: bool = False
+    ) -> list[TaskRow]:
+        """Return every execution of one task in its most recent runs, newest first.
+
+        The task is matched on its base name, its qualified name, or the
+        display label of one branch, so the label ``ginkgo run`` printed for
+        a fanned-out branch is what a user can ask about afterwards. A
+        fan-out puts several rows in one run; *limit* counts runs, so a run's
+        branches are never split across the cut.
 
         Parameters
         ----------
         name : str
-            The task's name, its base name, or the display label of one branch.
-        limit : int, optional
-            Most rows to return.
-        include_pending : bool, optional
+            The task's base name, its qualified name, or the display label of
+            one branch.
+        limit : int | None, optional
+            Most runs to return rows from; ``None`` for the task's whole
+            history, which is what a distribution over it needs.
+        include_unstarted : bool, optional
             Also return runs in which the task never started, such as one
-            blocked by an upstream failure. Left out by default: they hold no
-            history of the task.
+            skipped after an upstream failure. Left out by default: they hold
+            no history of the task.
 
         Returns
         -------
@@ -566,42 +699,15 @@ class Query:
         rows = self._store.query(
             f"SELECT {_TASK_COLUMNS} "
             "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            f"WHERE ({_TASK_MATCH}){'' if include_pending else _STARTED_ONLY} "
-            "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id LIMIT ?",
-            (name, name, _like_suffix(f".{name}"), limit),
-        )
-        return [_task_row(row) for row in rows]
-
-    def task_resource_history(self, name: str, *, include_pending: bool = False) -> list[TaskRow]:
-        """Return every run of one task, newest first and unlimited.
-
-        The distribution ``ginkgo history --resources`` reports is computed
-        over all of a task's history, not over the window the table happens to
-        print: a p95 that quietly depended on ``--limit`` would move whenever
-        someone changed how many rows they wanted to look at.
-
-        Parameters
-        ----------
-        name : str
-            The task's name, its base name, or the display label of one branch.
-        include_pending : bool, optional
-            Also count runs in which the task never started; see
-            :meth:`task_history`.
-
-        Returns
-        -------
-        list[TaskRow]
-            Every recorded run, measured or not. Cache hits are included so a
-            caller can report how much of the history measured nothing.
-        """
-        rows = self._store.query(
-            f"SELECT {_TASK_COLUMNS} "
-            "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            f"WHERE ({_TASK_MATCH}){'' if include_pending else _STARTED_ONLY} "
+            f"WHERE ({_TASK_MATCH}){'' if include_unstarted else _STARTED_ONLY} "
             "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id",
             (name, name, _like_suffix(f".{name}")),
         )
-        return [_task_row(row) for row in rows]
+        history = [_task_row(row) for row in rows]
+        if limit is None:
+            return history
+        kept = set(list(dict.fromkeys(row.run_id for row in history))[:limit])
+        return [row for row in history if row.run_id in kept]
 
     def events(
         self,
@@ -617,7 +723,7 @@ class Query:
             filter_sql = f" AND type IN ({', '.join('?' for _ in types)})"
             params.extend(types)
         rows = self._store.query(
-            "SELECT seq, run_id, ts, type, task_id, payload FROM events "
+            "SELECT seq, run_id, ts, type, v, task_id, attempt, cache_key, payload FROM events "
             f"WHERE run_id = ? AND seq > ?{filter_sql} ORDER BY seq",  # noqa: S608
             params,
         )
@@ -628,30 +734,47 @@ class Query:
                 ts=row["ts"],
                 type=row["type"],
                 task_id=row["task_id"],
-                payload=json.loads(row["payload"]),
+                payload=event_fields(
+                    run_id=row["run_id"],
+                    ts=row["ts"],
+                    type=row["type"],
+                    v=row["v"],
+                    task_id=row["task_id"],
+                    attempt=row["attempt"],
+                    cache_key=row["cache_key"],
+                    payload=row["payload"],
+                ),
             )
 
     # -- cache ---------------------------------------------------------------
 
-    def cache_entries(self, *, function: str | None = None) -> list[CacheEntryRow]:
+    def cache_entries(self, *, task: str | None = None) -> list[CacheEntryRow]:
         """Return cache entries, newest first.
 
         Parameters
         ----------
-        function : str | None, optional
-            Only entries written by this task.
+        task : str | None, optional
+            Only entries written by this task, named as ``history`` takes it:
+            its base name, its qualified name, or the display label of the
+            branch that recorded the entry.
 
         Returns
         -------
         list[CacheEntryRow]
         """
-        where = "WHERE c.function = ?" if function is not None else ""
-        params = (function,) if function is not None else ()
+        where = ""
+        params: tuple[str, ...] = ()
+        if task is not None:
+            where = (
+                "WHERE c.function = ? OR c.function LIKE ? ESCAPE '\\' OR c.cache_key IN ("
+                "  SELECT cache_key FROM tasks WHERE display_label = ?)"
+            )
+            params = (task, _like_suffix(f".{task}"), task)
         # The entry does not record which branch wrote it, so the label comes
         # from the newest task the ledger recorded with the same key.
         rows = self._store.query(
             "SELECT c.cache_key, c.function, c.size_bytes, c.created_at, c.hit_count, "
-            "c.last_hit_at, ("
+            f"c.last_hit_at, {_ENTRY_ARTIFACT_BYTES} AS artifact_bytes, ("
             "  SELECT t.display_label FROM tasks t JOIN runs r ON r.run_id = t.run_id "
             "  WHERE t.cache_key = c.cache_key ORDER BY r.started_at DESC LIMIT 1"
             ") AS display_label "
@@ -662,7 +785,8 @@ class Query:
             CacheEntryRow(
                 cache_key=str(row["cache_key"]),
                 function=str(row["function"]),
-                size_bytes=int(row["size_bytes"] or 0),
+                output_bytes=int(row["size_bytes"] or 0),
+                artifact_bytes=int(row["artifact_bytes"]),
                 created_at=row["created_at"],
                 hit_count=int(row["hit_count"] or 0),
                 last_hit_at=row["last_hit_at"],
@@ -671,6 +795,14 @@ class Query:
             for row in rows
         ]
 
+    def _cache_entry(self, cache_key: str) -> CacheEntry | None:
+        """Return one entry's row, or ``None`` once it has been removed."""
+        rows = self._store.query(
+            f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
+            (cache_key,),
+        )
+        return CacheEntry.from_row(rows[0]) if rows else None
+
     def _cache_key_components(self, cache_key: str) -> dict[str, Any]:
         """Return the labelled components of one entry's cache key.
 
@@ -678,29 +810,26 @@ class Query:
         payload the key is hashed from, so the two cannot drift and no second
         table has to be kept in step.
         """
-        rows = self._store.query(
-            f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
-            (cache_key,),
-        )
-        if not rows:
-            return {}
-        return key_components(CacheEntry.from_row(rows[0]).as_meta())
+        entry = self._cache_entry(cache_key)
+        return {} if entry is None else key_components(entry.as_meta())
 
     def cache_stats(self) -> CacheStats:
         """Return entry counts, bytes and hit statistics for the whole cache."""
         totals = self._store.query(
-            "SELECT count(*) AS entries, coalesce(sum(size_bytes), 0) AS total_bytes, "
+            f"{_SIZED_ENTRIES} SELECT count(*) AS entries, "  # noqa: S608
+            "coalesce(sum(bytes), 0) AS total_bytes, "
             "coalesce(sum(hit_count = 0), 0) AS never_hit, "
-            "coalesce(sum(CASE WHEN hit_count = 0 THEN size_bytes ELSE 0 END), 0) "
-            "AS never_hit_bytes FROM cache_entries"
+            "coalesce(sum(CASE WHEN hit_count = 0 THEN bytes ELSE 0 END), 0) "
+            "AS never_hit_bytes FROM sized"
         )[0]
         histogram = self._store.query(
             "SELECT hit_count, count(*) AS n FROM cache_entries GROUP BY hit_count "
             "ORDER BY hit_count"
         )
         functions = self._store.query(
-            "SELECT function, count(*) AS n, coalesce(sum(size_bytes), 0) AS bytes "
-            "FROM cache_entries GROUP BY function ORDER BY bytes DESC, function LIMIT 10"
+            f"{_SIZED_ENTRIES} SELECT function, count(*) AS n, "  # noqa: S608
+            "coalesce(sum(bytes), 0) AS bytes "
+            "FROM sized GROUP BY function ORDER BY bytes DESC, function LIMIT 10"
         )
         artifacts = self._store.query(
             "SELECT coalesce(sum(size), 0) AS artifact_bytes FROM artifacts "
@@ -718,15 +847,18 @@ class Query:
             ],
         )
 
-    def _previous_cache_key(self, *, run_id: str, task_id: str) -> tuple[str, str] | None:
+    def _previous_cache_key(
+        self, *, run_id: str, task_id: str, current: dict[str, Any]
+    ) -> _PriorEntry | None:
         """Return the key this task's node last used, and how it was found.
 
         The comparison ``ginkgo cache explain`` wants is against the same node
-        of the same workflow in the run before this one — the entry this run
-        superseded. Where that node is new, the newest earlier entry written by
-        the same function is the closest thing to a predecessor, and the caller
-        is told which of the two it got so it does not read a fan-out sibling
-        as a history (issue #223).
+        of the same workflow in the latest run before this one. That key can
+        be this run's own: the node ran under it before, and the entry it left
+        is gone. Where the node is new, the closest thing to a predecessor is
+        whichever recent earlier entry of the same function differs from
+        *current* least, and the caller is told which of the two it got so it
+        does not read a fan-out sibling as a history (issue #223).
 
         Parameters
         ----------
@@ -734,12 +866,13 @@ class Query:
             The run being explained.
         task_id : str
             The task within it.
+        current : dict[str, Any]
+            The task's own cache-key components.
 
         Returns
         -------
-        tuple[str, str] | None
-            ``(cache_key, strategy)`` where strategy is ``"same_node"`` or
-            ``"newest_by_function"``, or ``None`` when nothing earlier exists.
+        _PriorEntry | None
+            The earlier key, or ``None`` when nothing earlier exists.
         """
         rows = self._store.query(
             "SELECT t.name, t.display_label, t.cache_key, r.workflow, r.started_at "
@@ -751,30 +884,38 @@ class Query:
             return None
         task = rows[0]
         same_node = self._store.query(
-            "SELECT t.cache_key FROM tasks t JOIN runs r ON r.run_id = t.run_id "
+            "SELECT t.name, t.cache_key FROM tasks t JOIN runs r ON r.run_id = t.run_id "
             "WHERE r.workflow = ? AND r.started_at < ? AND t.cache_key IS NOT NULL "
-            "AND t.cache_key != ? AND coalesce(t.display_label, t.name) = ? "
+            "AND coalesce(t.display_label, t.name) = ? "
             "ORDER BY r.started_at DESC LIMIT 1",
-            (
-                task["workflow"],
-                task["started_at"],
-                task["cache_key"],
-                task["display_label"] or task["name"],
-            ),
+            (task["workflow"], task["started_at"], task["display_label"] or task["name"]),
         )
         if same_node:
-            return str(same_node[0]["cache_key"]), "same_node"
+            return _PriorEntry(
+                cache_key=str(same_node[0]["cache_key"]),
+                strategy="same_node",
+                task_name=str(same_node[0]["name"]),
+            )
 
-        sibling = self._store.query(
+        siblings = self._store.query(
             "SELECT cache_key FROM cache_entries WHERE function = ? AND cache_key != ? "
             "AND created_at < coalesce("
             "  (SELECT created_at FROM cache_entries WHERE cache_key = ?), created_at"
-            ") ORDER BY created_at DESC LIMIT 1",
-            (task["name"], task["cache_key"], task["cache_key"]),
+            ") ORDER BY created_at DESC LIMIT ?",
+            (task["name"], task["cache_key"], task["cache_key"], PRIOR_ENTRY_WINDOW),
         )
-        if sibling:
-            return str(sibling[0]["cache_key"]), "newest_by_function"
-        return None
+        if not siblings:
+            return None
+        # min() keeps the first of equals, and the entries come newest first.
+        closest = min(
+            (str(row["cache_key"]) for row in siblings),
+            key=lambda key: len(
+                diff_key_components(current=current, prior=self._cache_key_components(key))
+            ),
+        )
+        return _PriorEntry(
+            cache_key=closest, strategy="most_similar_by_function", task_name=str(task["name"])
+        )
 
     def explain_rerun(self, run_id: str, task_id: str) -> RerunExplanation:
         """Explain why one task of a run executed rather than serving from cache.
@@ -808,41 +949,142 @@ class Query:
         cache_key = task["cache_key"]
         identity: dict[str, Any] = {
             "task_id": task_id,
-            "task_name": str(task["name"]),
+            "task_name": task_base_name(str(task["name"])),
             "display_label": task["display_label"],
             "cache_key": cache_key,
+            "input_labels": self._task_input_labels(run_id=run_id, task_id=task_id),
         }
-        input_labels = self._task_input_labels(run_id=run_id, task_id=task_id)
         if task["status"] == "cached":
-            return RerunExplanation(
-                **identity, reason="all_inputs_match", details=[], input_labels=input_labels
-            )
+            return RerunExplanation(**identity, reason="all_inputs_match", details=[])
+        # Asked before any key is compared: a forced task never looked.
+        if self._rerun_requested(run_id=run_id, task_id=task_id):
+            return RerunExplanation(**identity, reason="rerun_requested", details=[])
 
-        current = self._cache_key_components(cache_key) if isinstance(cache_key, str) else {}
-        if not current:
-            return RerunExplanation(
-                **identity, reason="no_entry_for_key", details=[], input_labels=input_labels
-            )
+        current_entry = self._cache_entry(cache_key) if isinstance(cache_key, str) else None
+        if current_entry is None:
+            return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
+        current = key_components(current_entry.as_meta())
 
-        prior = self._previous_cache_key(run_id=run_id, task_id=task_id)
+        prior = self._previous_cache_key(run_id=run_id, task_id=task_id, current=current)
         if prior is None:
+            moved_from = self._moved_from(run_id=run_id, task_id=task_id)
             return RerunExplanation(
-                **identity, reason="no_prior_entry", details=[], input_labels=input_labels
+                **identity,
+                reason="no_prior_entry" if moved_from is None else "task_moved",
+                details=[],
+                moved_from=moved_from,
+            )
+        compared_with = {"cache_key": prior.cache_key, "strategy": prior.strategy}
+        if prior.cache_key == cache_key:
+            # The node ran under this very key before, so nothing it is keyed
+            # on changed: the entry that run left was removed (`cache prune`,
+            # `cache clear`), or never written because the run failed.
+            return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
+        prior_entry = self._cache_entry(prior.cache_key)
+        if prior_entry is None:
+            # Diffing against nothing would call every component "added".
+            return RerunExplanation(
+                **identity, reason="prior_entry_removed", details=[], compared_with=compared_with
             )
 
-        prior_key, strategy = prior
-        components = _diff_key_components(
-            current=current, prior=self._cache_key_components(prior_key)
+        components = diff_key_components(
+            current=current, prior=key_components(prior_entry.as_meta())
         )
-        details = _coarse_reasons(components)
+        details = coarse_reasons(components)
+        if _own_source_unchanged(current=current_entry, prior=prior_entry):
+            details = [
+                "module_source_changed" if code == "source_hash_changed" else code
+                for code in details
+            ]
+        moved_from = (
+            prior.task_name
+            if prior.strategy == "same_node" and prior.task_name != task["name"]
+            else None
+        )
+        if moved_from is not None:
+            reason = "task_moved"
+        elif prior.strategy == "same_node":
+            reason = details[0]
+        else:
+            # A sibling's entry is the nearest thing to compare with, not a
+            # predecessor: this node has no earlier entry, so nothing of its
+            # own changed. The sibling diff stays as detail.
+            reason = "no_prior_entry"
         return RerunExplanation(
             **identity,
-            reason=details[0],
+            reason=reason,
             details=details,
-            compared_with={"cache_key": prior_key, "strategy": strategy},
+            compared_with=compared_with,
             components=components,
-            input_labels=input_labels,
+            moved_from=moved_from,
         )
+
+    def _rerun_requested(self, *, run_id: str, task_id: str) -> bool:
+        """Return whether ``--rerun`` forced this task past its cache entry.
+
+        Read from the task's cache-miss event, so it is unknown — ``False`` —
+        once ``ginkgo db prune`` has dropped that run's events.
+        """
+        rows = self._store.query(
+            "SELECT payload FROM events WHERE run_id = ? AND task_id = ? "
+            "AND type = 'task_cache_miss'",
+            (run_id, task_id),
+        )
+        return any(json.loads(row["payload"]).get("rerun_requested") for row in rows)
+
+    def _moved_from(self, *, run_id: str, task_id: str) -> str | None:
+        """Return the qualified name an earlier run of this workflow gave this task.
+
+        Only asked once no earlier entry of the same node exists. A task of the
+        same base name under another module, in the latest earlier run of the
+        same workflow that had one, is this task before it moved. Failing
+        that, a rename: the same node of the latest earlier run, under a name
+        this run no longer has and with the same parameters.
+        """
+        rows = self._store.query(
+            "SELECT t.name, r.workflow, r.started_at FROM tasks t "
+            "JOIN runs r ON r.run_id = t.run_id WHERE t.run_id = ? AND t.task_id = ?",
+            (run_id, task_id),
+        )
+        if not rows:
+            return None
+        name = str(rows[0]["name"])
+        base_name = task_base_name(name)
+        earlier = self._store.query(
+            "SELECT DISTINCT t.name, r.started_at FROM tasks t "
+            "JOIN runs r ON r.run_id = t.run_id "
+            "WHERE r.workflow = ? AND r.started_at < ? AND t.name != ? "
+            "ORDER BY r.started_at DESC",
+            (rows[0]["workflow"], rows[0]["started_at"], name),
+        )
+        moved = next(
+            (str(row["name"]) for row in earlier if task_base_name(str(row["name"])) == base_name),
+            None,
+        )
+        if moved is not None:
+            return moved
+
+        previous_run = self._store.query(
+            "SELECT run_id FROM runs WHERE workflow = ? AND started_at < ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (rows[0]["workflow"], rows[0]["started_at"]),
+        )
+        if not previous_run:
+            return None
+        earlier_run_id = str(previous_run[0]["run_id"])
+        same_node = self._store.query(
+            "SELECT name FROM tasks WHERE run_id = ? AND task_id = ? "
+            "AND name NOT IN (SELECT name FROM tasks WHERE run_id = ?)",
+            (earlier_run_id, task_id, run_id),
+        )
+        if not same_node:
+            return None
+        params = "SELECT param FROM task_inputs WHERE run_id = ? AND task_id = ? ORDER BY param"
+        current_params = [row["param"] for row in self._store.query(params, (run_id, task_id))]
+        earlier_params = [
+            row["param"] for row in self._store.query(params, (earlier_run_id, task_id))
+        ]
+        return str(same_node[0]["name"]) if current_params == earlier_params else None
 
     def _task_input_labels(self, *, run_id: str, task_id: str) -> dict[str, str]:
         """Return one task's per-parameter cache-tracking labels.
@@ -1037,21 +1279,33 @@ class Query:
         )
         if known:
             return path_or_artifact_id, None
+        # A ledger lost or replaced since the run that wrote the path knows
+        # nothing of it, whatever the task's annotations were.
+        ledger_gap = runs_without_ledger_warning(layout=self._layout)
+        if ledger_gap is not None:
+            raise FileNotFoundError(
+                f"Nothing in the ledger produced {path_or_artifact_id!r}, and {ledger_gap}. "
+                "A path written by one of those runs cannot be traced; run the workflow "
+                "again to record it."
+            )
         raise FileNotFoundError(
             f"Nothing in the ledger produced {path_or_artifact_id!r}: it is neither an "
-            "artifact id nor a path ginkgo has materialized."
+            "artifact id nor a path ginkgo has materialized. A path a task returns as a "
+            "plain `str` is not tracked; annotate the return `-> file` (or `-> folder`), "
+            "or write it through an `Out[file]` parameter, and ginkgo records it."
         )
 
     def _task_name(self, *, run_id: str | None, task_id: str | None) -> str | None:
-        """Return the display label or name of one task."""
+        """Return the name one task is shown under: its display label or base name."""
         if run_id is None or task_id is None:
             return None
         rows = self._store.query(
-            "SELECT coalesce(display_label, name) AS label FROM tasks "
-            "WHERE run_id = ? AND task_id = ?",
+            "SELECT display_label, name FROM tasks WHERE run_id = ? AND task_id = ?",
             (run_id, task_id),
         )
-        return str(rows[0]["label"]) if rows else None
+        if not rows:
+            return None
+        return rows[0]["display_label"] or task_base_name(str(rows[0]["name"]))
 
     def _task_inputs(
         self, *, run_id: str | None, task_id: str | None
@@ -1122,48 +1376,6 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
         empty.restrict_to_reads()
         return Query(empty, layout=layout)
     return Query(open_store(path, readonly=readonly), layout=layout)
-
-
-def _diff_key_components(
-    *, current: dict[str, Any], prior: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Return the cache-key components that differ between two entries."""
-    differences: list[dict[str, Any]] = []
-    for name in sorted(set(current) | set(prior)):
-        # A component absent from one side is a parameter that came or went.
-        if name not in current:
-            differences.append({"component": name, "status": "removed", "prior": prior[name]})
-        elif name not in prior:
-            differences.append({"component": name, "status": "added", "current": current[name]})
-        elif current[name] != prior[name]:
-            differences.append(
-                {
-                    "component": name,
-                    "status": "changed",
-                    "current": current[name],
-                    "prior": prior[name],
-                }
-            )
-    return differences
-
-
-def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
-    """Return the summary reason codes implied by a component diff.
-
-    A moved component no code covers falls back to ``cache_key_changed``; the
-    component list names it either way.
-    """
-    moved = {str(component["component"]) for component in components}
-    reasons = []
-    if moved & {"source_hash", "extra_source_hash"}:
-        reasons.append("source_hash_changed")
-    if "version" in moved:
-        reasons.append("version_bump")
-    if moved & {"env", "env_hash.pixi_lock"}:
-        reasons.append("env_changed")
-    if any(name.startswith("inputs") for name in moved):
-        reasons.append("input_changed")
-    return reasons or ["cache_key_changed"]
 
 
 def _mentions(statement: str, table: str) -> bool:
@@ -1265,15 +1477,18 @@ _TASK_COLUMNS = (
     "t.run_id, t.task_id, t.name, t.display_label, t.status, t.cached, "
     "t.cache_key, t.started_at, t.finished_at, t.attempts, "
     "t.peak_rss_bytes, t.cpu_seconds, t.declared_threads, "
-    "t.declared_memory_gb, t.effective_memory_gb"
+    "t.declared_memory_gb, t.effective_memory_gb, "
+    "json_extract(t.resource_usage, '$.declared.memory') AS declared_memory"
 )
 """The projection behind :class:`TaskRow`, shared by every reader of it."""
 
 _TASK_MATCH = "t.name = ? OR t.display_label = ? OR t.name LIKE ? ESCAPE '\\'"
 """Matches a task by name, by base name, or by one fan-out branch's label."""
 
-_STARTED_ONLY = " AND NOT (t.status = 'pending' AND t.started_at IS NULL)"
-"""Drops tasks no run ever started; one waiting to retry has started and stays."""
+_STARTED_ONLY = " AND NOT (t.status IN ('pending', 'skipped') AND t.started_at IS NULL)"
+"""Drops tasks a run never started: one skipped when its run stopped, or one
+still waiting in a run in progress. A cache hit never starts either, but it
+holds a result, so it stays; so does a task waiting to retry."""
 
 
 def _task_row(row: Any) -> TaskRow:
@@ -1293,9 +1508,23 @@ def _task_row(row: Any) -> TaskRow:
         peak_rss_bytes=row["peak_rss_bytes"],
         cpu_seconds=row["cpu_seconds"],
         declared_threads=row["declared_threads"],
-        declared_memory_gb=row["declared_memory_gb"],
+        declared_memory_gb=_declared_memory_gb(row),
         effective_memory_gb=row["effective_memory_gb"],
     )
+
+
+def _declared_memory_gb(row: Any) -> float | None:
+    """Return the memory a task declared, in GiB as written.
+
+    The ``declared_memory_gb`` column holds the whole GiB the scheduler rounds
+    a declaration up to, so ``512Mi`` reads as 1 there. Sizing a declaration
+    from a measured peak needs the figure the user wrote, which the recorded
+    resource usage keeps.
+    """
+    written = row["declared_memory"]
+    if isinstance(written, str):
+        return memory_gib(written)
+    return row["declared_memory_gb"]
 
 
 def _like_suffix(value: str) -> str:

@@ -7,6 +7,29 @@
     <div class="title">{{ card.title }}</div>
     <div class="sub">{{ card.sub_line }}</div>
   </div>
+  {% if not single_file %}
+  {% if card.static_relpath %}
+  <a class="link" href="{{ card.static_relpath }}">static copy →</a>
+  {% endif %}
   <a class="link" href="{{ card.link_relpath }}">open →</a>
+  {% endif %}
 </div>
+{% if single_file %}
+<iframe class="page-frame" title="{{ card.title }}" sandbox="allow-same-origin" srcdoc="{{ card.embed_html }}"></iframe>
+{% endif %}
 {% endfor %}
+{% if report.pages | selectattr("static_relpath") | list %}
+<p class="trunc-note">
+  {% if single_file %}
+  Notebook pages are embedded as static copies of their outputs, which need no
+  network. Interactive elements are drawn as plain HTML, such as a table's rows,
+  or named and left out. The interactive marimo pages are in the bundle export
+  (<code>ginkgo report</code> without <code>--single-file</code>); they load
+  marimo's interface from cdn.jsdelivr.net, so they need a network connection.
+  {% else %}
+  A marimo page loads marimo's interface from cdn.jsdelivr.net, so it needs a
+  network connection to display. Its static copy shows the same outputs offline,
+  with interactive elements drawn as plain HTML or named and left out.
+  {% endif %}
+</p>
+{% endif %}

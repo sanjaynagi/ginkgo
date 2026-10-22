@@ -2,47 +2,12 @@
 
 from __future__ import annotations
 
-import signal
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from threading import current_thread, main_thread
 from typing import Iterable
 
 from ortools.sat.python import cp_model
-
-_GUARDED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
-
-
-@contextmanager
-def _signal_handlers_preserved() -> Iterator[None]:
-    """Restore this process's signal handlers after CP-SAT has solved.
-
-    CP-SAT installs its own interrupt handler for the duration of a solve and
-    puts back ``SIG_DFL`` rather than what it found. Every solve therefore
-    disarms whatever handler the caller installed, and the scheduler solves on
-    every dispatch — so an interrupt arriving after the first wave killed the
-    process outright, before the run could record that it was cancelled.
-
-    Only meaningful on the main thread: :func:`signal.signal` refuses to run
-    anywhere else, and there is nothing to restore there anyway.
-    """
-    if current_thread() is not main_thread():
-        yield
-        return
-
-    previous = {signum: signal.getsignal(signum) for signum in _GUARDED_SIGNALS}
-    try:
-        yield
-    finally:
-        # Re-installed unconditionally. CP-SAT reaches past the ``signal``
-        # module to change the disposition, so Python's own record of the
-        # handler still names it and comparing the two would see no change
-        # to undo. ``getsignal`` returns None only for a handler installed
-        # from C, which there is no way to put back.
-        for signum, handler in previous.items():
-            if handler is not None:
-                signal.signal(signum, handler)
 
 
 @dataclass(frozen=True)
@@ -67,6 +32,8 @@ class SchedulableTask:
         Optional named concurrency group. When set, the scheduler will
         respect the corresponding entry in ``available_group_slots`` when
         selecting tasks to dispatch.
+    concurrency_group_limit : int | None
+        How many tasks of the group may run at once, if it is limited.
     custom : Mapping[str, int]
         User-defined resource demands, constrained per dimension by
         ``custom_budgets``. Dimensions absent from the budgets mapping are
@@ -80,7 +47,97 @@ class SchedulableTask:
     gpu: int = 0
     priority: int = 0
     concurrency_group: str | None = None
+    concurrency_group_limit: int | None = None
     custom: Mapping[str, int] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
+class ResourceLedger:
+    """The run's resource budgets, and what the tasks in flight hold of them.
+
+    A task's footprint is reserved when it is handed to an executor and
+    released when that work finishes, so what is free is always known
+    without re-adding up the tasks in flight.
+
+    Parameters
+    ----------
+    jobs : int
+        How many tasks may be in flight at once.
+    cores : int
+        The local core budget.
+    memory : int | None
+        The local memory budget in GiB, or ``None`` when memory is not
+        scheduled.
+    gpus : int
+        The local GPU budget.
+    custom_budgets : Mapping[str, int] | None
+        Run-level budgets for user-defined resource dimensions.
+    """
+
+    jobs: int
+    cores: int
+    memory: int | None = None
+    gpus: int = 0
+    custom_budgets: Mapping[str, int] | None = None
+    _held: dict[int, SchedulableTask] = field(default_factory=dict, repr=False)
+    _cores: int = field(default=0, repr=False)
+    _memory: int = field(default=0, repr=False)
+    _gpus: int = field(default=0, repr=False)
+    _groups: Counter[str] = field(default_factory=Counter, repr=False)
+    _custom: Counter[str] = field(default_factory=Counter, repr=False)
+
+    def reserve(self, task: SchedulableTask) -> None:
+        """Hold *task*'s footprint while its work is in flight."""
+        if task.node_id in self._held:
+            raise RuntimeError(f"node {task.node_id} already holds resources")
+        self._held[task.node_id] = task
+        self._cores += task.threads
+        self._memory += task.memory_gb
+        self._gpus += task.gpu
+        if task.concurrency_group is not None:
+            self._groups[task.concurrency_group] += 1
+        self._custom.update(task.custom)
+
+    def release(self, node_id: int) -> None:
+        """Give back what the node's finished work held."""
+        task = self._held.pop(node_id)
+        self._cores -= task.threads
+        self._memory -= task.memory_gb
+        self._gpus -= task.gpu
+        if task.concurrency_group is not None:
+            self._groups[task.concurrency_group] -= 1
+        self._custom.subtract(task.custom)
+
+    def select(self, ready_tasks: list[SchedulableTask]) -> list[int]:
+        """Select the ready tasks to dispatch within what is still free.
+
+        A concurrency group's limit is read from the ready tasks that
+        declare it; every task of the group in flight counts against it.
+        """
+        group_slots = {
+            task.concurrency_group: max(
+                0, task.concurrency_group_limit - self._groups[task.concurrency_group]
+            )
+            for task in ready_tasks
+            if task.concurrency_group is not None and task.concurrency_group_limit is not None
+        }
+        custom = (
+            None
+            if not self.custom_budgets
+            else {
+                dimension: budget - self._custom[dimension]
+                for dimension, budget in self.custom_budgets.items()
+            }
+        )
+        return select_dispatch_subset(
+            ready_tasks=ready_tasks,
+            jobs=self.jobs - len(self._held),
+            cores=self.cores - self._cores,
+            memory=None if self.memory is None else self.memory - self._memory,
+            gpus=self.gpus - self._gpus,
+            available_group_slots=group_slots,
+            custom_budgets=custom,
+        )
 
 
 def select_dispatch_subset(
@@ -199,8 +256,12 @@ def _select_with_cp_sat(
     )
 
     solver = cp_model.CpSolver()
-    with _signal_handlers_preserved():
-        status = solver.Solve(model)
+    # CP-SAT otherwise installs its own SIGINT handler for each solve and
+    # leaves SIG_DFL behind. The scheduler solves on every dispatch, so that
+    # disarmed the run's interrupt handler, and a Ctrl-C landing mid-solve
+    # only stopped the solve. Left alone, the interrupt reaches the run.
+    solver.parameters.catch_sigint_signal = False
+    status = solver.Solve(model)
     if status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
         return []
 

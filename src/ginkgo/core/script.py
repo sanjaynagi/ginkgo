@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import final
 
-from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.directive import DirectiveError, ExecutionDirective
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.hashing import hash_file
 
@@ -112,7 +112,7 @@ def script(
         interpreter = _EXTENSION_TO_INTERPRETER.get(suffix)
         if interpreter is None:
             supported = ", ".join(sorted(_EXTENSION_TO_INTERPRETER.keys()))
-            raise ValueError(
+            raise DirectiveError(
                 f"Cannot infer interpreter for {str(resolved)!r}. "
                 f"Supported extensions: {supported}. Pass interpreter= explicitly."
             )

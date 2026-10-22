@@ -453,5 +453,5 @@ def test_doctor_reports_a_missing_plugin_with_its_own_code() -> None:
 
     code, suggestion = _diagnostic_code_and_suggestion(exc=exc, message=str(exc))
 
-    assert code == "PLUGIN_NOT_FOUND"
+    assert code == "plugin_not_found"
     assert suggestion is not None and "ginkgo plugins" in suggestion

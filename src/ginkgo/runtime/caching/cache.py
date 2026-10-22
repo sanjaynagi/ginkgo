@@ -17,11 +17,14 @@ from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import (
+    PLAIN_SCALAR_TYPES,
     annotation_includes,
     file,
     folder,
+    holds_only_plain_scalars,
     is_path_shaped_annotation,
     is_untracked_annotation,
+    looks_like_path_string,
     pair_elements_with_annotations,
     require_path_value,
     tmp_dir,
@@ -31,6 +34,7 @@ from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.task_validation import (
+    declared_output_paths,
     is_content_trackable_path_shape,
     is_content_trackable_path_value,
     label_input_value,
@@ -41,22 +45,57 @@ from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.jsonio import dumps_or_none
 from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
-    CodecError,
     check_encoded,
     decode_value,
     encode_value,
+    encoded_artifact_ids,
     hash_value_bytes,
     summarise_value,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
+from ginkgo.runtime.module_loader import cache_identity_module_name
 
 
 logger = logging.getLogger(__name__)
 
-_UNREADABLE_ENTRY_ERRORS = (OSError, ValueError, KeyError, CodecError)
-"""What reading a cache entry raises when the entry cannot be used."""
+_UNREADABLE_ENTRY_ERRORS = (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError)
+"""What reading a cache entry raises when the entry cannot be used.
+
+``TypeError`` covers the codec's own refusal; the import and attribute errors
+come from unpickling a value whose task or class has been renamed or removed
+since it was stored.
+"""
+
+_KEY_FORMAT = 2
+"""Version of what a cache entry holds, folded into every key.
+
+Bumped when an entry written by an older version can no longer be trusted, so
+those entries miss once instead. Format 2 stores a dynamic task's returned
+expressions rather than the value they resolved to.
+"""
 
 MISSING = object()
+
+
+@dataclass(frozen=True)
+class DynamicTemplate:
+    """The task expressions a dynamic task returned, as its cache entry holds them.
+
+    A task that returns task expressions is complete only once they have run.
+    Its entry keeps the expressions rather than the value they resolved to, so
+    a hit replays them and each child is looked up in the cache on its own:
+    a child whose code or inputs changed re-runs, even though the parent's
+    key did not move. The template is pickled whole, so an expression shared
+    between two places in it stays one task.
+
+    Parameters
+    ----------
+    template : Any
+        The returned value: an expression, or a nested container holding
+        them.
+    """
+
+    template: Any
 
 
 def key_components(meta: dict[str, Any]) -> dict[str, Any]:
@@ -82,6 +121,46 @@ def key_components(meta: dict[str, Any]) -> dict[str, Any]:
     if isinstance(input_hashes, dict):
         components.update({f"inputs.{name}": value for name, value in input_hashes.items()})
     return components
+
+
+def diff_key_components(*, current: dict[str, Any], prior: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the cache-key components that differ between two entries."""
+    differences: list[dict[str, Any]] = []
+    for name in sorted(set(current) | set(prior)):
+        # A component absent from one side is a parameter that came or went.
+        if name not in current:
+            differences.append({"component": name, "status": "removed", "prior": prior[name]})
+        elif name not in prior:
+            differences.append({"component": name, "status": "added", "current": current[name]})
+        elif current[name] != prior[name]:
+            differences.append(
+                {
+                    "component": name,
+                    "status": "changed",
+                    "current": current[name],
+                    "prior": prior[name],
+                }
+            )
+    return differences
+
+
+def coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
+    """Return the summary reason codes implied by a component diff.
+
+    A moved component no code covers falls back to ``cache_key_changed``; the
+    component list names it either way.
+    """
+    moved = {str(component["component"]) for component in components}
+    reasons = []
+    if moved & {"source_hash", "extra_source_hash"}:
+        reasons.append("source_hash_changed")
+    if "version" in moved:
+        reasons.append("version_bump")
+    if moved & {"env", "env_hash.pixi_lock"}:
+        reasons.append("env_changed")
+    if any(name.startswith("inputs") for name in moved):
+        reasons.append("input_changed")
+    return reasons or ["cache_key_changed"]
 
 
 class UnresolvedEnvIdentityError(GinkgoError, RuntimeError):
@@ -191,7 +270,7 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 known_digests=known_digests,
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
                 is_output=name in task_def.output_params,
             )
 
@@ -205,13 +284,68 @@ class CacheStore:
         payload = {
             "env": task_def.env,
             "env_hash": env_hash,
+            "format": _KEY_FORMAT,
             "inputs": input_hashes,
             "source_hash": source_hash,
-            "task": task_def.cache_name,
+            "task": task_def.name,
             "version": task_def.version,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded), input_hashes
+
+    def miss_reasons(
+        self,
+        *,
+        cache_key: str,
+        task_def: TaskDef,
+        input_hashes: dict[str, Any],
+        extra_source_hash: str | None = None,
+    ) -> list[str]:
+        """Return why a key built by :meth:`build_cache_key` would miss.
+
+        The key's components are compared with whichever of the task's recent
+        entries differs from them least: the newest entry of a fanned-out task
+        is usually another branch, which would report inputs that only differ
+        between branches. ``ginkgo cache explain`` falls back to the same choice.
+
+        Parameters
+        ----------
+        cache_key : str
+            The key that misses.
+        task_def : TaskDef
+            The task it was built for.
+        input_hashes : dict[str, Any]
+            The input hashes :meth:`build_cache_key` returned with it.
+        extra_source_hash : str | None
+            The directive source hash folded into it, if any.
+
+        Returns
+        -------
+        list[str]
+            ``cache explain`` reason codes: ``no_prior_entry`` when the task
+            has no entry to compare with, otherwise those
+            :func:`coarse_reasons` gives.
+        """
+        priors = self.index.recent_entries(function=task_def.name, excluding=cache_key)
+        if not priors:
+            return ["no_prior_entry"]
+        current = key_components(
+            {
+                "function": task_def.name,
+                "version": task_def.version,
+                "source_hash": task_def.cache_source_hash,
+                "extra_source_hash": extra_source_hash,
+                "env": task_def.env,
+                "env_hash": self._env_hash(task_def=task_def),
+                "input_hashes": input_hashes,
+            }
+        )
+        diffs = [
+            diff_key_components(current=current, prior=key_components(prior.as_meta()))
+            for prior in priors
+        ]
+        # min() keeps the first of equals, and the entries come newest first.
+        return coarse_reasons(min(diffs, key=lambda diff: len(diff)))
 
     def label_inputs(
         self,
@@ -246,10 +380,15 @@ class CacheStore:
         return labels
 
     def load(self, *, cache_key: str, task_def: TaskDef) -> Any:
-        """Load a cached result if present and still valid for its environment."""
+        """Load a cached result if present and still valid for its environment.
+
+        An entry is present only when the index holds its row: the bytes
+        under the cache root of a key the database no longer knows (a lost
+        ``ginkgo.db``, say) are stranded, never served.
+        """
         entry_dir = self._entry_dir(cache_key)
         output_path = entry_dir / "output.json"
-        if not output_path.exists():
+        if not output_path.exists() or not self.index.has_entry(cache_key):
             return MISSING
 
         if not self._env_materialization_matches(cache_key=cache_key, task_def=task_def):
@@ -296,9 +435,12 @@ class CacheStore:
         Returns
         -------
         bool
-            ``True`` if a stored output exists for the key.
+            ``True`` if a stored output exists for the key and the index
+            holds its row, as :meth:`load` requires.
         """
         if not (self._entry_dir(cache_key) / "output.json").is_file():
+            return False
+        if not self.index.has_entry(cache_key):
             return False
         return self._env_materialization_matches(cache_key=cache_key, task_def=task_def)
 
@@ -321,6 +463,9 @@ class CacheStore:
 
         Parameters
         ----------
+        result : Any
+            The task's result, or the :class:`DynamicTemplate` of a task that
+            returned task expressions.
         extra_source_hash : str | None
             The notebook or script source hash folded into the cache key for
             driver tasks, recorded so `ginkgo cache explain` can name it as
@@ -338,7 +483,11 @@ class CacheStore:
             Mapping from output path strings to artifact IDs.
         """
         # Always store output artifacts, even if the cache entry already exists.
-        records = self._store_output_artifacts(result=result, task_def=task_def)
+        # A dynamic task's returned outputs are its children's, which stored
+        # their own; its declared Out[...] paths are its own.
+        records = self._store_output_artifacts(
+            result=result, task_def=task_def, resolved_args=resolved_args
+        )
 
         # Publish artifacts to remote store if a publisher is configured.
         if self.publisher is not None:
@@ -377,8 +526,13 @@ class CacheStore:
 
         # Measured from disk rather than from what was just written, so a
         # re-save over bytes another run wrote records their size, not zero.
+        # A large value (a DataFrame's Parquet, say) lives in the artifact
+        # store and is counted with the entry that names it.
         output_path = entry_dir / "output.json"
         size_bytes = output_path.stat().st_size if output_path.is_file() else 0
+        for artifact_id in self._value_artifact_ids(entry_dir=entry_dir):
+            record = self._artifact_store.load_record(artifact_id=artifact_id)
+            size_bytes += record.size if record is not None else 0
 
         materialized_digest = self._materialized_digest(task_def=task_def)
         self._record_env_materialization(task_def=task_def, digest=materialized_digest)
@@ -390,7 +544,7 @@ class CacheStore:
             "env_materialized_digest": materialized_digest,
             "extra": extra_meta,
             "extra_source_hash": extra_source_hash,
-            "function": task_def.cache_name,
+            "function": task_def.name,
             "inputs": self._serialise_inputs(task_def=task_def, resolved_args=resolved_args),
             "input_hashes": input_hashes,
             "source_hash": task_def.cache_source_hash,
@@ -406,8 +560,19 @@ class CacheStore:
         )
         return artifact_ids
 
-    def validate_cached_outputs(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
+    def validate_cached_outputs(
+        self,
+        *,
+        cache_key: str,
+        task_def: TaskDef,
+        value: Any,
+        resolved_args: dict[str, Any],
+    ) -> bool:
         """Ensure cached file and folder outputs are materialized correctly.
+
+        Covers the returned outputs (none for a :class:`DynamicTemplate`,
+        whose children restore their own) and every declared ``Out[...]``
+        path, whatever the return annotation.
 
         Returns
         -------
@@ -417,14 +582,24 @@ class CacheStore:
             store. ``False`` if the cached artifact metadata is incomplete or
             a restore fails.
         """
-        return_annotation = task_def.effective_return_annotation
         artifact_ids = self.load_artifact_ids(cache_key=cache_key)
         if artifact_ids is None:
             return False
-        return self._validate_output_value(
-            annotation=return_annotation,
+        if not isinstance(value, DynamicTemplate) and not self._validate_output_value(
+            annotation=task_def.effective_return_annotation,
             value=value,
             artifact_ids=artifact_ids,
+        ):
+            return False
+        return all(
+            self._validate_output_value(
+                annotation=file if kind == "file" else folder,
+                value=path,
+                artifact_ids=artifact_ids,
+            )
+            for _, path, kind in declared_output_paths(
+                task_def=task_def, resolved_args=resolved_args
+            )
         )
 
     def _validate_output_value(
@@ -442,6 +617,8 @@ class CacheStore:
         annotation, admits_none = unwrap_optional_annotation(annotation)
         if value is None:
             return admits_none or not is_path_shaped_annotation(annotation)
+        if holds_only_plain_scalars(value) and not is_path_shaped_annotation(annotation):
+            return True
 
         origin = get_origin(annotation)
         if origin in {list, tuple}:
@@ -481,6 +658,7 @@ class CacheStore:
         if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
         if self._artifact_store.matches(artifact_id=artifact_id, path=path):
+            self._artifact_store.restock(artifact_id=artifact_id, path=path)
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)
@@ -491,6 +669,7 @@ class CacheStore:
         if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
         if self._artifact_store.matches(artifact_id=artifact_id, path=path):
+            self._artifact_store.restock(artifact_id=artifact_id, path=path)
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)
@@ -534,8 +713,12 @@ class CacheStore:
         *,
         result: Any,
         task_def: TaskDef,
+        resolved_args: dict[str, Any],
     ) -> dict[str, ArtifactRecord]:
-        """Store file/folder outputs in the artifact store.
+        """Store the file/folder outputs a task returned or declared ``Out[...]``.
+
+        Every declared output is stored whatever the return annotation says,
+        so a hit restores it just as it restores a returned ``file``.
 
         Returns
         -------
@@ -543,12 +726,16 @@ class CacheStore:
             Mapping from output path strings to the records stored for them.
         """
         records: dict[str, ArtifactRecord] = {}
-        return_annotation = task_def.effective_return_annotation
-        self._collect_output_artifacts(
-            annotation=return_annotation,
-            value=result,
-            records=records,
-        )
+        if not isinstance(result, DynamicTemplate):
+            self._collect_output_artifacts(
+                annotation=task_def.effective_return_annotation,
+                value=result,
+                records=records,
+            )
+        for _, path, kind in declared_output_paths(task_def=task_def, resolved_args=resolved_args):
+            self._collect_output_artifacts(
+                annotation=file if kind == "file" else folder, value=path, records=records
+            )
         return records
 
     def _publish_artifacts(self, records: dict[str, ArtifactRecord]) -> dict[str, ArtifactRecord]:
@@ -672,6 +859,50 @@ class CacheStore:
             if entry.is_dir() and entry.name not in known and ".tmp-" not in entry.name
         )
 
+    def value_artifact_ids(self) -> set[str]:
+        """Return every artifact an entry's encoded value names.
+
+        These are not among the entries' ``cache_artifacts`` rows, which
+        record output paths; a garbage collector must keep them too. Reads
+        every ``output.json``, so it is for maintenance, not the run path.
+        """
+        return set().union(
+            *(
+                self._value_artifact_ids(entry_dir=self._entry_dir(key))
+                for key in self.index.cache_keys()
+            )
+        )
+
+    def _value_artifact_ids(self, *, entry_dir: Path) -> set[str]:
+        """Return the artifacts one entry's encoded value names, none if unreadable."""
+        try:
+            encoded = json.loads((entry_dir / "output.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        return encoded_artifact_ids(encoded)
+
+    def unusable_entry_keys(self) -> list[str]:
+        """Return the entries that can only miss: bytes gone, unreadable, or incomplete.
+
+        An entry whose ``output.json`` is missing or cannot be decoded, or
+        that names an artifact the store no longer holds, would be treated as
+        a miss on every lookup. Removing it loses nothing.
+        """
+        unusable = []
+        for key in self.index.cache_keys():
+            entry_dir = self._entry_dir(key)
+            entry = self.index.entry(key)
+            artifact_ids = {
+                *self._value_artifact_ids(entry_dir=entry_dir),
+                *(entry.artifact_ids.values() if entry is not None else ()),
+            }
+            if not self._entry_readable(entry_dir) or any(
+                not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
+                for artifact_id in artifact_ids
+            ):
+                unusable.append(key)
+        return unusable
+
     def integrity_problems(self) -> list[str]:
         """Return the ways the index and the bytes on disk disagree.
 
@@ -696,11 +927,20 @@ class CacheStore:
                 problems.append(f"cache entry {key} has a row but no output.json")
                 continue
             try:
-                check_encoded(json.loads(output_path.read_text(encoding="utf-8")))
+                encoded = json.loads(output_path.read_text(encoding="utf-8"))
+                check_encoded(encoded)
             except _UNREADABLE_ENTRY_ERRORS as exc:
                 problems.append(f"cache entry {key} has an unreadable output.json: {exc}")
+                continue
+            problems += [
+                f"cache entry {key} names value artifact {artifact_id}, which is missing "
+                "from the artifact store"
+                for artifact_id in sorted(encoded_artifact_ids(encoded))
+                if not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
+            ]
         problems += [
-            f"cache directory {entry.name} has no row (orphan)"
+            f"cache directory {entry.name} is not referenced by the ledger "
+            "(the ledger may have been reset)"
             for entry in self.orphan_entry_dirs()
         ]
         problems += [
@@ -907,71 +1147,39 @@ class CacheStore:
 
         origin = get_origin(annotation)
         if origin in {list, tuple}:
-            return {
-                "items": [
-                    self._hash_value(
-                        annotation=item_annotation,
-                        value=item,
-                        known_digests=known_digests,
-                        label=label,
-                    )
-                    for item_annotation, item in pair_elements_with_annotations(
-                        annotation=annotation, value=value
-                    )
-                ],
-                "type": origin.__name__,
-            }
+            return self._hash_sequence(
+                type_name=_container_type_name(value=value, builtin_name=origin.__name__),
+                pairs=pair_elements_with_annotations(annotation=annotation, value=value),
+                container_annotation=annotation,
+                known_digests=known_digests,
+                label=label,
+            )
 
         if origin is dict:
             key_annotation, value_annotation = self._dict_annotations(annotation)
-            return {
-                "items": [
-                    {
-                        "key": self._hash_value(
-                            annotation=key_annotation,
-                            value=key,
-                            known_digests=known_digests,
-                            label=label,
-                        ),
-                        "value": self._hash_value(
-                            annotation=value_annotation,
-                            value=item,
-                            known_digests=known_digests,
-                            label=label,
-                        ),
-                    }
-                    for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
-                ],
-                "type": "dict",
-            }
+            return self._hash_mapping(
+                value=value,
+                type_name=_container_type_name(value=value, builtin_name="dict"),
+                key_annotation=key_annotation,
+                value_annotation=value_annotation,
+                container_annotation=annotation,
+                known_digests=known_digests,
+                label=label,
+            )
 
-        if isinstance(value, list):
-            return {
-                "items": [
-                    self._hash_value(
-                        annotation=annotation,
-                        value=item,
-                        known_digests=known_digests,
-                        label=label,
-                    )
-                    for item in value
-                ],
-                "type": "list",
-            }
-
-        if isinstance(value, tuple):
-            return {
-                "items": [
-                    self._hash_value(
-                        annotation=annotation,
-                        value=item,
-                        known_digests=known_digests,
-                        label=label,
-                    )
-                    for item in value
-                ],
-                "type": "tuple",
-            }
+        # A subclass such as a ``namedtuple`` is hashed item by item like the
+        # builtin, so a file it holds is still tracked by content, under its
+        # own type name, so it never keys the same as the builtin it is not.
+        if isinstance(value, (list, tuple)):
+            return self._hash_sequence(
+                type_name=_container_type_name(
+                    value=value, builtin_name="list" if isinstance(value, list) else "tuple"
+                ),
+                pairs=[(annotation, item) for item in value],
+                container_annotation=annotation,
+                known_digests=known_digests,
+                label=label,
+            )
 
         if annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
             require_path_value(value=value, annotation_label="file", label=label)
@@ -990,16 +1198,15 @@ class CacheStore:
             return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
-            return {
-                "items": [
-                    {
-                        "key": self._hash_value(annotation=Any, value=key),
-                        "value": self._hash_value(annotation=Any, value=item),
-                    }
-                    for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
-                ],
-                "type": "dict",
-            }
+            return self._hash_mapping(
+                value=value,
+                type_name=_container_type_name(value=value, builtin_name="dict"),
+                key_annotation=Any,
+                value_annotation=Any,
+                container_annotation=Any,
+                known_digests=known_digests,
+                label=label,
+            )
 
         # Root-input path hashing (#307 phase 2, closes #121/#281): a value
         # that is not ``Out[...]``, not ``tmp_dir``/``untracked``, and not
@@ -1018,7 +1225,10 @@ class CacheStore:
                     return {"sha256": known, "type": "file"}
             return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
 
-        if value is None or isinstance(value, (bool, int, float, str)):
+        # Exact types only, as ``encode_value`` stores them: a subclass such as
+        # ``np.float64`` is hashed by its bytes, so the fresh value and the one
+        # restored from the cache hash the same.
+        if value is None or type(value) in (bool, int, float, str):
             return {
                 "sha256": hash_str(repr(value)),
                 "type": type(value).__name__,
@@ -1028,7 +1238,7 @@ class CacheStore:
         return {
             "codec": codec_name,
             "sha256": digest,
-            "type": f"{type(value).__module__}.{type(value).__name__}",
+            "type": _qualified_type_name(value),
         }
 
     def _hash_path_string_leaf(self, *, value: Any) -> Any:
@@ -1047,6 +1257,105 @@ class CacheStore:
                 "type": type(value).__name__,
             }
         return {"sha256": hash_str(repr(value)), "type": type(value).__name__}
+
+    def _hash_sequence(
+        self,
+        *,
+        type_name: str,
+        pairs: list[tuple[Any, Any]],
+        container_annotation: Any,
+        known_digests: dict[str, str] | None,
+        label: str,
+    ) -> dict[str, Any]:
+        """Hash a list or tuple from its ``(annotation, element)`` pairs.
+
+        See :meth:`_hash_elements` for when it is one digest and when it keeps
+        an entry per element.
+        """
+        items, names_path = self._hash_elements(
+            pairs=pairs,
+            container_annotation=container_annotation,
+            known_digests=known_digests,
+            label=label,
+        )
+        if not names_path:
+            return {"sha256": _digest_of_tokens(items), "type": type_name}
+        return {"items": items, "type": type_name}
+
+    def _hash_mapping(
+        self,
+        *,
+        value: dict[Any, Any],
+        type_name: str,
+        key_annotation: Any,
+        value_annotation: Any,
+        container_annotation: Any,
+        known_digests: dict[str, str] | None,
+        label: str,
+    ) -> dict[str, Any]:
+        """Hash a dict, its items ordered by the ``repr`` of their keys."""
+        pairs: list[tuple[Any, Any]] = []
+        for key, item in sorted(value.items(), key=lambda pair: repr(pair[0])):
+            pairs.extend([(key_annotation, key), (value_annotation, item)])
+        items, names_path = self._hash_elements(
+            pairs=pairs,
+            container_annotation=container_annotation,
+            known_digests=known_digests,
+            label=label,
+        )
+        if not names_path:
+            return {"sha256": _digest_of_tokens(items), "type": type_name}
+        return {
+            "items": [
+                {"key": items[index], "value": items[index + 1]}
+                for index in range(0, len(items), 2)
+            ],
+            "type": type_name,
+        }
+
+    def _hash_elements(
+        self,
+        *,
+        pairs: list[tuple[Any, Any]],
+        container_annotation: Any,
+        known_digests: dict[str, str] | None,
+        label: str,
+    ) -> tuple[list[Any], bool]:
+        """Return a container's element hashes and whether one names a path.
+
+        A container whose elements hold no file, folder or remote object is
+        hashed as one digest of them: an entry per element would make a
+        200,000-number list a 200,000-entry key component, stored with the
+        cache entry and in every run's ledger. Only a container that does hold
+        one keeps an entry per element, so ``cache explain`` and the ledger
+        can name the file that moved.
+
+        A plain scalar, or a string that cannot name a path, stands for itself
+        as its ``repr`` without going through :meth:`_hash_value`; it gets the
+        usual hash only when the container keeps an entry per element.
+        """
+        plain_strings = not is_path_shaped_annotation(container_annotation)
+        tokens = [
+            repr(item)
+            if _hashes_as_repr(value=item, plain_strings=plain_strings)
+            else _plain_data_hash(value=item, annotation=item_annotation)
+            or self._hash_value(
+                annotation=item_annotation,
+                value=item,
+                known_digests=known_digests,
+                label=label,
+            )
+            for item_annotation, item in pairs
+        ]
+        if not any(_names_tracked_path(token) for token in tokens):
+            return tokens, False
+        items = [
+            self._hash_value(annotation=item_annotation, value=item, label=label)
+            if isinstance(token, str)
+            else token
+            for (item_annotation, item), token in zip(pairs, tokens, strict=True)
+        ]
+        return items, True
 
     def _serialise_inputs(
         self,
@@ -1090,6 +1399,7 @@ class CacheStore:
         task_def: TaskDef,
         resolved_args: dict[str, Any],
         extra_source_hash: str | None = None,
+        input_hashes: dict[str, Any] | None = None,
     ) -> str:
         """Build a stat-based fingerprint for ``--trust-mtimes`` mode.
 
@@ -1104,6 +1414,10 @@ class CacheStore:
             Resolved input argument values.
         extra_source_hash : str | None
             Additional source hash (notebook/script).
+        input_hashes : dict[str, Any] | None
+            The input hashes :meth:`build_cache_key` already computed for
+            this call. An input that is not itself a path is fingerprinted
+            by that same hash, so a large value is not hashed a second time.
 
         Returns
         -------
@@ -1118,8 +1432,9 @@ class CacheStore:
             stat_parts[name] = self._stat_value(
                 annotation=annotation,
                 value=resolved_args[name],
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
                 is_output=name in task_def.output_params,
+                input_hash=(input_hashes or {}).get(name),
             )
 
         source_hash = task_def.cache_source_hash
@@ -1129,7 +1444,7 @@ class CacheStore:
         payload = {
             "inputs": stat_parts,
             "source_hash": source_hash,
-            "task": task_def.cache_name,
+            "task": task_def.name,
             "version": task_def.version,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1142,12 +1457,15 @@ class CacheStore:
         value: Any,
         label: str = "value",
         is_output: bool = False,
+        input_hash: Any = None,
     ) -> Any:
         """Build a stat-based representation for a value (no content reading).
 
         An ``Out[...]`` parameter (``is_output``) is never stat'd — like the
         content-addressed key, it contributes its path string only. Same for
-        an ``untracked``-annotated parameter.
+        an ``untracked``-annotated parameter. A value that is not a path is
+        represented by its content hash: *input_hash* when the caller already
+        has it, so it is not computed again.
         """
         if annotation is tmp_dir:
             return None
@@ -1231,6 +1549,8 @@ class CacheStore:
             return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "type": "file"}
 
         # For non-path types, use the same hash as the content-addressed path.
+        if input_hash is not None:
+            return input_hash
         return self._hash_value(annotation=annotation, value=value, label=label)
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
@@ -1248,6 +1568,8 @@ def _content_trackable_paths(*, annotation: Any, value: Any) -> list[str]:
     does, pairing each element with its own annotation. Includes paths whose
     file does not exist yet, so a task that creates one can be noticed.
     """
+    if type(value) in PLAIN_SCALAR_TYPES:
+        return []
     annotation, _ = unwrap_optional_annotation(annotation)
     if isinstance(value, (list, tuple)):
         if get_origin(annotation) in {list, tuple}:
@@ -1270,3 +1592,102 @@ def _content_trackable_paths(*, annotation: Any, value: Any) -> list[str]:
     if is_content_trackable_path_shape(annotation=annotation, value=value):
         return [str(value)]
     return []
+
+
+def _plain_data_hash(*, value: Any, annotation: Any) -> dict[str, str] | None:
+    """Return a nested container's hash in one tight walk, or ``None``.
+
+    The hash :meth:`CacheStore._hash_value` gives an exact ``list``, ``tuple``
+    or ``dict`` holding only plain scalars, strings that cannot name a path,
+    and more such containers, under an annotation that binds nothing to a
+    path. Each element is visited once, without the per-element dispatch the
+    general walk pays, which dominates the cache key of a large nested value.
+    ``None`` means the value holds something else, and the general walk
+    decides.
+    """
+    if type(value) not in (list, tuple, dict) or get_origin(annotation) is not None:
+        return None
+    if annotation in (file, folder, tmp_dir) or is_untracked_annotation(annotation):
+        return None
+    try:
+        return _plain_container_hash(value)
+    except _NotPlainData:
+        return None
+
+
+class _NotPlainData(Exception):
+    """Raised inside :func:`_plain_container_hash` on an element it cannot key."""
+
+
+def _plain_container_hash(value: Any) -> dict[str, str]:
+    """Return the hash of a plain-data container, or raise :class:`_NotPlainData`."""
+    value_type = type(value)
+    if value_type is dict:
+        # A dict carrying a type tag may be a fuse marker, keyed by its identity.
+        if "__ginkgo_type__" in value:
+            raise _NotPlainData
+        tokens: list[Any] = []
+        for key, item in sorted(value.items(), key=lambda pair: repr(pair[0])):
+            tokens.append(_plain_token(key))
+            tokens.append(_plain_token(item))
+    else:
+        tokens = [_plain_token(item) for item in value]
+    return {"sha256": _digest_of_tokens(tokens), "type": value_type.__name__}
+
+
+def _plain_token(value: Any) -> Any:
+    """Return one element's token as :meth:`CacheStore._hash_elements` keys it."""
+    value_type = type(value)
+    if value_type in PLAIN_SCALAR_TYPES or (
+        value_type is str and not looks_like_path_string(value)
+    ):
+        return repr(value)
+    if value_type in (list, tuple, dict):
+        return _plain_container_hash(value)
+    raise _NotPlainData
+
+
+def _qualified_type_name(value: Any) -> str:
+    """Return the module-qualified name of *value*'s type, as a cache key records it.
+
+    A class defined in a single-file workflow is named under a module that
+    does not depend on where the workflow file sits, so moving or copying the
+    project keeps its cache keys.
+    """
+    value_type = type(value)
+    return f"{cache_identity_module_name(value_type.__module__)}.{value_type.__name__}"
+
+
+def _container_type_name(*, value: Any, builtin_name: str) -> str:
+    """Return the type a container is keyed under: the builtin's, or its subclass's."""
+    if type(value) in (list, tuple, dict):
+        return builtin_name
+    return _qualified_type_name(value)
+
+
+def _hashes_as_repr(*, value: Any, plain_strings: bool) -> bool:
+    """Return whether a container element is keyed by its ``repr`` alone.
+
+    True for a plain scalar, and, when the container's annotation binds no
+    element to a path (``plain_strings``), for a string that does not read as
+    one: :meth:`CacheStore._hash_value` keys either by its ``repr`` too.
+    """
+    if type(value) in PLAIN_SCALAR_TYPES:
+        return True
+    return plain_strings and type(value) is str and not looks_like_path_string(value)
+
+
+def _names_tracked_path(element_hash: Any) -> bool:
+    """Return whether an element's hash is, or holds, a file, folder or remote object."""
+    if not isinstance(element_hash, dict):
+        return False
+    return (
+        "items" in element_hash
+        or element_hash.get("type") in {"file", "folder"}
+        or "bucket" in element_hash
+    )
+
+
+def _digest_of_tokens(tokens: list[Any]) -> str:
+    """Return the one digest of a container's element hashes."""
+    return hash_str(json.dumps(tokens, sort_keys=True, separators=(",", ":")))

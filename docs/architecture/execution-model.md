@@ -52,7 +52,7 @@ per branch. String and bytes fan-out arguments are also rejected there, since
 ### Reachability and dropped calls
 
 The graph is exactly what is reachable from the flow's return value:
-`ConcurrentEvaluator._register_value` walks the returned expression, and a task
+`TaskGraph` (`runtime/graph.py`) walks the returned expression, and a task
 call the flow constructs but never returns is not part of the run. That rule
 stands, but it used to be silent — a bare side-effecting statement, or a literal
 path written where an upstream expression belonged, produced a smaller graph
@@ -66,9 +66,9 @@ while a `record_constructed_calls()` context manager is open. A chained
 `supersede_call` to drop the superseded entry rather than report it.
 
 Callers that build a flow (`cli/commands/run.py`, `runtime/diagnostics.py`) open
-the recorder around the flow body and pass the log to the evaluator as
-`constructed_calls`. `ConcurrentEvaluator.unreachable_calls` then diffs it
-against `_expr_nodes`, keyed by object identity. Nothing is recorded outside
+the recorder around the flow body and pass the log to
+`TaskGraph.unreachable_calls`, which diffs it against the registered
+expressions, keyed by object identity. Nothing is recorded outside
 that context manager, so expressions built by library users or minted inside
 running tasks are unaffected.
 
@@ -89,6 +89,13 @@ Tasks receive resolved concrete argument values at execution time. A task can in
 - a nested container containing `Expr` / `ExprList`
 
 The evaluator registers those returned expressions dynamically and extends the graph during execution.
+The expanding task waits on the tasks it returned, and they do not wait on it:
+a returned task reading a file inside the expanding task's own `Out[folder]`
+gets no inferred edge back to it (the checkpoint idiom). Cycle detection counts
+the expanding task's wait on its children, so a returned task that reads a path
+produced downstream of its parent fails the expansion with a `CycleError`. A
+cached dynamic task replays the expressions its entry holds (see
+[Caching](caching.md#dynamic-task-entries)).
 
 ## Scheduling and Execution
 
@@ -112,6 +119,15 @@ The scheduler performs explicit cycle detection when registering expressions.
 the evaluator keeps it, stops preparing and dispatching new work, lets
 in-flight tasks drain, and re-raises it. `ginkgo run` reports it and exits 1.
 
+However a run stops — a fatal failure, an interrupt, a scheduler error — every
+task it registered ends terminal; none is left `pending`. On the way out the
+evaluator closes what is left: work still in flight is `failed` as cancelled;
+a task waiting to retry is `failed` with its last attempt's failure, and a
+notice says the retry was not attempted; a task that never started is
+`skipped`, with a `reason`. Under an interrupt the reason is `interrupted`.
+Otherwise it is `upstream_failed`, blocked by the failure it waits on, or
+`run_stopped`, attributed to the failure that stopped the run.
+
 `@task(on_failure="ignore")` makes one task's failure non-fatal, and
 `ginkgo run --keep-going` makes every task's failure non-fatal. Such a failure
 is recorded on the evaluator's `ignored_failures` instead: dispatch continues,
@@ -120,8 +136,8 @@ do depend on it reach the terminal `skipped` state — phase 1 has no partial
 fan-in, so one missing input skips the task outright — and the skip sweep
 runs to a fixed point per scheduler pass, so a chain of dependents collapses
 at once. Each skipped task records the failure it was waiting on, reached
-through any intervening skips, and emits `task_skipped` naming it as
-`blocked_by_task_*`.
+through any intervening skips, and emits `task_skipped` with reason
+`upstream_failed`, naming it as `blocked_by_task_*`.
 
 Most skipped tasks never started. One kind did: a task whose body returns
 further task expressions has already run by the time it waits on them, so a

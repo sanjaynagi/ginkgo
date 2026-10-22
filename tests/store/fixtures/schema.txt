@@ -70,9 +70,6 @@ CREATE TABLE events (
 index events_run
 CREATE INDEX events_run      ON events(run_id, seq)
 
-index events_type_ts
-CREATE INDEX events_type_ts  ON events(type, ts)
-
 table materializations
 CREATE TABLE materializations (path TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, size INTEGER, mtime_ns INTEGER)
 

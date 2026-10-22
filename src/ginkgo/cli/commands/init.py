@@ -10,6 +10,8 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
+from rich.markup import escape
+
 from ginkgo.cli.common import console
 
 
@@ -88,8 +90,14 @@ def _iter_template_files_from_dir(
     current_dir: Traversable,
     relative_dir: PurePosixPath,
 ) -> Iterable[tuple[Traversable, PurePosixPath]]:
-    """Yield packaged template files from one directory subtree."""
+    """Yield packaged template files from one directory subtree.
+
+    Bytecode caches are skipped: Python writes them into the template tree
+    of an editable install, and they are not part of the template.
+    """
     for child in sorted(current_dir.iterdir(), key=lambda path: path.name):
+        if child.name == "__pycache__" or child.name.endswith(".pyc"):
+            continue
         child_relative = relative_dir / child.name
         if child.is_file():
             yield child, child_relative
@@ -212,6 +220,20 @@ def write_starter_project(*, root: Path) -> Path:
     return root
 
 
+def _write_agents_pointer(*, root: Path, context: TemplateContext) -> list[Path]:
+    """Write an ``AGENTS.md`` that points coding agents at ``skills/``, unless one exists.
+
+    Agents look for ``AGENTS.md`` at the project root, and would otherwise
+    never learn the skills directory is there. A project's own ``AGENTS.md``
+    is its own, so it is left alone rather than refused or replaced.
+    """
+    destination = root / "AGENTS.md"
+    if destination.exists():
+        return []
+    files = _template_files(template_root=_template_root(group="agents"))
+    return _write_template_files(root=root, files=files, context=context)
+
+
 def command_init(args) -> int:
     """Handle ``ginkgo init``."""
     root = Path(args.directory).resolve()
@@ -230,9 +252,15 @@ def command_init(args) -> int:
         )
 
     written_paths = _write_template_files(root=root, files=files, context=context)
+    if not args.no_skills:
+        written_paths.extend(_write_agents_pointer(root=root, context=context))
 
     rich_console.print(f"[bold green]🌿 ginkgo init[/] [bold]{root.name}[/]\n")
-    rich_console.print(f"[green]✓[/] Initialized project scaffold at [bold]{root}[/]")
+    # Unwrapped: a project path folded across lines cannot be copied whole.
+    rich_console.print(
+        f"[green]✓[/] Initialized project scaffold at [bold]{escape(str(root))}[/]",
+        soft_wrap=True,
+    )
     rich_console.print("[cyan]Created:[/]")
     for path in written_paths:
         rich_console.print(f"  [green]•[/] {path.relative_to(root).as_posix()}")

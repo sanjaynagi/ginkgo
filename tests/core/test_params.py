@@ -75,6 +75,15 @@ def test_type_conversion_applied():
         assert ginkgo.param("out", type=Path, default=Path(".")) == Path("results/x.txt")
 
 
+@pytest.mark.parametrize(
+    ("default", "token", "expected"),
+    [(40.0, "2.5", 2.5), (3, "7", 7), (False, "true", True), ("a", "7", "7")],
+)
+def test_type_is_inferred_from_the_default(default, token, expected):
+    with config_session(cli_extras=["--threshold", token]):
+        assert ginkgo.param("threshold", default=default) == expected
+
+
 def test_config_string_coerced_to_declared_type():
     with config_session(param_config={"n": "12"}):
         assert ginkgo.param("n", type=int, default=0) == 12
@@ -291,11 +300,24 @@ def test_format_param_help_lines():
             ParamDecl(name="n_reps", value_type=int, default=12, help_text="Replicates"),
             ParamDecl(name="region", help_text="Genome region"),
             ParamDecl(name="verbose", value_type=bool, default=False),
+            ParamDecl(name="item", multiple=True, default=()),
         ]
     )
     assert lines[0].strip() == "--n-reps INT  Replicates (default: 12)"
     assert lines[1].strip() == "--region STR  Genome region (required)"
-    assert lines[2].strip() == "--verbose     (default: False)"
+    assert lines[2].strip() == (
+        "--verbose     (default: False) (bare --verbose is true; --verbose false turns it off)"
+    )
+    assert lines[3].strip() == "--item STR    (default: ()) (repeatable; the value is a tuple)"
+
+
+def test_format_param_help_shows_config_default_and_origin():
+    lines = format_param_help(
+        [ParamDecl(name="n_reps", value_type=int, default=12), ParamDecl(name="region")],
+        config_defaults={"n_reps": (7, "ginkgo.toml"), "region": ("2L", "extra.toml")},
+    )
+    assert lines[0].strip() == "--n-reps INT  (default: 7, from ginkgo.toml)"
+    assert lines[1].strip() == "--region STR  (default: '2L', from extra.toml)"
 
 
 def test_format_param_help_empty():

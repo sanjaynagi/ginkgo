@@ -62,8 +62,15 @@ Losing the database means a cold cache, and by a specific mechanism:
 owns, that returns `None` when there is no row, and a candidate hit with no
 recorded outputs is refused. The bytes survive, but nothing can find them — the
 key that would is only in the row that is gone. `ginkgo db check` reports those
-directories and `ginkgo cache clear --orphans` removes them; prune never does so
-implicitly. Back the database up as you would `.git`.
+directories, and `ginkgo cache clear --orphans`, every `cache prune` and
+`db check --fix` remove them. Back the database up as you would `.git`.
+
+A value too large to inline (`INLINE_BYTES_LIMIT`) — a DataFrame's Parquet, a
+pickle — is stored in the artifact store and named by id from inside
+`output.json`, not by a `cache_artifacts` row. `encoded_artifact_ids` reads
+those ids back: `save` adds their sizes to the entry's `size_bytes`, the
+garbage collector keeps them (`CacheStore.value_artifact_ids`), and `db check`
+reports one that is missing.
 
 `ginkgo cache stats` reports what the index holds: entry count, total bytes, the
 hit-count histogram, how much is taken by entries nobody has ever used, and the
@@ -93,6 +100,20 @@ on the warm run the memo exists to make cheap. It is there for a future
 this run computed, so a downstream task skips re-hashing what an upstream task
 just produced. Those paths are being written as the run goes, so nothing about
 them is true past the end of it.
+
+## Dynamic task entries
+
+A task that returns task expressions saves a `DynamicTemplate` holding those
+expressions, pickled whole, instead of the value they resolved to. Its key
+covers only its own code and inputs, so the value would go stale when a child
+changed (an edited script, a module reached through `importlib`, a data file a
+literal path names). A hit replays the template through the same expansion a
+fresh run uses: each child is registered, prepared and looked up on its own,
+and the parent completes as cached once they finish. A template that no longer
+loads, because a task it names was renamed or removed, is a miss. A dry run
+expands a cached template the same way, without running anything.
+`_KEY_FORMAT` in the key payload was bumped for this, so entries written
+before it miss once.
 
 ## Task source hash
 
@@ -228,18 +249,35 @@ Each reported component carries a `status` — `changed` with both values, or
 `version_bump`, `env_changed`, `input_changed`, or `cache_key_changed` when no
 component is conclusive or the one that moved has no code of its own) stay as
 the summary `reason` / `details`, with the components listed beneath them. A
-task whose key has no entry in the cache at all — a task that failed, or whose
-entry has been pruned — reports `no_entry_for_key` and no components, and one
-with no sibling to compare against reports `no_prior_entry`.
+task forced by `--rerun` reports `rerun_requested`, read from the
+`rerun_requested` flag on its `task_cache_miss` event. A task whose key has no
+entry in the cache at all, or whose same node ran under this very key before (the
+entry was pruned, cleared, or never written because that run failed), reports
+`no_entry_for_key` and no components; one whose earlier key's entry is gone
+reports `prior_entry_removed` rather than a diff against nothing. One with no
+sibling to compare against reports `no_prior_entry`, or `task_moved` (with
+`moved_from`) when an earlier run of the workflow had a task of the same base
+name under another qualified name, or the same node under a name this run no
+longer has with the same parameters (`Query._moved_from`). A same-node
+comparison whose `task` component moved is also `task_moved`.
+
+Every entry records the task's own definition digest, `own_source_hash`, in its
+`extra` column (`TaskDef.own_source_hash`, without the module closure the
+`source_hash` folds in). When the source hash moved but that digest did not, the
+code is `module_source_changed`: a neighbour in the module, or a local import,
+changed.
 
 What to compare against is the whole of the question. `explain_rerun` (through
 its private `_previous_cache_key`) looks for the *same node* — the same `display_label`, or the task name where a
 node has none — in the most recent earlier run of the same workflow, and that
 entry is what this run superseded. Only when no such node exists (the node is
-new, or its label changed) does it fall back to the newest earlier entry for the
-same function. `compared_with` names both the key and which of the two
-strategies found it, so a `strategy` of `newest_by_function` is the signal to
-read the components sceptically.
+new, or its label changed) does it fall back to an earlier entry for the same
+function: of the newest `PRIOR_ENTRY_WINDOW` (50), the one whose components
+differ from this node's least, newest first among equals. `compared_with` names
+both the key and which of the two strategies found it, so a `strategy` of
+`most_similar_by_function` is the signal to read the components sceptically.
+`CacheStore.miss_reasons`, behind the dry-run's miss reasons, has no node to
+match, so it always makes this closest-entry choice.
 
 That join is what fixed the fan-out mis-pairing: matching on function alone,
 the nearest earlier entry for a task fanned out over many inputs was usually a
@@ -266,9 +304,10 @@ cache hit — the stale-result failure in issue #121.
 Ginkgo cannot silently promote those boundaries to content hashing: `str` is
 also the legitimate way to pass a path deliberately left untracked (a log, a
 scratch location, an append-only sink). Instead the evaluator warns.
-`ConcurrentEvaluator._warn_on_untracked_path_inputs` runs in `_prepare_node`,
-before the cache-hit branch, and emits a `TaskNotice` when all of the following
-hold:
+`untracked_directory_notices` (`runtime/advisories.py`) runs when the evaluator
+prepares a node, before the cache-hit branch, and the evaluator emits a
+`TaskNotice` for each notice it returns. It returns one when all of the
+following hold:
 
 - the argument was resolved from an upstream `Expr` / `OutputIndex` / `ExprList`
   in this graph, so a producer in the same run can rewrite it;
@@ -296,8 +335,10 @@ not the shape of the string. Detection is inherently runtime: it needs a
 resolved value, so `ginkgo doctor` does not report it.
 
 The runtime hashes the top-level task function source and the statically
-imported closure of already-loaded local Python modules during task
-registration. The resulting `source_hash` is stored in both the cache key
+imported closure of local Python modules during task registration. The closure
+follows every import statement in a module's source, a function-local one
+included, and finds each module's file on `sys.path` without importing it, so
+an import that has not executed yet still counts. The resulting `source_hash` is stored in both the cache key
 payload and on the entry's row, so task-body and local-helper changes invalidate prior
 cache entries without requiring a manual `version=` bump. This is deliberately
 conservative: an edit anywhere in a reachable local module invalidates tasks
@@ -353,3 +394,13 @@ and age breaking ties. Age is not use — an old entry that hits on every run is
 worth more than a young one nothing has touched. Orphan artifacts are
 garbage-collected once at the end: an artifact no cache entry references is
 deleted.
+
+## What a task sees
+
+A task sees only its arguments. The key covers the arguments, the source (with
+its import closure and any hashed script, notebook or subworkflow) and
+`version=`; nothing scans a task body for the files it opens or the environment
+variables it reads. A file goes in as a `file` or `folder` argument, which is
+content-hashed and orders the graph. An environment variable is read in the
+flow body, while the graph is built, and passed as a plain argument or a
+workflow param. A read inside a task body is invisible to the cache.

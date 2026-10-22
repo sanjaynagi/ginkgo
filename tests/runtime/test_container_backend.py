@@ -18,6 +18,7 @@ from ginkgo.envs.container import (
     ContainerPrepareError,
     ContainerRef,
     ContainerRuntimeNotFoundError,
+    container_backend_from_config,
     is_container_env,
     parse_container_uri,
 )
@@ -96,6 +97,8 @@ class TestContainerBackendExecArgv:
             str(tmp_path),
             "myorg/image:3.11",
             "bash",
+            "-eo",
+            "pipefail",
             "-c",
             "echo hello > output.txt",
         ]
@@ -124,7 +127,7 @@ class TestContainerBackendExecArgv:
     def test_configurable_shell(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path, shell="sh")
         argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert argv[-3:] == ["sh", "-c", "ls"]
+        assert argv[-5:] == ["sh", "-eo", "pipefail", "-c", "ls"]
 
     def test_mounts_declared_input_outside_project(self, tmp_path: Path):
         project = tmp_path / "project"
@@ -377,13 +380,33 @@ class TestContainerBackendDaemonProbe:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch("ginkgo.envs.container.subprocess.run", return_value=denied),
-            pytest.raises(ContainerDaemonUnreachableError) as excinfo,
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        message = str(excinfo.value)
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert isinstance(warning, ContainerDaemonUnreachableError)
+        message = str(warning)
         assert "denied access to the docker daemon" in message
         assert "docker group" in message
         assert "systemctl start" not in message
+
+    @pytest.mark.parametrize(
+        ("platform", "hint"),
+        [("darwin", "open -a Docker"), ("linux", "sudo systemctl start docker")],
+    )
+    def test_a_stopped_daemon_gets_the_platform_s_start_hint(
+        self, tmp_path: Path, platform: str, hint: str
+    ):
+        """NC-5: no Linux systemctl advice on macOS."""
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
+        down = _completed(returncode=1, stderr="Cannot connect to the Docker daemon")
+        with (
+            patch("ginkgo.envs.container.sys.platform", platform),
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch("ginkgo.envs.container.subprocess.run", return_value=down),
+        ):
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert hint in str(warning)
+        assert ("systemctl" in str(warning)) == (platform == "linux")
 
     def test_local_lookup_timeout_reads_as_cannot_tell(self, tmp_path: Path):
         """A hung daemon must not stall validation, nor get the image blamed."""
@@ -399,7 +422,9 @@ class TestContainerBackendDaemonProbe:
         assert mock_run.call_args[0][0] == ["docker", "image", "inspect", "img:1"]
         assert mock_run.call_args.kwargs["timeout"] > 0
 
-    def test_unreachable_daemon_raises(self, tmp_path: Path):
+    def test_unreachable_daemon_is_returned_as_a_warning(self, tmp_path: Path):
+        """A run whose container tasks are all cached never needs the daemon,
+        so validation reports it instead of raising."""
         backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
         refused = _completed(
             returncode=1, stderr="failed to connect to the docker API at unix:///x/docker.sock"
@@ -408,10 +433,10 @@ class TestContainerBackendDaemonProbe:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch("ginkgo.envs.container.subprocess.run", return_value=refused) as mock_run,
-            pytest.raises(ContainerDaemonUnreachableError) as excinfo,
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        message = str(excinfo.value)
+            [warning] = backend.validate_envs(env_names={"docker://img:1", "docker://img:2"})
+        assert isinstance(warning, ContainerDaemonUnreachableError)
+        message = str(warning)
         assert "docker daemon is not reachable" in message
         assert "failed to connect to the docker API" in message
         assert "pull" not in message.lower()
@@ -424,9 +449,9 @@ class TestContainerBackendDaemonProbe:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch("ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=1)),
-            pytest.raises(ContainerDaemonUnreachableError),
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert isinstance(warning, ContainerDaemonUnreachableError)
 
     def test_reachable_daemon_goes_on_to_check_the_image(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path, pull_policy="never", probe_registry=True)
@@ -479,14 +504,15 @@ class TestContainerBackendDaemonProbe:
         backend = ContainerBackend(project_root=tmp_path, runtime="podman", probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/podman"),
+            patch("ginkgo.envs.container.sys.platform", "darwin"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch(
                 "ginkgo.envs.container.subprocess.run",
                 return_value=_completed(returncode=125, stderr="Cannot connect to Podman"),
             ) as mock_run,
-            pytest.raises(ContainerDaemonUnreachableError, match="podman machine start"),
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert "podman machine start" in str(warning)
         assert mock_run.call_args[0][0] == ["podman", "info"]
 
     def test_unknown_runtime_is_not_probed(self, tmp_path: Path):
@@ -515,9 +541,11 @@ class TestContainerBackendPrepare:
             with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
                 backend.prepare(env="docker://myimg:latest")
 
-            mock_run.assert_called_once()
-            call_args = mock_run.call_args[0][0]
-            assert call_args == ["docker", "pull", "myimg:latest"]
+            # The daemon is checked before the pull.
+            assert [call[0][0] for call in mock_run.call_args_list] == [
+                ["docker", "info"],
+                ["docker", "pull", "myimg:latest"],
+            ]
 
     def test_skips_pull_when_present(self, tmp_path: Path):
         backend = ContainerBackend(
@@ -545,14 +573,33 @@ class TestContainerBackendPrepare:
             mock_run.side_effect = [
                 # inspect fails — image not present
                 subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""),
+                # the daemon answers
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
                 # pull succeeds
                 subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
             ]
             with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
                 backend.prepare(env="docker://myimg:latest")
 
-            assert mock_run.call_count == 2
-            assert mock_run.call_args_list[1][0][0] == ["docker", "pull", "myimg:latest"]
+            assert mock_run.call_count == 3
+            assert mock_run.call_args_list[2][0][0] == ["docker", "pull", "myimg:latest"]
+
+    def test_a_daemon_that_does_not_answer_fails_before_the_pull(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="always")
+        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd=["docker", "info"], timeout=10)
+            with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
+                with pytest.raises(ContainerDaemonUnreachableError, match="did not answer"):
+                    backend.prepare(env="docker://myimg:latest")
+
+        assert mock_run.call_count == 1
+
+    @pytest.mark.parametrize(("key", "value"), [("pull_policy", "nevr"), ("runtime", "dockr")])
+    def test_an_unknown_setting_value_is_rejected(self, tmp_path: Path, key: str, value: str):
+        with pytest.raises(ValueError, match=f"\\[container\\] {key} must be one of"):
+            container_backend_from_config(
+                project_root=tmp_path, config={"container": {key: value}}
+            )
 
     def test_never_policy_skips_pull(self, tmp_path: Path):
         backend = ContainerBackend(
@@ -569,9 +616,10 @@ class TestContainerBackendPrepare:
             pull_policy="always",
         )
         with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="not found"
-            )
+            mock_run.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="not found"),
+            ]
             with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
                 with pytest.raises(ContainerPrepareError, match="myimg:latest"):
                     backend.prepare(env="docker://myimg:latest")
@@ -589,8 +637,8 @@ class TestContainerBackendPrepare:
                 backend.prepare(env="docker://myimg:latest")
                 backend.prepare(env="docker://myimg:latest")
 
-            # Only pulled once.
-            assert mock_run.call_count == 1
+            # Only probed and pulled once.
+            assert mock_run.call_count == 2
 
 
 class TestContainerBackendEnvIdentity:
@@ -700,8 +748,7 @@ class TestContainerKindRestriction:
 
         backend = ContainerBackend(project_root=tmp_path)
         evaluator = ConcurrentEvaluator(backend=backend)
-        evaluator._root_template = shell_in_container(output_path=output)
-        evaluator._root_dependency_ids = evaluator._register_value(evaluator._root_template)
+        evaluator.build_graph(shell_in_container(output_path=output))
 
         # A shell task with a container env is valid: it must pass the kind
         # restriction (no TypeError) and env validation once a runtime is found.
@@ -709,7 +756,7 @@ class TestContainerKindRestriction:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
         ):
-            evaluator._validator.validate_declared_envs(nodes=evaluator._nodes.values())
+            evaluator._validator.validate_declared_envs(nodes=evaluator.graph.nodes.values())
 
 
 # ------------------------------------------------------------------
@@ -746,7 +793,7 @@ class TestEnvironmentRouter:
         )
         with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, bare))):
             argv = self._make_composite(tmp_path).exec_argv(env="myenv", cmd="echo hi")
-        assert argv == ["bash", "-c", "echo hi"]
+        assert argv == ["bash", "-eo", "pipefail", "-c", "echo hi"]
 
     def test_a_bare_name_without_ginkgo_pixi_names_the_plugin(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
@@ -814,9 +861,7 @@ class TestContainerShellE2E:
         output_file = tmp_path / "result.txt"
         captured_argv: list[Any] = []
 
-        def mock_run_subprocess(
-            self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None, **kwargs
-        ):
+        def mock_run_subprocess(self_runner, *, argv, on_stdout=None, on_stderr=None, **kwargs):
             captured_argv.append(argv)
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
@@ -848,9 +893,7 @@ class TestContainerShellE2E:
 
         from ginkgo.runtime.task_runners.shell import ShellRunner
 
-        def mock_run_subprocess(
-            self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None, **kwargs
-        ):
+        def mock_run_subprocess(self_runner, *, argv, on_stdout=None, on_stderr=None, **kwargs):
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 

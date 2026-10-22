@@ -39,7 +39,7 @@ from typing import Any, Callable
 
 from ginkgo.core.hashing import hash_file, hash_str
 
-__all__ = ["compute_source_hash"]
+__all__ = ["compute_own_source_hash", "compute_source_hash"]
 
 #: ``task()`` keyword arguments that steer scheduling, placement, and what a
 #: failure stops — never what a task produces. None of them reaches the
@@ -98,14 +98,7 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
         If the source cannot be extracted (lambdas, dynamic functions), or
         if a module in the local import closure cannot be read or parsed.
     """
-    try:
-        raw_source = inspect.getsource(fn)
-    except OSError as exc:
-        raise ValueError(
-            f"Cannot extract source for task '{fn.__qualname__}'. "
-            "Tasks must be defined as named, top-level functions."
-        ) from exc
-    source = _without_resource_kwargs(textwrap.dedent(raw_source))
+    source = _task_source(fn)
     module = sys.modules.get(fn.__module__)
     if not isinstance(module, ModuleType):
         return hash_str(source)
@@ -120,6 +113,45 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
         for name, path in sorted(modules.items())
     ]
     return hash_str("\n".join((source, *module_hashes)))
+
+
+def compute_own_source_hash(fn: Callable[..., Any]) -> str:
+    """Return the digest of the task definition's own text.
+
+    :func:`compute_source_hash` also folds in every module of the task's local
+    import closure, its own module included, so an edit to a task defined
+    beside it changes the cache key too. Recorded with each cache entry, this
+    digest lets ``ginkgo cache explain`` tell an edit to the task from an edit
+    next to it.
+
+    Parameters
+    ----------
+    fn : Callable
+        The task function.
+
+    Returns
+    -------
+    str
+        Hex-encoded BLAKE3 digest, resource-only keyword arguments removed.
+
+    Raises
+    ------
+    ValueError
+        If the source cannot be extracted.
+    """
+    return hash_str(_task_source(fn))
+
+
+def _task_source(fn: Callable[..., Any]) -> str:
+    """Return the task definition's dedented text, resource kwargs removed."""
+    try:
+        raw_source = inspect.getsource(fn)
+    except OSError as exc:
+        raise ValueError(
+            f"Cannot extract source for task '{fn.__qualname__}'. "
+            "Tasks must be defined as named, top-level functions."
+        ) from exc
+    return _without_resource_kwargs(textwrap.dedent(raw_source))
 
 
 def _hash_module_source(path: Path) -> str:
@@ -249,7 +281,11 @@ def _offset(lineno: int, col_offset: int, line_starts: list[int]) -> int:
 
 
 def _local_import_closure(module: ModuleType) -> dict[str, Path]:
-    """Return loaded local Python modules statically imported by ``module``."""
+    """Return the local Python modules ``module`` statically imports, transitively.
+
+    The closure follows import statements anywhere in the source, function
+    bodies included, whether or not they have executed yet.
+    """
     source_path = _module_source_path(module)
     if source_path is None:
         return {}
@@ -270,22 +306,25 @@ def _local_import_closure(module: ModuleType) -> dict[str, Path]:
             module=module, source_path=source_path, import_root=import_root
         )
         closure_root = bound if bound is not None else import_root
-    pending = [module]
+    pending = [(module.__name__, source_path, module.__package__)]
     sources: dict[str, Path] = {}
 
     while pending:
-        current = pending.pop()
-        if current.__name__ in sources:
+        name, current_path, package = pending.pop()
+        if name in sources:
             continue
-
-        current_path = _module_source_path(current)
-        if current_path is None or not current_path.is_relative_to(closure_root):
+        if not current_path.is_relative_to(closure_root):
             continue
         if not installed and _is_installed_module(current_path):
             continue
 
-        sources[current.__name__] = current_path
-        pending.extend(_imported_modules(module=current, source_path=current_path))
+        sources[name] = current_path
+        pending.extend(
+            (imported, imported_path, _package_of(name=imported, source_path=imported_path))
+            for imported, imported_path in _imported_modules(
+                name=name, package=package, source_path=current_path
+            ).items()
+        )
 
     return sources
 
@@ -378,8 +417,27 @@ def _packages_distributions() -> dict[str, list[str]]:
         return {}
 
 
-def _imported_modules(*, module: ModuleType, source_path: Path) -> list[ModuleType]:
-    """Return already-loaded modules named by static imports in ``module``.
+def _imported_modules(*, name: str, package: str | None, source_path: Path) -> dict[str, Path]:
+    """Return the source file of each module named by an import statement in a module.
+
+    Every statement counts, a function-local one included, and nothing is
+    imported to find the files.
+
+    Parameters
+    ----------
+    name : str
+        The module's import name.
+    package : str | None
+        The package relative imports in it resolve against.
+    source_path : Path
+        Its source file.
+
+    Returns
+    -------
+    dict[str, Path]
+        Import name to source file, for each imported name that resolves to
+        a Python source file. A name that is an attribute rather than a
+        module (``from pkg import function``) resolves to none.
 
     Raises
     ------
@@ -393,7 +451,7 @@ def _imported_modules(*, module: ModuleType, source_path: Path) -> list[ModuleTy
             tree = ast.parse(source_file.read(), filename=str(source_path))
     except (OSError, SyntaxError, UnicodeDecodeError) as exc:
         raise ValueError(
-            f"Cannot parse imports of module '{module.__name__}' ({source_path}) "
+            f"Cannot parse imports of module '{name}' ({source_path}) "
             "while hashing the task's local import closure. Fix the module source "
             "so cache invalidation can track the full import closure."
         ) from exc
@@ -403,17 +461,42 @@ def _imported_modules(*, module: ModuleType, source_path: Path) -> list[ModuleTy
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            base = _import_base_name(node=node, package=module.__package__)
+            base = _import_base_name(node=node, package=package)
             if base is None:
                 continue
             names.add(base)
             names.update(f"{base}.{alias.name}" for alias in node.names)
 
-    return [
-        imported
-        for name in sorted(names)
-        if isinstance(imported := sys.modules.get(name), ModuleType)
-    ]
+    return {
+        imported: path
+        for imported in sorted(names)
+        if (path := _find_module_source(imported)) is not None
+    }
+
+
+def _find_module_source(name: str) -> Path | None:
+    """Return the Python source file importing ``name`` would load, without importing it.
+
+    A loaded module answers from its own ``__file__``; otherwise each
+    ``sys.path`` entry is searched in order for a module file or a package's
+    ``__init__.py``, as the path finder would.
+    """
+    loaded = sys.modules.get(name)
+    if isinstance(loaded, ModuleType):
+        return _module_source_path(loaded)
+
+    *parents, leaf = name.split(".")
+    for entry in sys.path:
+        directory = Path(entry or ".").joinpath(*parents)
+        for candidate in (directory / f"{leaf}.py", directory / leaf / "__init__.py"):
+            if candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
+def _package_of(*, name: str, source_path: Path) -> str:
+    """Return the package relative imports in module ``name`` resolve against."""
+    return name if source_path.name == "__init__.py" else name.rpartition(".")[0]
 
 
 def _import_base_name(*, node: ast.ImportFrom, package: str | None) -> str | None:

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import functools
 import io
+import os
 import sys
 from pathlib import Path
+from threading import Event, Thread
 import traceback
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
@@ -16,6 +20,15 @@ from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
+
+_log_queue: Any = None
+"""Queue this worker pushes task log chunks onto; ``None`` outside a local pool."""
+
+
+def install_log_queue(log_queue: Any) -> None:
+    """Process-pool initializer: route this worker's task log chunks to *log_queue*."""
+    global _log_queue
+    _log_queue = log_queue
 
 
 def error_response(exc: BaseException) -> dict[str, Any]:
@@ -45,19 +58,136 @@ def _rusage_snapshot() -> Any | None:
     return resource.getrusage(resource.RUSAGE_SELF)
 
 
-def _attach_measured_resources(*, response: dict[str, Any], usage_start: Any | None) -> None:
-    """Add the task-body usage measurement to a worker response.
+class _MachTaskBasicInfo(ctypes.Structure):
+    """``mach_task_basic_info``, for this process's resident size on macOS."""
 
-    Attached to error responses too — the usage measured before a failure
-    is what right-sizes an OOM-prone task.
+    _fields_ = [
+        ("virtual_size", ctypes.c_uint64),
+        ("resident_size", ctypes.c_uint64),
+        ("resident_size_max", ctypes.c_uint64),
+        ("user_time", ctypes.c_int32 * 2),
+        ("system_time", ctypes.c_int32 * 2),
+        ("policy", ctypes.c_int32),
+        ("suspend_count", ctypes.c_int32),
+    ]
+
+
+_MACH_TASK_BASIC_INFO = 20
+
+
+@functools.cache
+def _libsystem() -> ctypes.CDLL:
+    """Return macOS's C library, loaded once per process."""
+    return ctypes.CDLL("/usr/lib/libSystem.dylib")
+
+
+def _current_rss_bytes() -> int | None:
+    """Return this process's resident set size now, or ``None`` where unknown.
+
+    Read in-process — ``/proc`` on Linux, ``task_info`` on macOS — so a
+    sample costs microseconds rather than a ``ps``.
+    """
+    try:
+        if sys.platform == "darwin":
+            libc = _libsystem()
+            info = _MachTaskBasicInfo()
+            count = ctypes.c_uint32(ctypes.sizeof(info) // 4)
+            task = ctypes.c_uint32.in_dll(libc, "mach_task_self_")
+            if libc.task_info(
+                task, _MACH_TASK_BASIC_INFO, ctypes.byref(info), ctypes.byref(count)
+            ):
+                return None
+            return int(info.resident_size)
+        resident_pages = Path("/proc/self/statm").read_text().split()[1]
+        return int(resident_pages) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+class _TaskPeakRss:
+    """Measure how far one task body raised this process's resident memory.
+
+    The worker is already resident before the body runs: the interpreter,
+    ginkgo, and the workflow module with everything it imports, which for a
+    workflow using notebooks includes marimo. That baseline, sampled as the
+    body starts, is the worker's and not the task's, so the measurement is the
+    peak above it. A task that allocates nothing measures close to zero.
+
+    ``ru_maxrss`` is the process's lifetime high-water mark, and a pool
+    worker runs many tasks, so on its own it hands every task the peak of the
+    heaviest one before it. When the mark rose during the task, the task set
+    it and it is exact; otherwise the peak is the highest resident size
+    sampled while the task ran, a lower bound.
+
+    Parameters
+    ----------
+    usage_start : Any
+        The process's rusage as the task started.
+    interval_seconds : float
+        Seconds between resident-size samples.
+    """
+
+    def __init__(self, *, usage_start: Any, interval_seconds: float = 0.1) -> None:
+        self._usage_start = usage_start
+        self._interval = interval_seconds
+        self._stop = Event()
+        self._peak = 0
+        # Started before the baseline is read, so the sampler's own thread
+        # stack is the worker's and not charged to the task.
+        self._thread = Thread(target=self._run, name="ginkgo-task-rss", daemon=True)
+        self._thread.start()
+        self._sample()
+        # Resident bytes as the task started; 0 where they cannot be read.
+        self.baseline_bytes = self._peak
+
+    def stop(self, *, usage_end: Any) -> int:
+        """Stop sampling and return the task's peak resident bytes above the baseline.
+
+        Parameters
+        ----------
+        usage_end : Any
+            The process's rusage as the task finished.
+
+        Returns
+        -------
+        int
+            Peak resident bytes since the task started, less ``baseline_bytes``.
+        """
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+        self._sample()
+        peak = self._peak
+        if peak == 0 or usage_end.ru_maxrss > self._usage_start.ru_maxrss:
+            peak = _max_rss_bytes(usage_end.ru_maxrss)
+        return max(peak - self.baseline_bytes, 0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._sample()
+
+    def _sample(self) -> None:
+        rss = _current_rss_bytes()
+        if rss is not None:
+            self._peak = max(self._peak, rss)
+
+
+def _body_usage(
+    *, usage_start: Any | None, peak_rss: _TaskPeakRss | None
+) -> dict[str, Any] | None:
+    """Return the task body's usage, measured as the body returns or raises.
+
+    Taken before the worker encodes the result and closes the task's logs:
+    that is the worker's work, and a fresh worker's first encode imports and
+    allocates enough to swamp a small task's own figure. Recorded for failed
+    bodies too — the usage measured before a failure is what right-sizes an
+    OOM-prone task.
     """
     usage_end = _rusage_snapshot() if usage_start is not None else None
-    if usage_start is None or usage_end is None:
-        return
-    # ru_maxrss is the worker process's high-water mark, so a task run
-    # after a heavier one in a reused pool worker inherits its peak.
-    response["measured_resources"] = {
-        "peak_rss_bytes": _max_rss_bytes(usage_end.ru_maxrss),
+    if usage_start is None or usage_end is None or peak_rss is None:
+        return None
+    return {
+        "peak_rss_bytes": peak_rss.stop(usage_end=usage_end),
+        "baseline_rss_bytes": peak_rss.baseline_bytes,
         "cpu_seconds": round(
             (usage_end.ru_utime - usage_start.ru_utime)
             + (usage_end.ru_stime - usage_start.ru_stime),
@@ -102,23 +232,18 @@ def run_task(
     dict[str, Any]
         The worker response: the encoded result, or the error.
     """
-    usage_start = _rusage_snapshot()
     base_dir = Path(payload["transport_dir"])
-    decoded_args = {
-        name: decode_value(value, base_dir=base_dir, artifact_store=artifact_store)
-        for name, value in payload["args"].items()
-    }
 
     # Mount any fuse-marked inputs against a task-local mount root so
     # concurrent workers never collide on a shared bucket mount point. The
     # access instance is held before hydration so the finally below always
-    # tears mounts down, even if hydration itself fails partway.
-    mounted_access = _local_fuse_access(args=decoded_args, base_dir=base_dir)
+    # tears mounts down, even if hydration itself fails partway. Encoding
+    # passes fuse markers through, so the encoded arguments show them.
+    mounted_access = _local_fuse_access(args=payload["args"], base_dir=base_dir)
 
     stdout_path = payload.get("stdout_path")
     stderr_path = payload.get("stderr_path")
     secret_values = tuple(payload.get("secret_values", ()))
-    event_queue = payload.get("log_event_queue")
     log_context = {
         "run_id": payload.get("run_id"),
         "task_id": payload.get("task_id"),
@@ -127,30 +252,45 @@ def run_task(
         "display_label": payload.get("display_label"),
     }
     fn = None
+    measured: dict[str, Any] | None = None
     try:
         with (
             _task_log_context(
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
                 secret_values=secret_values,
-                log_emitter=_queue_log_emitter(event_queue=event_queue, context=log_context),
+                log_emitter=_queue_log_emitter(event_queue=_log_queue, context=log_context),
             ),
             _worker_param_session(payload=payload),
         ):
+            # The task's module is loaded before its arguments are decoded,
+            # so a value of a class the workflow defines finds that module
+            # already imported, as the task itself uses it.
+            task_binding = _load_task_binding(payload=payload)
+            fn = getattr(task_binding, "fn", task_binding)
+            decoded_args = {
+                name: decode_value(value, base_dir=base_dir, artifact_store=artifact_store)
+                for name, value in payload["args"].items()
+            }
             if mounted_access is not None:
                 from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
 
                 decoded_args, _ = hydrate_fuse_refs(
                     args=decoded_args, mounted_access=mounted_access
                 )
-            task_binding = _load_task_binding(payload=payload)
-            fn = getattr(task_binding, "fn", task_binding)
-            result = fn(**decoded_args)
+            # Measured from here, once the workflow module is imported, so
+            # the body's usage is not charged with the worker's imports.
+            usage_start = _rusage_snapshot()
+            peak_rss = _TaskPeakRss(usage_start=usage_start) if usage_start is not None else None
+            try:
+                result = fn(**decoded_args)
+            finally:
+                measured = _body_usage(usage_start=usage_start, peak_rss=peak_rss)
 
         # Encode while any fuse mounts are still live: the result may
         # reference paths inside a mount (e.g. an input path returned
         # through), and encoding reads file content.
-        if payload.get("dynamic_result", True) and _is_dynamic_result(result):
+        if _is_dynamic_result(result):
             response = {"ok": True, "result": result, "result_encoding": "direct"}
         else:
             encoded_result = encode_value(result, base_dir=base_dir, artifact_store=artifact_store)
@@ -169,15 +309,21 @@ def run_task(
                 _traceback_from_task(exc=exc, fn=fn),
                 file=_RedactingWriter(handle=handle, secret_values=secret_values),
             )
-        exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
+        # The message travels as the rebuilt exception's one argument. A
+        # KeyError's message is its key's repr, so it carries the key itself,
+        # or the rebuilt one would quote it twice.
+        message = str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
+        exc.args = (redact_text(text=message, secret_values=secret_values),)
         response = error_response(exc)
-        _attach_measured_resources(response=response, usage_start=usage_start)
+        if measured is not None:
+            response["measured_resources"] = measured
         return response
     finally:
         if mounted_access is not None:
             mounted_access.close()
 
-    _attach_measured_resources(response=response, usage_start=usage_start)
+    if measured is not None:
+        response["measured_resources"] = measured
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()
     return response
@@ -216,10 +362,16 @@ def _args_have_fuse_markers(value: Any) -> bool:
 
 
 def _is_dynamic_result(value: Any) -> bool:
-    from ginkgo.core.directive import ExecutionDirective
-    from ginkgo.core.expr import Expr, ExprList
+    """Return whether *value* is a directive or holds task expressions anywhere.
 
-    return isinstance(value, (Expr, ExprList, ExecutionDirective))
+    Such a result goes back to the driver as one object rather than encoded
+    leaf by leaf, so an expression it holds twice (``[merge(ps=calls),
+    calls]``) still arrives as one expression and registers as one task.
+    """
+    from ginkgo.core.directive import ExecutionDirective
+    from ginkgo.runtime.task_validation import contains_dynamic_expression
+
+    return isinstance(value, ExecutionDirective) or contains_dynamic_expression(value)
 
 
 @contextlib.contextmanager

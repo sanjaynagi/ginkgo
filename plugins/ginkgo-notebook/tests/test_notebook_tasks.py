@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 
 from ginkgo import Out, file, task
+from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.rundir import RunDir, make_run_id
 from ginkgo.runtime.events import EventBus, TaskAnnotated
+from ginkgo.runtime.task_runners.shell import classify_failure
 from ginkgo_notebook import notebook
 from ginkgo_notebook.runner import NotebookTaskError
 
@@ -136,8 +138,10 @@ def test_editing_the_notebook_reruns_the_task(tmp_path: Path, notebook_path: Pat
 def test_a_failing_cell_fails_the_task_and_points_at_the_page(
     tmp_path: Path, notebook_path: Path
 ) -> None:
-    with pytest.raises(NotebookTaskError, match="shows the failing cell"):
+    with pytest.raises(NotebookTaskError, match="shows the failing cell") as raised:
         _evaluate(render_failing(notebook_path=str(notebook_path), fail=True), root=tmp_path)
+
+    assert classify_failure(exc=raised.value)["kind"] == "user_code_error"
 
 
 def test_a_declared_output_is_the_result(tmp_path: Path, notebook_path: Path) -> None:
@@ -160,6 +164,23 @@ def test_notebook_runs_marimo_notebooks_only(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="marimo notebooks, which are .py files"):
         notebook(ipynb)
+
+
+@task("notebook")
+def render_jupyter() -> file:
+    return notebook("report.ipynb")
+
+
+def test_a_dry_run_reports_a_jupyter_notebook(tmp_path: Path) -> None:
+    (tmp_path / "report.ipynb").write_text("{}", encoding="utf-8")
+    evaluator = ConcurrentEvaluator()
+    evaluator.build_graph(render_jupyter())
+    evaluator.validate_graph()
+
+    plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+
+    assert len(plan.diagnostics) == 1
+    assert "Jupyter .ipynb notebooks are not supported" in plan.diagnostics[0].message
 
 
 def test_the_users_notebook_is_left_byte_identical(tmp_path: Path, notebook_path: Path) -> None:

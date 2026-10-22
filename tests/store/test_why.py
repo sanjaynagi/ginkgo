@@ -130,6 +130,27 @@ class TestWhy:
         with _reader(chained_run) as reader, pytest.raises(FileNotFoundError, match="Nothing"):
             reader.why("not-an-artifact")
 
+    def test_an_untracked_path_is_told_how_to_track_it(self, chained_run: Path) -> None:
+        """A path returned as a plain ``str`` leaves no record; say what would."""
+        with (
+            _reader(chained_run) as reader,
+            pytest.raises(FileNotFoundError, match=r"plain `str` is not tracked.*-> file"),
+        ):
+            reader.why("results/returned_as_str.txt")
+
+    def test_a_path_from_before_a_ledger_reset_names_the_reset(self, chained_run: Path) -> None:
+        """EV-4: a lost ledger, not the task's annotation, is why nothing is found."""
+        for path in chained_run.parent.glob("ginkgo.db*"):
+            path.unlink()
+        open_store(chained_run).close()
+
+        with (
+            _reader(chained_run) as reader,
+            pytest.raises(FileNotFoundError, match="cannot be traced") as excinfo,
+        ):
+            reader.why("results/summary.txt")
+        assert "plain `str`" not in str(excinfo.value)
+
 
 class TestWhyRendering:
     @staticmethod

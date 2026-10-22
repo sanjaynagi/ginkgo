@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
 from ginkgo.core.hashing import hash_file
+from ginkgo.core.shell import shell_argv
 from ginkgo.envs.manifest import find_pixi_manifest
 from ginkgo.errors import FailureKind, GinkgoError
 
@@ -40,7 +41,7 @@ class PixiEnvNotFoundError(GinkgoError, RuntimeError):
     """
 
     failure_kind: ClassVar[FailureKind] = "env_mismatch"
-    diagnostic_code: ClassVar[str] = "MISSING_ENV"
+    diagnostic_code: ClassVar[str] = "missing_env"
     diagnostic_suggestion: ClassVar[str] = (
         "Create the environment manifest, or correct the env= name on the task."
     )
@@ -215,8 +216,15 @@ class PixiRegistry:
         return source_manifest.stat().st_mtime > generated_manifest.stat().st_mtime
 
     def _import_conda_env_file(self, *, source_manifest: Path, output_dir: Path) -> None:
-        """Run ``pixi init --import`` into *output_dir* for a conda env spec."""
+        """Run ``pixi init --import`` into *output_dir* for a conda env spec.
+
+        ``pixi init`` refuses a directory that already holds a ``pixi.toml``,
+        so the one generated from an earlier version of the spec is removed
+        first. The lock and the installed environment are kept for pixi to
+        reconcile.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "pixi.toml").unlink(missing_ok=True)
         argv = [
             "pixi",
             "init",
@@ -393,8 +401,9 @@ class PixiRegistry:
     def exec_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build argv to run *cmd* inside the Pixi environment.
 
-        The command string is passed verbatim to ``bash -c``, which handles
-        shell quoting, redirection, and pipes exactly as the user wrote them.
+        The command string is passed verbatim to strict ``bash -c`` (see
+        :func:`~ginkgo.core.shell.shell_argv`), which handles shell quoting,
+        redirection, and pipes exactly as the user wrote them.
 
         Parameters
         ----------
@@ -415,9 +424,7 @@ class PixiRegistry:
             "--manifest-path",
             str(manifest),
             "--",
-            "bash",
-            "-c",
-            cmd,
+            *shell_argv(shell="bash", cmd=cmd),
         ]
 
 
@@ -448,9 +455,10 @@ class PixiEnvironment:
 
     pixi_registry: PixiRegistry
 
-    def validate_envs(self, *, env_names: set[str]) -> None:
+    def validate_envs(self, *, env_names: set[str]) -> list[Exception]:
         """Raise for any environment name that cannot be resolved."""
         self.pixi_registry.validate_envs(env_names=env_names)
+        return []
 
     def prepare(self, *, env: str) -> None:
         """Materialize the Pixi environment."""

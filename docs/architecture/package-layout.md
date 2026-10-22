@@ -36,14 +36,18 @@ ginkgo/
 │   └── types.py          # file / folder / tmp_dir path-oriented types
 ├── runtime/
 │   ├── backend.py        # ExecutionEnvironment protocol and EnvironmentRouter
-│   ├── evaluator.py      # _ConcurrentEvaluator scheduler/lifecycle loop
+│   ├── evaluator.py      # ConcurrentEvaluator scheduler/lifecycle loop
+│   ├── graph.py          # TaskGraph: registration, labels, inferred edges, validation
+│   ├── placement.py      # Placement: effective resources and executor placement
+│   ├── advisories.py     # advisory TaskNotice text: untracked dirs, str writes, FUSE fallback
 │   ├── executors.py      # the evaluator's heterogeneous executor pool
-│   ├── scheduler.py
+│   ├── scheduler.py      # ResourceLedger and the CP-SAT dispatch selection
 │   ├── worker.py
 │   ├── module_loader.py
 │   ├── events.py
 │   ├── log_drain.py      # worker log chunks to TaskLog events
 │   ├── dry_run.py        # static execution-plan preview for --dry-run
+│   ├── static_directive.py  # a driver task's directive, predicted without its body
 │   ├── run_summary.py    # RunSummary, the one read model, loaded from the ledger
 │   ├── rundir.py         # RunDir: a run's logs, env locks and manifest on disk;
 │   │                     # also run ids and log tails
@@ -99,13 +103,13 @@ ginkgo/
 │   ├── __init__.py          # open_store, ProvenanceStore
 │   ├── protocol.py          # ProvenanceStore: the ledger's write and read surface
 │   ├── sqlite.py            # SqliteStore: connection, pragmas, transactions
-│   ├── schema.py            # versioned DDL steps and migrate()
+│   ├── schema.py            # the versioned DDL and create_schema()
 │   ├── direct_index.py      # DirectIndex: a connection, a lock, a transaction
 │   ├── maintenance.py       # prune_events / prune_digest_memo / vacuum
 │   ├── writer.py            # StoreWriter: queued, batched appends of stored rows
 │   ├── projector.py         # stored row -> projection rows, one function per type
 │   ├── fs.py                # network-filesystem detection for the SQLite warning
-│   └── errors.py            # StoreError, SchemaVersionError, StoreLockedError
+│   └── errors.py            # StoreError, StaleWorkspaceError, StoreLockedError
 ├── envs/
 │   ├── container.py         # ContainerBackend (Docker/Podman)
 │   ├── interpreter.py       # what the running interpreter cannot import

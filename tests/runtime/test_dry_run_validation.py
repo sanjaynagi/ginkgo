@@ -76,10 +76,14 @@ def _plan_for(build):
     """Build the dry-run plan for a flow body's expression."""
     with record_constructed_calls() as calls:
         expr = build()
-    evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
+    evaluator = ConcurrentEvaluator()
     evaluator.build_graph(expr)
     evaluator.validate_graph()
-    return build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+    return build_dry_run_plan(
+        evaluator=evaluator,
+        workflow_label="workflow.py",
+        unreachable_calls=evaluator.graph.unreachable_calls(calls),
+    )
 
 
 class TestWarmCacheDryRunValidation:
@@ -103,10 +107,10 @@ class TestWarmCacheDryRunValidation:
         assert statuses["produce_summary"] == "cached"
         assert statuses["consume_as_file"] == "will_run"
 
-    def test_a_script_consumer_is_checked_before_its_source_hash_stops_the_probe(
+    def test_a_script_consumer_is_checked_before_its_directive_is_predicted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Driver kinds probe as ``unknown``, but their inputs still validate."""
+        """A driver task's inputs validate before its directive is considered."""
         monkeypatch.chdir(tmp_path)
         ginkgo.evaluate(produce_summary(output_path="results/summary.csv"))
 
@@ -122,9 +126,8 @@ class TestWarmCacheDryRunValidation:
         statuses = {
             task.base_name: task.cache_status for wave in plan.waves for task in wave.tasks
         }
-        # A diagnosed driver task never reached a cache key, so it keeps the
-        # status the probe can stand behind.
-        assert statuses["consume_in_script"] == "unknown"
+        # The run would dispatch it and fail, as for any diagnosed task.
+        assert statuses["consume_in_script"] == "will_run"
 
     def test_each_failing_task_gets_its_own_diagnostic(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -31,6 +31,7 @@ from ginkgo.cli.renderers.run import (
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 from tests.conftest import ShellEnvironment
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
@@ -164,6 +165,11 @@ def test_preparing_env_is_an_active_status() -> None:
     assert state.rows[0].status == "preparing env"
 
 
+def _backdated(started: tuple[float, str | None], *, seconds: float) -> tuple[float, str | None]:
+    """Move a recorded preparation start *seconds* into the past."""
+    return (started[0] - seconds, started[1])
+
+
 def test_preparation_does_not_start_the_task_clock() -> None:
     state = _seeded_state()
 
@@ -184,7 +190,8 @@ def test_leaving_preparation_returns_the_row_to_waiting() -> None:
     state.handle_event_line(_event_line("waiting", env="analysis"))
 
     assert state.rows[0].status == "waiting"
-    assert state.prepared_envs == ["analysis"]
+    assert list(state.env_prepare_by_env) == ["analysis"]
+    assert state.failed_envs == set()
 
 
 def test_a_waiting_event_outside_preparation_records_no_prepare_time() -> None:
@@ -193,7 +200,17 @@ def test_a_waiting_event_outside_preparation_records_no_prepare_time() -> None:
     state.handle_event_line(_event_line("waiting"))
 
     assert state.env_prepare_seconds == 0.0
-    assert state.prepared_envs == []
+    assert state.env_prepare_by_env == {}
+
+
+def test_a_failed_preparation_is_attributed_to_its_own_environment() -> None:
+    state = _seeded_state()
+
+    state.handle_event_line(_event_line("preparing env", env="debian"))
+    state.handle_event_line(_event_line("failed", env="debian"))
+
+    assert state.failed_envs == {"debian"}
+    assert set(state.env_prepare_by_env) == {"debian"}
 
 
 def test_events_do_not_repaint_the_live_display(tmp_path: Path) -> None:
@@ -225,7 +242,7 @@ def test_env_prepare_time_accumulates_on_transition_out() -> None:
     state = _seeded_state()
 
     state.handle_event_line(_event_line("preparing env", env="analysis"))
-    state._env_prepare_started[0] -= 5.0
+    state._env_prepare_started[0] = _backdated(state._env_prepare_started[0], seconds=5.0)
     state.handle_event_line(_event_line("running"))
 
     assert state.env_prepare_seconds == pytest.approx(5.0, abs=0.05)
@@ -235,7 +252,7 @@ def test_failed_preparation_still_reports_its_time() -> None:
     state = _seeded_state()
 
     state.handle_event_line(_event_line("preparing env", env="analysis"))
-    state._env_prepare_started[0] -= 25.0
+    state._env_prepare_started[0] = _backdated(state._env_prepare_started[0], seconds=25.0)
     state.handle_event_line(_event_line("failed"))
 
     assert state.rows[0].status == "failed"
@@ -355,7 +372,7 @@ def test_a_fanout_of_skips_leaves_the_window_on_the_work_that_ran(tmp_path: Path
     assert "step_41" not in rendered
     assert "above" not in rendered
     assert "below" in rendered
-    assert renderer._state.terminal_count() == 42
+    assert sum(renderer._state.status_counts()[status] for status in TERMINAL_STATUSES) == 42
 
 
 def test_the_table_keeps_its_width_as_the_window_scrolls(tmp_path: Path) -> None:
@@ -419,21 +436,27 @@ def test_summary_explains_slow_environment_preparation(tmp_path: Path) -> None:
     renderer, output = _renderer(tmp_path)
 
     renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] -= 25.0
+    renderer._state._env_prepare_started[0] = _backdated(
+        renderer._state._env_prepare_started[0], seconds=25.0
+    )
     renderer.write(_event_line("running") + "\n")
     renderer.write(_event_line("succeeded") + "\n")
     renderer.finish(elapsed=26.0, success=True)
 
-    text = output.getvalue()
+    text = " ".join(output.getvalue().split())
     assert "Environment preparation took" in text
     assert "analysis" in text
+    # Preparation is only the install: a task's slow first start counts as the task's.
+    assert "counts as the task's time" in text
 
 
 def test_summary_explains_preparation_that_failed(tmp_path: Path) -> None:
     renderer, output = _renderer(tmp_path)
 
     renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] -= 25.0
+    renderer._state._env_prepare_started[0] = _backdated(
+        renderer._state._env_prepare_started[0], seconds=25.0
+    )
     renderer.write(_event_line("failed") + "\n")
     renderer.finish(elapsed=25.0, success=False)
 
@@ -500,7 +523,8 @@ def test_a_skipped_task_is_terminal_without_a_duration() -> None:
 
     assert state.rows[0].status == "skipped"
     assert state.rows[0].started_at is None
-    assert state.terminal_count() == 1
+    assert state.rows[0].finished_at is not None
+    assert state.done_count() == 0
     assert _status_icon("skipped") == "⊘"
 
 
@@ -523,7 +547,7 @@ def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
                 ignored=True,
             )
         ],
-        skipped=[SkipDetails(task_label="task_b", blocker_label="task_a")],
+        skipped=[SkipDetails(task_label="task_b", cause="blocked by task_a")],
     )
 
     text = output.getvalue()
@@ -667,7 +691,7 @@ def test_a_notice_from_an_unplanned_task_uses_its_display_label(tmp_path: Path) 
 def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
     skipped = [
-        SkipDetails(task_label=f"branch[{index}]", blocker_label="load") for index in range(50)
+        SkipDetails(task_label=f"branch[{index}]", cause="blocked by load") for index in range(50)
     ]
 
     report = renderer._layout.render_skip_report(skipped)
@@ -680,7 +704,9 @@ def test_summary_omits_explanation_for_fast_preparation(tmp_path: Path) -> None:
     renderer, output = _renderer(tmp_path)
 
     renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] -= _ENV_PREPARE_REPORT_THRESHOLD_SECONDS / 2
+    renderer._state._env_prepare_started[0] = _backdated(
+        renderer._state._env_prepare_started[0], seconds=_ENV_PREPARE_REPORT_THRESHOLD_SECONDS / 2
+    )
     renderer.write(_event_line("running") + "\n")
     renderer.write(_event_line("succeeded") + "\n")
     renderer.finish(elapsed=1.0, success=True)
@@ -706,7 +732,7 @@ def audit_site(*, site: str, trend: str) -> str:
 
 def _validated_evaluator(expr: object, calls: tuple[object, ...]) -> ConcurrentEvaluator:
     """Return an evaluator with the graph behind ``expr`` built and validated."""
-    evaluator = ConcurrentEvaluator(constructed_calls=calls)
+    evaluator = ConcurrentEvaluator()
     evaluator.build_graph(expr)
     evaluator.validate_graph()
     return evaluator
@@ -756,13 +782,16 @@ def test_per_branch_arguments_stay_out_of_seeded_labels() -> None:
 
 
 def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
-    """Two calls of one task have nothing to tell them apart but an ordinal."""
+    """Two listed calls of one task are told apart by the argument that differs."""
     with record_constructed_calls() as calls:
         first = audit_site(site="forest", trend="forest.trend")
         second = audit_site(site="meadow", trend="meadow.trend")
     evaluator = _validated_evaluator((first, second), tuple(calls))
 
-    assert sorted(_seeded_labels(evaluator).values()) == ["audit_site", "audit_site[2]"]
+    assert sorted(_seeded_labels(evaluator).values()) == [
+        "audit_site[forest]",
+        "audit_site[meadow]",
+    ]
 
 
 def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
@@ -846,7 +875,8 @@ def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line
     text = console.file.getvalue()
 
     assert "ValueError: bad value" in text
-    assert text.count("Traceback (most recent call last):") == 1
+    # The traceback is the log tail, printed below the panel, not repeated in it.
+    assert "Traceback (most recent call last):" not in text
 
 
 def test_path_tracked_inputs_print_one_dim_summary_line(tmp_path: Path) -> None:
@@ -874,3 +904,18 @@ def test_a_single_path_tracked_input_uses_singular_wording(tmp_path: Path) -> No
     renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=1)
 
     assert "1 input is tracked by path only" in output.getvalue()
+
+
+def test_progress_counts_only_tasks_with_a_result_as_complete(tmp_path: Path) -> None:
+    """R4: a failed or skipped task is terminal but not complete."""
+    renderer, _ = _renderer(tmp_path)
+    for node_id, status in ((0, "succeeded"), (1, "failed"), (2, "skipped")):
+        renderer.write(
+            json.dumps({"task": f"mod.task_{node_id}", "status": status, "node_id": node_id})
+            + "\n"
+        )
+
+    console = Console(width=120, record=True)
+    console.print(renderer._layout.render_progress_section())
+
+    assert "1/3 complete (1 failed, 1 skipped)" in console.export_text()

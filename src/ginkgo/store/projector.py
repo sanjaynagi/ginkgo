@@ -18,7 +18,6 @@ kept so lineage queries do not have to parse JSON.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
 from ginkgo.store.jsonio import dumps, dumps_or_none
@@ -51,7 +50,7 @@ def projection_ops(event: StoredEvent) -> list[ProjectionOp]:
     handler = _HANDLERS.get(event.type)
     if handler is None:
         return []
-    return handler(event, json.loads(event.payload))
+    return handler(event, event.fields())
 
 
 # ---------------------------------------------------------------- run events
@@ -132,7 +131,7 @@ def _run_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Projecti
             """,
             params=(
                 _RUN_STATUS.get(str(payload.get("status")), "failed"),
-                payload.get("finished_at") or event.ts,
+                event.ts,
                 payload.get("error"),
                 dumps(resources) if resources else None,
                 event.run_id,
@@ -590,8 +589,11 @@ def _task_skipped(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                 dumps(
                     {
                         "skipped_because": {
-                            "task_id": payload.get("blocked_by_task_id"),
-                            "task_name": payload.get("blocked_by_task_name"),
+                            # A v1 payload predates the reasons: its only
+                            # skip was the upstream failure it names.
+                            "reason": payload.get("reason", "upstream_failed"),
+                            "task_id": payload.get("blocked_by_task_id") or None,
+                            "task_name": payload.get("blocked_by_task_name") or None,
                         }
                     }
                 ),

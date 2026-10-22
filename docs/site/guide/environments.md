@@ -43,14 +43,28 @@ The same workflow on the second run:
 ⏱ Completed in 0.7s - 1 tasks executed, 0 cached
 ```
 
+That figure is the `pixi install` alone. Pixi links packages from its shared
+cache, so installing an environment whose packages are already cached takes
+about a second. The first task to start in a newly installed environment can
+still be slow: on macOS the system checks each new native library the first
+time it is loaded, which can add tens of seconds to a notebook that imports
+pandas and marimo. That time belongs to the task, so it shows up in the task's
+duration rather than in the preparation line, and later runs do not pay it.
+
 Because Ginkgo shells out to do this, the tools must be on your `PATH`: `pixi`
 for Pixi environments, and `docker` or `podman` for container environments. See
 [Runtime Prerequisites](../getting-started/installation.md#runtime-prerequisites).
 Container environments also need the runtime's daemon running (on macOS and
 Windows, the Podman machine). `ginkgo doctor` and `ginkgo run --dry-run` check
-it and name a stopped or inaccessible daemon. `ginkgo run` does not check it up
-front, so a run whose container tasks are all cached still succeeds; one that
-has to run a container task fails when it reaches it.
+it and warn about a stopped or inaccessible daemon, but still pass: whether the
+run needs it depends on whether a container task has to run. `ginkgo run` does
+not check it up front, so a run whose container tasks are all cached still
+succeeds; one that has to run a container task fails when it reaches it. A
+fresh `ginkgo init` project runs without a container runtime: its shell task,
+`package_brief`, runs locally, and naming an image with
+`env="docker://ubuntu:24.04"` is all it takes to move it into one. The start
+hint ginkgo prints for a stopped daemon is the platform's own: Docker Desktop
+on macOS and Windows, `systemctl` on Linux.
 
 ## Pixi Environments
 
@@ -102,6 +116,26 @@ this search entirely and is resolved directly against the project root.
 
 If the environment cannot be found anywhere, the error lists every directory
 that was searched, and what each one holds.
+
+### Where An Environment Is Installed
+
+Pixi installs an environment next to its manifest, in a `.pixi/` directory:
+`workflow/envs/<env_name>/.pixi/envs/default/`. The `.gitignore` that
+`ginkgo init` writes already ignores `.pixi/`. `ginkgo env ls` lists each
+environment's install directory, and `ginkgo env clear <env_name>` removes it.
+The next run that needs the environment installs it again.
+
+An environment is large. Python with pandas and marimo comes to about 435 MB as
+`du` counts it. Most of that is not extra disk use: Pixi links files from its
+package cache (`pixi info` names the cache directory) with hard links, or with
+copy-on-write clones on APFS and btrfs. So a second environment, or a reinstall,
+with the same packages costs little more space. `du` counts every link in full
+either way.
+
+Pixi's own `detached-environments` setting installs environments outside the
+project tree. Ginkgo does not support it: `ginkgo env ls` and `ginkgo env clear`
+look for `.pixi/` beside the manifest, so they would report a detached
+environment as not installed and leave it on disk.
 
 ## Conda Environment Files
 
@@ -162,7 +196,7 @@ fail and tell you. Declare the index as an output and it becomes writable:
 @task(kind="shell", env="docker://quay.io/biocontainers/samtools:1.20--h50ea8bc_0")
 def index_reference(reference: file) -> file:
     index = f"{reference}.fai"
-    return shell(cmd=f"samtools faidx {reference}", output=index)
+    return shell(cmd=f"samtools faidx {shlex.quote(reference)}", output=index)
 ```
 
 Declaring it is also what keeps it. Anything a container writes to a path that
@@ -196,10 +230,17 @@ Anything the declarations cannot express goes in `ginkgo.toml`:
 runtime = "docker"                          # or "podman"
 pull_policy = "if-not-present"              # "always" re-pulls; "never" pulls nothing
 user = "auto"                               # host uid:gid; "root" or "1000:1000"
-shell = "bash"                              # for images that ship only "sh"
+shell = "bash"                              # "sh" for Alpine images without bash
 auto_mount = true
 extra_mounts = ["/scratch:rw", "/opt/refs:ro"]
 ```
+
+Unknown keys and values are rejected when a container task is validated:
+`runtime` must be `"docker"` or `"podman"`, and `pull_policy` one of
+`"if-not-present"`, `"always"` or `"never"`. Before pulling an image, ginkgo
+checks that the daemon answers `docker info` (or `podman info`) and stops with
+how to start it when it does not, rather than waiting on a pull that cannot
+finish. A fully cached run never pulls, so it does not need the daemon.
 
 Use `extra_mounts` for paths no task declares — a tool's own cache directory, a
 licence file. Entries take the form `"/path"`, `"/path:rw"`, or
@@ -225,7 +266,7 @@ kind='python'. Foreign environments only support driver tasks — use
 @task('shell'), @task('notebook'), or @task('script').
 ```
 
-`ginkgo doctor` reports the same thing as `INVALID_ENV_KIND` without running
+`ginkgo doctor` reports the same thing as `invalid_env_kind` without running
 anything.
 
 The consequence is the part worth internalising: **every import in a Python task

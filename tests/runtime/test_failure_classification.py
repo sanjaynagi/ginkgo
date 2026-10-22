@@ -2,6 +2,8 @@
 
 import pytest
 
+import ginkgo
+
 from ginkgo.envs.container import ContainerPrepareError
 from ginkgo.runtime.task_runners import classify_failure
 from ginkgo.runtime.task_runners.shell import ShellTaskError
@@ -28,7 +30,32 @@ class TestUserCodeClassification:
         failure = classify_failure(exc=exc)
         assert failure["kind"] == "user_code_error"
         assert failure["code"] == exc.__class__.__name__
-        assert failure["retryable"] is False
+        # Whether a failure is retried is the task's retry policy, which the
+        # retrying/failed events already show; the summary makes no claim.
+        assert set(failure) == {"kind", "message", "code"}
+
+    def test_the_message_leads_with_the_exception_type(self) -> None:
+        """N5: a bare ``'PRODUCT_TAG'`` does not say a key was missing."""
+        assert classify_failure(exc=KeyError("PRODUCT_TAG"))["message"] == (
+            "KeyError: 'PRODUCT_TAG'"
+        )
+
+    def test_a_ginkgo_error_message_stands_alone(self) -> None:
+        exc = DeclaredOutputNotWrittenError("t.out was not written")
+
+        assert classify_failure(exc=exc)["message"] == "t.out was not written"
+
+    def test_a_key_error_from_a_worker_keeps_its_message(self) -> None:
+        """The KeyError rebuilt from a worker must not quote its key twice."""
+        with pytest.raises(KeyError) as raised:
+            ginkgo.evaluate(read_product_tag())
+
+        assert str(raised.value) == "'PRODUCT_TAG'"
+
+
+@ginkgo.task()
+def read_product_tag() -> str:
+    return {}["PRODUCT_TAG"]
 
 
 class TestFrameworkClassification:
@@ -40,7 +67,12 @@ class TestFrameworkClassification:
             (ImportError("cannot import name"), "import_error"),
             (
                 ShellTaskError(
-                    task_name="run_bwa", cmd="bwa", exit_code=1, output="failed", log=None
+                    task_kind="shell",
+                    task_name="run_bwa",
+                    cmd="bwa",
+                    exit_code=1,
+                    output="failed",
+                    log=None,
                 ),
                 "shell_command_error",
             ),

@@ -85,7 +85,7 @@ class StoreWriter:
         Raises
         ------
         StoreError
-            If the database could not be opened or migrated.
+            If the database could not be opened, or is at another schema version.
         """
         self._thread.start()
         self._ready.wait()

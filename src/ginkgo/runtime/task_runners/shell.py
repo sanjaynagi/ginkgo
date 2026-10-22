@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -23,7 +24,7 @@ from types import FrameType
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Sequence, get_origin
 
 from ginkgo.core.optional import OptionalOutput
-from ginkgo.core.shell import ShellDirective
+from ginkgo.core.shell import ShellDirective, shell_argv
 from ginkgo.core.types import (
     STAGING_TASK_GUIDANCE,
     file,
@@ -33,27 +34,50 @@ from ginkgo.core.types import (
     unwrap_optional_annotation,
 )
 from ginkgo.envs.mounts import Mount, MountMode, mount
-from ginkgo.errors import FAILURE_KINDS, FailureKind, GinkgoError
+from ginkgo.errors import FAILURE_KINDS, FailureKind, GinkgoError, describe_exception
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator, declared_output_paths_in_order
 
 if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
     from ginkgo.plugins.api import RunnerContext
+
+logger = logging.getLogger(__name__)
 
 
 # ----- Exceptions -----------------------------------------------------------
 
 
 class ShellTaskError(GinkgoError, RuntimeError):
-    """Shell task execution failure."""
+    """A shell or script task's command exited non-zero.
+
+    Parameters
+    ----------
+    task_kind : str
+        The task's kind, ``"shell"`` or ``"script"``, which the message names
+        so a failing script does not read as a failing shell command.
+    task_name : str
+        The name the task is shown under.
+    cmd : str
+        The command that ran, secrets redacted.
+    exit_code : int
+        Its exit status.
+    output : str
+        Its combined output, quoted when there is no log to point at.
+    log : str | None
+        The task's own log file, when it declared one.
+    hint : str | None, optional
+        Advice on what the exit status usually means.
+    """
 
     failure_kind: ClassVar[FailureKind] = "shell_command_error"
 
     def __init__(
         self,
         *,
+        task_kind: str,
         task_name: str,
         cmd: str,
         exit_code: int,
@@ -63,7 +87,9 @@ class ShellTaskError(GinkgoError, RuntimeError):
     ) -> None:
         self.exit_code = exit_code
 
-        details = f"Shell task {task_name} failed with exit code {exit_code}: {cmd}"
+        details = (
+            f"{task_kind.capitalize()} task {task_name} failed with exit code {exit_code}: {cmd}"
+        )
         if log is not None:
             details = f"{details} (log: {log})"
         elif output:
@@ -116,6 +142,18 @@ def computed_env_var_names(*, task_def: Any) -> tuple[str, ...]:
     if getattr(task_def, "export_thread_env", False):
         return ("GINKGO_THREADS", *_THREAD_ENV_VARS)
     return ("GINKGO_THREADS",)
+
+
+def remove_failed_outputs(output: Any) -> None:
+    """Remove what a failed command left at its declared output paths.
+
+    A partial or empty file there would read as a result, so a failed task
+    leaves none behind. The cached copy of an earlier success is untouched.
+    """
+    if output is None:
+        return
+    for output_path in iter_output_values(output):
+        remove_declared_output(output_path)
 
 
 def remove_declared_output(path: Path) -> None:
@@ -386,7 +424,7 @@ def resolve_declared_output(
     return given
 
 
-def declared_input_mounts(*, node: Any) -> list[Mount]:
+def declared_input_mounts(*, node: TaskInvocation) -> list[Mount]:
     """Return the bind mounts a node's declared path inputs need.
 
     A container sees only what is mounted into it, and the task's command
@@ -531,7 +569,7 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
     scheduler modules that raise them. Built-in exceptions are classified
     here; anything else was raised inside a task body and is user code.
     """
-    message = str(exc)
+    message = describe_exception(exc)
     declared = getattr(exc, "failure_kind", None)
     if declared in FAILURE_KINDS:
         kind = declared
@@ -547,7 +585,6 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
     return {
         "kind": kind,
         "message": message,
-        "retryable": False,
         "code": exc.__class__.__name__,
     }
 
@@ -591,6 +628,46 @@ class SignalMonitor:
 
 
 # ----- Shell runner ---------------------------------------------------------
+
+
+RETAINED_OUTPUT_CHARS = 4096
+"""How much of each output stream a finished command keeps in memory.
+
+The task's log files get every byte as it arrives. What is kept is only what a
+failure quotes, and a failure is copied into the exception, two events, the
+ledger and the manifest, so a command printing 150 MB must not be."""
+
+
+class _OutputTail:
+    """The last :data:`RETAINED_OUTPUT_CHARS` characters a stream wrote."""
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._size = 0
+        self._dropped = 0
+
+    def append(self, chunk: str) -> None:
+        """Add *chunk*, trimming the oldest text once twice the limit is held."""
+        self._parts.append(chunk)
+        self._size += len(chunk)
+        if self._size > 2 * RETAINED_OUTPUT_CHARS:
+            self._trim()
+
+    def text(self) -> str:
+        """Return the kept text, opening with a count of what was left out."""
+        self._trim()
+        text = "".join(self._parts)
+        if not self._dropped:
+            return text
+        return f"[{self._dropped} earlier characters are only in the task's log]\n{text}"
+
+    def _trim(self) -> None:
+        text = "".join(self._parts)
+        if len(text) > RETAINED_OUTPUT_CHARS:
+            self._dropped += len(text) - RETAINED_OUTPUT_CHARS
+            text = text[-RETAINED_OUTPUT_CHARS:]
+        self._parts = [text]
+        self._size = len(text)
 
 
 # Type aliases used to keep signatures readable without forcing import cycles.
@@ -679,8 +756,7 @@ class ShellRunner:
     def run_subprocess(
         self,
         *,
-        argv: str | list[str],
-        use_shell: bool,
+        argv: list[str],
         on_stdout: Any = None,
         on_stderr: Any = None,
         env: dict[str, str] | None = None,
@@ -691,12 +767,20 @@ class ShellRunner:
         When ``usage_callback`` is given, the subprocess tree's peak RSS and
         CPU time are sampled while it runs and reported to the callback once
         the process exits (skipped when nothing could be sampled).
+
+        Output is decoded as UTF-8 with undecodable bytes replaced, so a
+        command that prints binary keeps its (replaced) output and its exit
+        status. Each pipe is drained to the end whatever a callback does: a
+        reader that stopped early would leave the command blocked on, or
+        killed by, a pipe nobody reads. The callbacks see every line; the
+        returned ``stdout`` and ``stderr`` keep only the last
+        :data:`RETAINED_OUTPUT_CHARS` of each, which is all a failure quotes.
         """
         popen_kwargs: dict[str, Any] = {
-            "shell": use_shell,
             "stderr": subprocess.PIPE,
             "stdout": subprocess.PIPE,
-            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
@@ -719,8 +803,8 @@ class ShellRunner:
             if usage is not None and usage_callback is not None:
                 usage_callback(usage)
 
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
+        stdout_tail = _OutputTail()
+        stderr_tail = _OutputTail()
 
         if not hasattr(process, "stdout") or not hasattr(process, "stderr"):
             try:
@@ -735,26 +819,28 @@ class ShellRunner:
                 stderr=stderr_text,
             )
 
-        def consume_stream(*, pipe: Any, sink: list[str], callback: Any) -> None:
+        def consume_stream(*, pipe: Any, sink: _OutputTail, callback: Any) -> None:
             try:
-                while True:
-                    chunk = pipe.readline()
-                    if chunk == "":
-                        break
+                for chunk in iter(pipe.readline, ""):
                     sink.append(chunk)
-                    if callback is not None:
+                    if callback is None:
+                        continue
+                    try:
                         callback(chunk)
+                    except Exception:
+                        logger.exception("Output handler failed; still capturing the output")
+                        callback = None
             finally:
                 pipe.close()
 
         stdout_thread = Thread(
             target=consume_stream,
-            kwargs={"pipe": process.stdout, "sink": stdout_chunks, "callback": on_stdout},
+            kwargs={"pipe": process.stdout, "sink": stdout_tail, "callback": on_stdout},
             daemon=True,
         )
         stderr_thread = Thread(
             target=consume_stream,
-            kwargs={"pipe": process.stderr, "sink": stderr_chunks, "callback": on_stderr},
+            kwargs={"pipe": process.stderr, "sink": stderr_tail, "callback": on_stderr},
             daemon=True,
         )
         stdout_thread.start()
@@ -770,8 +856,8 @@ class ShellRunner:
         return subprocess.CompletedProcess(
             args=argv,
             returncode=returncode,
-            stdout="".join(stdout_chunks),
-            stderr="".join(stderr_chunks),
+            stdout=stdout_tail.text(),
+            stderr=stderr_tail.text(),
         )
 
     # Logged command --------------------------------------------------------
@@ -779,7 +865,7 @@ class ShellRunner:
     def run_logged_command(
         self,
         *,
-        node: Any,
+        node: TaskInvocation,
         cmd: str,
         user_log_path: Path | None = None,
         extra_env: dict[str, str] | None = None,
@@ -803,7 +889,7 @@ class ShellRunner:
             # The subprocess is the environment's launcher, not the command, so
             # an isolated environment is told which of the variables just
             # computed the command itself needs to see.
-            argv: str | list[str] = self.backend.exec_argv(
+            argv = self.backend.exec_argv(
                 env=node.task_def.env,
                 cmd=cmd,
                 mounts=[*declared_input_mounts(node=node), *mounts],
@@ -812,16 +898,17 @@ class ShellRunner:
                     *sorted(extra_env or {}),
                 ],
             )
-            use_shell = False
         else:
-            argv = cmd
-            use_shell = True
+            argv = shell_argv(shell="bash", cmd=cmd)
 
         stdout_handle = node.stdout_path.open("a", encoding="utf-8") if node.stdout_path else None
         stderr_handle = node.stderr_path.open("a", encoding="utf-8") if node.stderr_path else None
         user_log_handle = user_log_path.open("a", encoding="utf-8") if user_log_path else None
 
         def emit_chunk(*, stream: str, chunk: str) -> None:
+            # Output is read a line at a time, so a secret the command prints
+            # arrives whole and is redacted before it reaches any log.
+            chunk = redact_text(text=chunk, secret_values=node.secret_values)
             if stream == "stdout" and stdout_handle is not None:
                 stdout_handle.write(chunk)
                 stdout_handle.flush()
@@ -843,7 +930,6 @@ class ShellRunner:
         try:
             completed = self.run_subprocess(
                 argv=argv,
-                use_shell=use_shell,
                 on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
                 on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
                 env=subprocess_env,
@@ -861,7 +947,7 @@ class ShellRunner:
 
     # Shell driver ----------------------------------------------------------
 
-    def failure_hint(self, *, node: Any, exit_code: int, output: str) -> str | None:
+    def failure_hint(self, *, node: TaskInvocation, exit_code: int, output: str) -> str | None:
         """Ask the execution environment to diagnose a failed command.
 
         Every driver task kind raises its own error type, so each one asks here
@@ -873,7 +959,7 @@ class ShellRunner:
             env=node.task_def.env, exit_code=exit_code, output=output
         )
 
-    def run(self, *, node: Any, directive: ShellDirective) -> Any:
+    def run(self, *, node: TaskInvocation, directive: ShellDirective) -> Any:
         """Execute a shell command and return its declared output path or paths."""
         task_def = node.task_def
         user_log_path = Path(directive.log) if directive.log is not None else None
@@ -884,7 +970,7 @@ class ShellRunner:
         )
         if output is None:
             raise ValueError(
-                f"{task_def.name} declares kind='shell' with no Out[...] parameters, so "
+                f"{task_def.base_name} declares kind='shell' with no Out[...] parameters, so "
                 "shell(...) must declare output=... naming at least one path."
             )
 
@@ -900,8 +986,10 @@ class ShellRunner:
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
+            remove_failed_outputs(output)
             raise ShellTaskError(
-                task_name=task_def.name,
+                task_kind="shell",
+                task_name=node.display_label or task_def.base_name,
                 cmd=redact_text(text=directive.cmd, secret_values=node.secret_values),
                 exit_code=completed.returncode,
                 output=combined_output,
@@ -919,7 +1007,7 @@ class ShellRunner:
         if missing_outputs:
             missing_label = missing_outputs[0] if len(missing_outputs) == 1 else missing_outputs
             raise FileNotFoundError(
-                f"Shell task {task_def.name} completed but did not create output {missing_label!r}"
+                f"Shell task {node.display_label or task_def.base_name} completed but did not create output {missing_label!r}"
             )
 
         return self.validator.coerce_return_value(

@@ -10,12 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo.runtime.caching.cache import MISSING
+from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo import Out, evaluate, file, folder, shell, task, untracked
-from ginkgo.cli.commands.cache import _safe_rmtree
+from ginkgo.cli.commands.cache import _remove_tree
 from ginkgo.core import source_hash
 from ginkgo.core.task import TaskDef
+from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
 from tests.conftest import EventCollector
 
 
@@ -281,6 +283,25 @@ banner
             sys.modules.pop("pkg.helpers", None)
             sys.modules.pop("pkg.tasks", None)
             sys.modules.pop("pkg", None)
+
+    def test_function_local_import_not_yet_run_joins_the_closure(self, tmp_path, monkeypatch):
+        """The closure follows import statements, not what ``sys.modules`` holds."""
+        _write_module(
+            tmp_path / "lazy_tasks.py",
+            """\
+            def compute(x: int) -> int:
+                from lazy_helpers import scale
+                return scale(x)
+            """,
+        )
+        _write_module(tmp_path / "lazy_helpers.py", "def scale(x): return x * 2\n")
+        monkeypatch.delitem(sys.modules, "lazy_helpers", raising=False)
+        with _imported_from(tmp_path, "lazy_tasks") as tasks:
+            assert "lazy_helpers" not in sys.modules
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "lazy_tasks",
+                "lazy_helpers",
+            }
 
     def test_environment_inside_project_stays_out_of_the_closure(self, tmp_path, monkeypatch):
         """An env nested in the project root must not pull installed modules in."""
@@ -879,6 +900,42 @@ class TestWritableFileOutputs:
         assert result_path.is_file()
         assert result_path.read_text(encoding="utf-8").strip() == "hello"
 
+    def test_corrupt_stored_bytes_are_a_cache_miss(self, tmp_path):
+        output = tmp_path / "corrupt.txt"
+        evaluate(write_python_file_task(output_path=str(output), payload="GOOD"))
+        output.unlink()
+        (blob,) = (tmp_path / ".ginkgo" / "artifacts" / "blobs").iterdir()
+        blob.chmod(0o644)
+        blob.write_text("BAD!", encoding="utf-8")
+
+        collector = EventCollector()
+        evaluate(
+            write_python_file_task(output_path=str(output), payload="GOOD"),
+            event_bus=collector.bus,
+        )
+        assert not collector.cached()
+        assert output.read_text(encoding="utf-8") == "GOOD"
+        assert blob.read_text(encoding="utf-8") == "GOOD"
+
+    def test_a_hit_with_its_stored_bytes_deleted_stores_them_again(self, tmp_path):
+        """ED-7: the outputs are intact, so the hit stands and re-stores them."""
+        import shutil
+
+        output = tmp_path / "intact.txt"
+        evaluate(write_python_file_task(output_path=str(output), payload="GOOD"))
+        artifacts = tmp_path / ".ginkgo" / "artifacts"
+        make_writable_recursive(artifacts)
+        shutil.rmtree(artifacts)
+
+        collector = EventCollector()
+        evaluate(
+            write_python_file_task(output_path=str(output), payload="GOOD"),
+            event_bus=collector.bus,
+        )
+        assert collector.cached()
+        (blob,) = (artifacts / "blobs").iterdir()
+        assert blob.read_text(encoding="utf-8") == "GOOD"
+
     def test_python_file_output_rerun_overwrites_previous_materialization(self, tmp_path):
         output = tmp_path / "python.txt"
         first = evaluate(write_python_file_task(output_path=str(output), payload="first"))
@@ -922,6 +979,23 @@ class TestWritableFolderOutputs:
         assert result_path.is_dir()
         assert (result_path / "a.txt").read_text().strip() == "a"
 
+    def test_a_hit_with_its_stored_tree_deleted_stores_it_again(self, tmp_path):
+        """ED-7, for a folder: its manifest and member blobs come back."""
+        import shutil
+
+        output = tmp_path / "dir_intact"
+        evaluate(write_folder_task(output_dir=str(output)))
+        artifacts = tmp_path / ".ginkgo" / "artifacts"
+        make_writable_recursive(artifacts)
+        shutil.rmtree(artifacts)
+
+        collector = EventCollector()
+        evaluate(write_folder_task(output_dir=str(output)), event_bus=collector.bus)
+        assert collector.cached()
+        shutil.rmtree(output)
+        result = evaluate(write_folder_task(output_dir=str(output)))
+        assert (Path(str(result)) / "b.txt").read_text().strip() == "b"
+
     def test_modified_folder_is_restored_without_cache_miss(self, tmp_path):
         output = tmp_path / "dir_modified"
         evaluate(write_folder_task(output_dir=str(output)))
@@ -958,7 +1032,7 @@ class TestCachePruneReadOnly:
             entry.chmod(stat.S_IRUSR | stat.S_IXUSR)
 
         for entry in entries:
-            _safe_rmtree(entry)
+            _remove_tree(entry)
 
         assert not any(child.is_dir() for child in cache_root.iterdir())
 
@@ -1014,3 +1088,68 @@ class TestUnreadableCacheEntry:
         assert rerun == cached == 16
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
         assert collector.cached()
+
+
+class TestDynamicTemplateEntries:
+    """A dynamic task's entry holds its returned expressions (G1)."""
+
+    def test_a_template_naming_a_removed_task_is_a_miss(self, tmp_path, monkeypatch):
+        _write_module(
+            tmp_path / "template_tasks.py",
+            """\
+            from ginkgo import task
+
+            @task()
+            def child(x: int) -> int:
+                return x
+
+            @task()
+            def parent() -> int:
+                return child(x=1)
+            """,
+        )
+        with _imported_from(tmp_path, "template_tasks") as tasks:
+            store = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+            store.save(
+                cache_key="k",
+                result=DynamicTemplate(tasks.child(x=1)),
+                task_def=tasks.parent,
+                resolved_args={},
+                input_hashes={},
+            )
+            assert isinstance(store.load(cache_key="k", task_def=tasks.parent), DynamicTemplate)
+
+            # The child is renamed away: the stored template can no longer load.
+            monkeypatch.delattr(tasks, "child")
+            assert store.load(cache_key="k", task_def=tasks.parent) is MISSING
+
+    def test_an_entry_the_index_has_no_row_for_is_a_miss(self, tmp_path):
+        _write_module(
+            tmp_path / "rowless_tasks.py",
+            """\
+            from ginkgo import task
+
+            @task()
+            def child(x: int) -> int:
+                return x
+
+            @task()
+            def parent() -> int:
+                return child(x=1)
+            """,
+        )
+        with _imported_from(tmp_path, "rowless_tasks") as tasks:
+            saved = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+            saved.save(
+                cache_key="k",
+                result=DynamicTemplate(tasks.child(x=1)),
+                task_def=tasks.parent,
+                resolved_args={},
+                input_hashes={},
+            )
+
+            # A lost ginkgo.db: the entry's bytes remain, its row does not.
+            store = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+
+            assert store.load(cache_key="k", task_def=tasks.parent) is MISSING
+            assert not store.has_entry(cache_key="k", task_def=tasks.parent)

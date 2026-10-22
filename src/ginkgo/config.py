@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 PARAMS_CONFIG_KEY = "params"
 """Config table holding declared workflow parameter values."""
 
+RUNTIME_CONFIG_TABLES = frozenset(
+    {PARAMS_CONFIG_KEY, "ledger", "notifications", "remote", "resources", "secrets"}
+)
+"""Top-level ``ginkgo.toml`` tables that configure ginkgo rather than the workflow.
+
+A workflow that loads ``ginkgo.toml`` with ``config()`` reads them too, but
+they are not the run's parameters, and may name where its secrets are kept.
+"""
+
 
 class ConfigKeyError(KeyError):
     """A key that is not in the config file, reported with the keys that are.
@@ -299,14 +308,36 @@ def load_runtime_config_layers(
     list[dict[str, Any]]
         One mapping per config source, in load order. Empty when none exist.
     """
-    resolved_overrides = [Path(path).resolve() for path in override_paths or ()]
-    default_path = _default_runtime_config_path(project_root=project_root)
+    return [
+        _load_config_mapping(path)
+        for path in runtime_config_paths(project_root=project_root, override_paths=override_paths)
+    ]
 
-    layers: list[dict[str, Any]] = []
-    if default_path is not None:
-        layers.append(_load_config_mapping(default_path))
-    layers.extend(_load_config_mapping(path) for path in resolved_overrides)
-    return layers
+
+def runtime_config_paths(
+    *,
+    project_root: Path,
+    override_paths: Sequence[str | Path] | None = None,
+) -> list[Path]:
+    """Return the runtime config files that exist, in load order.
+
+    Parameters
+    ----------
+    project_root : Path
+        Directory holding the canonical ``ginkgo.toml``/``ginkgo.yaml``.
+    override_paths : Sequence[str | Path] | None, optional
+        Config files given with ``--config``.
+
+    Returns
+    -------
+    list[Path]
+        The canonical project config, when present, then each override. Index
+        for index, these are the sources of :func:`load_runtime_config_layers`.
+    """
+    default_path = _default_runtime_config_path(project_root=project_root)
+    paths = [] if default_path is None else [default_path]
+    paths.extend(Path(path).resolve() for path in override_paths or ())
+    return paths
 
 
 def merge_config_layers(layers: Sequence[dict[str, Any]]) -> dict[str, Any]:

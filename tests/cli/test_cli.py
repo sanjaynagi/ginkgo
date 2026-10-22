@@ -20,14 +20,14 @@ import yaml
 from rich.console import Console
 
 import ginkgo
-from ginkgo.cli import (
+from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL, _iter_template_files
+from ginkgo.cli.renderers.common import (
+    _MultiStateBar,
     _core_unit_label,
-    environment_label,
     _time_of_day_spinner,
     _truncate_task_label,
+    environment_label,
 )
-from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL
-from ginkgo.cli.renderers.common import _MultiStateBar
 from ginkgo.envs.interpreter import source_import_roots
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -410,20 +410,23 @@ def main():
         assert stats["hit_histogram"] == {"0": 1, "1": 1}
         assert stats["top_functions"][0]["entries"] == 2
 
-    def test_cache_stats_reports_artifact_store_bytes_separately(self) -> None:
+    def _run_artifact_workflow(self) -> None:
+        """Run a workflow whose one task writes a 1000-byte file and a folder."""
         Path("workflow.py").write_text(
             """
 from pathlib import Path
-from ginkgo import file, flow, task
+from ginkgo import Out, file, flow, folder, task
 
 @task()
-def make() -> file:
-    Path("out.txt").write_text("x" * 1000, encoding="utf-8")
-    return file("out.txt")
+def make(dest: Out[file], tree: Out[folder]) -> tuple[file, folder]:
+    Path(dest).write_text("x" * 1000, encoding="utf-8")
+    Path(tree).mkdir(exist_ok=True)
+    Path(tree, "member.txt").write_text("y" * 100, encoding="utf-8")
+    return dest, tree
 
 @flow
 def main():
-    return make()
+    return make(dest="out.txt", tree="tree")
 """.strip()
             + "\n",
             encoding="utf-8",
@@ -431,15 +434,98 @@ def main():
         run = _run_cli("run", "workflow.py", cwd=Path.cwd())
         assert run.returncode == 0, run.stderr
 
-        as_json = _run_cli("cache", "stats", "--json", cwd=Path.cwd())
+    def test_cache_sizes_count_the_artifacts_an_entry_names(self) -> None:
+        self._run_artifact_workflow()
+
+        stats = json.loads(_run_cli("cache", "stats", "--json", cwd=Path.cwd()).stdout)
+        (entry,) = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
         text = _run_cli("cache", "stats", cwd=Path.cwd())
 
-        assert as_json.returncode == 0, as_json.stderr
-        stats = json.loads(as_json.stdout)
-        assert stats["artifact_bytes"] == 1000
-        # The entry figure stays the cache entries' own bytes.
-        assert stats["total_bytes"] < 1000
-        assert "Artifact store: 1000 B" in text.stdout
+        assert stats["artifact_bytes"] == 1100
+        assert entry["artifact_bytes"] == 1100
+        assert entry["size_bytes"] == entry["output_bytes"] + 1100
+        assert stats["total_bytes"] == entry["size_bytes"]
+        assert stats["top_functions"][0]["bytes"] == entry["size_bytes"]
+        assert "Artifact store: 1.1 KiB" in text.stdout
+
+    def test_cache_prune_max_size_counts_and_frees_artifact_bytes(self) -> None:
+        self._run_artifact_workflow()
+
+        preview = _run_cli("cache", "prune", "--max-size", "1KB", "--dry-run", cwd=Path.cwd())
+        assert "1 entries" in preview.stdout
+
+        result = _run_cli("cache", "prune", "--max-size", "1KB", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 cache entry" in result.stdout
+        blobs = Path(".ginkgo") / "artifacts" / "blobs"
+        assert list(blobs.iterdir()) == []
+        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
+
+    def _run_large_value_workflow(self) -> None:
+        """Run a workflow with a value large enough to leave inline storage."""
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def big() -> bytes:
+    return b"z" * (300 * 1024)
+
+@task()
+def small() -> int:
+    return 1
+
+@flow
+def main():
+    return [big(), small()]
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 0, run.stderr
+
+    def test_an_entry_size_counts_the_blob_its_value_names(self) -> None:
+        """SC5-3: a large value lives in the artifact store, not in output.json."""
+        self._run_large_value_workflow()
+
+        entries = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
+
+        big = next(entry for entry in entries if entry["task_name"] == "big")
+        assert big["size_bytes"] > 300 * 1024
+
+    def test_clearing_one_entry_keeps_another_entrys_value_blob(self) -> None:
+        """SC5-3: the collector must not take a blob a surviving value names."""
+        self._run_large_value_workflow()
+        entries = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
+        small = next(entry for entry in entries if entry["task_name"] == "small")
+
+        cleared = _run_cli("cache", "clear", small["cache_key"], cwd=Path.cwd())
+        assert cleared.returncode == 0, cleared.stderr
+        rerun = _run_cli("run", "workflow.py", "--agent-output", cwd=Path.cwd())
+
+        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
+        completed = [
+            event
+            for event in map(json.loads, rerun.stdout.splitlines())
+            if event.get("event") == "task_completed"
+        ]
+        statuses = {event["task_name"].rsplit(".", 1)[-1]: event["status"] for event in completed}
+        assert statuses == {"big": "cached", "small": "success"}
+
+    def test_prune_removes_cache_directories_no_row_names(self) -> None:
+        """EV5-10: prune leaves nothing behind for `db check` to flag."""
+        cache_root = Path(".ginkgo") / "cache"
+        _seed_cache_entry(cache_root=cache_root, name="old", age_days=100)
+        orphan = cache_root / "orphan"
+        orphan.mkdir(parents=True)
+
+        result = _run_cli("cache", "prune", "--older-than", "30d", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 cache entry and 1 orphaned directory" in _unwrapped(result.stdout)
+        assert not orphan.exists()
+        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
 
     def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
         cache_root = Path(".ginkgo") / "cache"
@@ -455,10 +541,58 @@ def main():
         assert known.exists()
         assert not orphan.exists()
 
-    def test_cache_prune_rejects_invalid_duration(self) -> None:
-        result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "Invalid duration for --older-than" in result.stderr
+    def test_cache_clear_task_removes_only_that_tasks_entries(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        first = _seed_cache_entry(cache_root=cache_root, name="a1", age_days=1, function="m.a")
+        second = _seed_cache_entry(cache_root=cache_root, name="a2", age_days=1, function="m.a")
+        other = _seed_cache_entry(cache_root=cache_root, name="b1", age_days=1, function="m.b")
+
+        result = _run_cli("cache", "clear", "--task", "a", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 2 cache entries" in result.stdout
+        assert not first.exists() and not second.exists()
+        assert other.exists()
+
+    def test_cache_clear_task_with_no_entries_is_an_error(self) -> None:
+        _seed_cache_entry(cache_root=Path(".ginkgo") / "cache", name="b1", age_days=1)
+
+        result = _run_cli("cache", "clear", "--task", "missing", cwd=Path.cwd())
+
+        assert result.returncode != 0
+        assert "No cache entries found for task: missing" in result.stdout + result.stderr
+
+    def test_cache_clear_all_removes_every_entry_and_orphan(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
+        orphan = cache_root / "orphan"
+        orphan.mkdir(parents=True)
+
+        result = _run_cli("cache", "clear", "--all", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 cache entry and 1 orphaned directory" in _unwrapped(result.stdout)
+        assert not known.exists() and not orphan.exists()
+
+    def test_cache_clear_counts_what_it_freed_and_points_at_vacuum(self) -> None:
+        """The rows go too, but their space is only returned by `db vacuum`."""
+        _seed_cache_entry(
+            cache_root=Path(".ginkgo") / "cache", name="known", age_days=1, payload="x" * 2048
+        )
+
+        result = _run_cli("cache", "clear", "--task", "demo.x", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        # The space on disk, in allocated blocks, as `du` would count it.
+        assert "KiB freed on disk)" in result.stdout
+        assert "ginkgo db vacuum" in _unwrapped(result.stdout)
+
+    @pytest.mark.parametrize("value", ["bad", "0d"])
+    def test_cache_prune_rejects_an_invalid_duration_as_usage(self, value: str) -> None:
+        result = _run_cli("cache", "prune", "--older-than", value, cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "argument --older-than: Invalid duration" in result.stderr
+        assert result.stdout == ""
 
     def test_cache_prune_requires_at_least_one_policy(self) -> None:
         result = _run_cli("cache", "prune", cwd=Path.cwd())
@@ -490,8 +624,8 @@ def main():
             for index, age_days in enumerate([100, 60, 5])
         ]
 
-        # Cap total at 2KB so only the oldest must drop.
-        result = _run_cli("cache", "prune", "--max-size", "2KB", cwd=Path.cwd())
+        # Cap total at 2KiB so only the oldest must drop.
+        result = _run_cli("cache", "prune", "--max-size", "2KiB", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert not entries[0].exists()
         assert entries[1].exists()
@@ -581,7 +715,7 @@ def main():
         assert "boom" in failed.stdout
         assert "Log tail" in failed.stdout
         assert "about-to-fail:sample_1" in failed.stdout
-        assert "1/1 complete" in failed.stdout
+        assert "0/1 complete (1 failed)" in failed.stdout
         assert '{"status":' not in failed.stdout
         assert failed.stdout.index("CPU avg ") < failed.stdout.index("Failure Details: explode")
 
@@ -704,10 +838,11 @@ def main():
         assert "🌿 ginkgo run workflow.py --dry-run" in result.stdout
         assert "Dry run" in result.stdout
         assert "1 task" in result.stdout
+        # Nothing is unknown, so there is no legend for it.
+        assert "cannot be known without running" not in result.stdout
         assert "Wave 1" in result.stdout
         # The plan labels a node exactly as the live run table does.
-        assert "• write_marker  [will run]" in result.stdout
-        assert "[will run]" in result.stdout
+        assert "• write_marker  [will run: no prior entry]" in result.stdout
         assert "no tasks executed" in result.stdout
         assert not Path("should-not-exist.txt").exists()
         runs_root = Path(".ginkgo") / "runs"
@@ -762,7 +897,38 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
 
         assert result.returncode == 0, result.stderr
-        assert "not reachable from the flow return value" in _unwrapped(result.stderr)
+        stderr = _unwrapped(result.stderr)
+        assert "not reachable from the flow return value" in stderr
+        # The fix doctor offers is shown too, not just the symptom (F9).
+        assert "Return its result from the flow" in stderr
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_a_flow_whose_every_call_was_dropped_fails(self, dry_run: bool) -> None:
+        """N1: a flow that forgot to return its only call must not pass with nothing run."""
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def label(text: str) -> str:
+    return text
+
+@flow
+def main():
+    label(text="dropped")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        args = ("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
+        result = _run_cli(*args, cwd=Path.cwd())
+
+        assert result.returncode == 1
+        output = _unwrapped(result.stdout + result.stderr)
+        assert "label() is not reachable from the flow return value" in output
+        assert "No task would run" in output
+        assert "Return the result of each call the flow needs" in output
 
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_dropped_producer_is_named_before_its_consumer_fails_validation(
@@ -882,8 +1048,9 @@ def main():
             assert f"analyse[{sample}]" in result.stdout
         # The leaf task's cache state is determinable; fan-out branches
         # downstream of a will-run task are not.
-        assert "[will run]" in result.stdout
-        assert "[unknown]" in result.stdout
+        assert "[will run: no prior entry]" in result.stdout
+        assert "[unknown: after upstream]" in result.stdout
+        assert "? [unknown: after upstream]  an upstream task runs first" in result.stdout
         assert "no tasks executed" in result.stdout
 
     def test_run_dry_run_reports_cached_tasks_after_a_real_run(self) -> None:
@@ -988,6 +1155,16 @@ def _third_party_imports(*, project_dir: Path) -> set[str]:
 
 
 class TestCliInit:
+    def test_template_walk_skips_bytecode_caches(self, tmp_path: Path) -> None:
+        (tmp_path / "workflow" / "__pycache__").mkdir(parents=True)
+        (tmp_path / "workflow" / "flow.py").write_text("", encoding="utf-8")
+        (tmp_path / "workflow" / "__pycache__" / "flow.cpython-312.pyc").write_bytes(b"")
+        (tmp_path / "stray.pyc").write_bytes(b"")
+
+        files = [str(relative) for _, relative in _iter_template_files(tmp_path)]
+
+        assert files == ["workflow/flow.py"]
+
     def test_init_creates_project_scaffold(self) -> None:
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
@@ -1144,11 +1321,9 @@ class TestCliInit:
         for plugin in ("ginkgo_pixi", "ginkgo_notebook"):
             if importlib.util.find_spec(plugin) is None:
                 pytest.skip(f"the scaffold needs the {plugin} plugin")
-        if shutil.which("docker") is None or shutil.which("pixi") is None:
-            pytest.skip("running the scaffold end to end needs docker and pixi")
-        # The client binary existing does not mean the daemon is reachable.
-        if subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0:
-            pytest.skip("running the scaffold end to end needs a reachable docker daemon")
+        # NC-5: the starter needs no container runtime, only pixi.
+        if shutil.which("pixi") is None:
+            pytest.skip("running the scaffold end to end needs pixi")
 
         init_result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert init_result.returncode == 0, init_result.stderr
@@ -1172,6 +1347,23 @@ class TestCliInit:
 
         project_dir = Path("demo-project")
         assert not (project_dir / "skills").exists()
+        assert not (project_dir / "AGENTS.md").exists()
+
+    def test_init_points_agents_at_the_skills(self) -> None:
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        assert "skills/index.md" in Path("demo-project", "AGENTS.md").read_text(encoding="utf-8")
+
+    def test_init_leaves_an_existing_agents_file_alone(self) -> None:
+        project_dir = Path("demo-project")
+        project_dir.mkdir()
+        (project_dir / "AGENTS.md").write_text("ours\n", encoding="utf-8")
+
+        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        assert (project_dir / "AGENTS.md").read_text(encoding="utf-8") == "ours\n"
 
     def test_init_can_create_skills_only_for_existing_project(self) -> None:
         project_dir = Path("demo-project")
@@ -1239,7 +1431,8 @@ def main():
         result = _run_cli("run", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert re.search(
-            r"🌿 ginkgo run flow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
+            r"🌿 ginkgo run workflow/flow\.py \(auto-discovered\) "
+            r"\([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
             result.stdout,
         )
         assert "✓ succeeded" in result.stdout
@@ -1463,20 +1656,20 @@ def main():
 
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
-        live_labels = re.findall(r"│ (child(?:\[\d\])?) +│", result.stdout)
-        assert live_labels == ["child", "child[2]", "child[3]"]
+        live_labels = re.findall(r"│ (child(?:\[\w\])?) +│", result.stdout)
+        assert live_labels == ["child[a]", "child[b]", "child[c]"]
 
         run_id = _extract_run_dir(result.stdout).name
         shown = _run_cli("runs", "show", run_id, cwd=Path.cwd())
         assert shown.returncode == 0, shown.stderr
-        assert re.findall(r"│ (child(?:\[\d\])?) +│", shown.stdout) == live_labels
+        assert re.findall(r"│ (child(?:\[\w\])?) +│", shown.stdout) == live_labels
 
-        history = _run_cli("history", "child[2]", "--json", cwd=Path.cwd())
+        history = _run_cli("history", "child[b]", "--json", cwd=Path.cwd())
         assert history.returncode == 0, history.stderr
         rows = json.loads(history.stdout)
         # The spawning task is node 0, so the second child is node 2.
         assert [(row["task_id"], row["display_label"]) for row in rows] == [
-            ("task_0002", "child[2]")
+            ("task_0002", "child[b]")
         ]
 
     def test_branches_the_run_never_prepared_keep_their_labels(self) -> None:
@@ -1816,7 +2009,7 @@ def main():
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "MISSING_SECRET"
+        assert payload["diagnostics"][0]["code"] == "missing_secret"
 
     def test_cache_explain_reports_rerun_reason(self) -> None:
         Path("workflow.py").write_text(
@@ -1896,7 +2089,7 @@ def main():
     def test_cache_explain_rejects_conflicting_run_ids(self) -> None:
         result = _run_cli("cache", "explain", "run-a", "--run", "run-b", cwd=Path.cwd())
         assert result.returncode == 2
-        assert "conflicting run ids" in result.stdout
+        assert "Conflicting run ids" in result.stderr
 
     def test_cache_explain_accepts_agreeing_run_ids(self) -> None:
         """Both forms naming the same run is not a usage error, only a missing run."""
@@ -2137,6 +2330,26 @@ def main():
         assert "Number of replicates" in result.stdout
         assert "--label STR" in result.stdout
 
+    def test_run_help_shows_the_config_value_as_the_default(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        Path("ginkgo.toml").write_text("[params]\nn_reps = 7\n", encoding="utf-8")
+        Path("extra.toml").write_text('[params]\nlabel = "override"\n', encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", "--config", "extra.toml", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Number of replicates (default: 7, from ginkgo.toml)" in result.stdout
+        assert "Run label (default: 'override', from extra.toml)" in result.stdout
+
+    def test_run_help_names_the_auto_discovered_workflow(self) -> None:
+        Path("flow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "parameters declared by flow.py (auto-discovered):" in result.stdout
+        assert "--n-reps INT" in result.stdout
+
     def test_run_help_keeps_bracketed_words_in_the_usage_text(self) -> None:
         result = _run_cli("run", "--help", cwd=Path.cwd())
 
@@ -2184,6 +2397,20 @@ def main():
         result = _run_cli("cache", "ls", "--bogus", cwd=Path.cwd())
         assert result.returncode == 2
         assert "unrecognized arguments: --bogus" in result.stderr
+
+    def test_other_commands_suggest_the_flag_a_typo_meant(self) -> None:
+        result = _run_cli("runs", "ls", "--limt", "5", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "--limt: did you mean --limit?" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("typo", "meant"), [("--dryrun", "--dry-run"), ("--n-rep", "--n-reps")]
+    )
+    def test_run_suggests_the_flag_or_parameter_a_typo_meant(self, typo: str, meant: str) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", typo, cwd=Path.cwd())
+        assert result.returncode == 1
+        assert f"{typo}: did you mean {meant}?" in result.stdout + result.stderr
 
     def test_inspect_workflow_exposes_declared_parameters(self) -> None:
         Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
@@ -2338,7 +2565,8 @@ def main():
             encoding="utf-8",
         )
         Path("ginkgo.toml").write_text(
-            'other = "kept"\n\n[params]\nlabel = "stale"\n', encoding="utf-8"
+            'other = "kept"\n\n[params]\nlabel = "stale"\n\n[secrets.dotenv]\nenabled = false\n',
+            encoding="utf-8",
         )
         result = _run_cli("run", "workflow.py", "--label", "effective", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
@@ -2346,7 +2574,9 @@ def main():
         params = _manifest(_extract_run_dir(result.stdout))["params"]
         assert params["label"] == "effective"
         assert params["other"] == "kept"
+        # Neither the raw [params] table nor ginkgo's own tables are parameters.
         assert "params" not in params
+        assert "secrets" not in params
 
     def test_run_warns_when_a_task_body_reads_a_parameter_global(self) -> None:
         Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")

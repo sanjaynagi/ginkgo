@@ -20,8 +20,8 @@ without breaking plugins.
 | `ObjectStoreType` | URI scheme | `build(ObjectStoreContext) -> ObjectStore`; also carries `parse_uri(uri) -> RemoteLocation`, which splits the scheme's URIs into bucket and key (`core.remote.parse_bucket_key_uri` for `scheme://bucket/key` layouts) |
 | `MountDriverType` | URI scheme | `build() -> MountDriver` |
 | `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(SecretBackendContext) -> tuple[SecretBackend, ...]`, tried in order |
-| `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config |
-| `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries`. `directive`, `runner` and `call_form` are set together or not at all |
+| `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config. Optional `check(EventSubscriberCheckContext) -> Sequence[EventSubscriberConfigProblem]` lists config problems for `ginkgo doctor`, as errors when `blocking` (the subscriber would send nothing) and warnings otherwise; `EventSubscriberContext.warn` messages are recorded as `run_notice` events |
+| `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries`, `user_built_command` (the body formats its own command line, so its paths must not contain spaces), and an optional `static_notices(directive, task_name, arg_names)` hook that `doctor` and `--dry-run` call with a statically evaluated directive to collect warnings. `directive`, `runner` and `call_form` are set together or not at all |
 | `CliCommand` | a `ginkgo <name>` subcommand | no `build`: `add_arguments(parser)` declares the command's arguments when the CLI builds its parser, and `run(args) -> int` executes it; also carries `help` |
 | `EnvironmentType` | every scheme in `schemes` (`docker`, `oci`), with `""` for a bare name | `build(EnvironmentContext) -> ExecutionEnvironment`; also carries a `name` and a `label` for run tables and provenance |
 
@@ -122,8 +122,10 @@ tests and embedders that need a known set of plugins.
   kind's directive is an error naming the kind to use. Runners are built on first use from
   a `RunnerContext` of evaluator services (the validator, the shared
   `ShellRunner`, the run directory, `annotate`, and for sub-workflows the run
-  id and database). A runner handles no cache hits: anything it puts in
-  `node.runner_extras` while running, the evaluator saves in the cache entry's
+  id and database). A runner receives the task attempt as a `TaskInvocation`
+  (`plugins/api.py`), a protocol naming exactly what a runner may read; the
+  evaluator's own node satisfies it, so nothing is converted. A runner handles
+  no cache hits: anything it puts in `node.runner_extras` while running, the evaluator saves in the cache entry's
   `extra` as `runner_extras` and records against the task again on a hit.
   `runtime/task_kinds.task_kind(task_def)` is the one lookup every caller uses
   (dispatch, validation, dry run, remote-input staging, `inspect`). Without
@@ -247,12 +249,8 @@ plugins.
 
 Value codecs are still wired directly.
 
-Two parts of the task-kind contract are still loose: a runner receives the
-evaluator's own `NodeRun` (typed `Any`), and `ShellRunner` is both the shared
-subprocess service in `RunnerContext` and the `shell` kind's runner.
-ginkgo-notebook is the first task kind outside core, and it relies on these
-`NodeRun` attributes: `task_def`, `node_id`, `resolved_args`,
-`execution_args` and `runner_extras`. Changing them breaks it.
+One part of the task-kind contract is still loose: `ShellRunner` is both the
+shared subprocess service in `RunnerContext` and the `shell` kind's runner.
 
 ## Failure classification
 
@@ -260,6 +258,6 @@ Failure categories and doctor diagnostics are declared on the exception
 classes that need them, not by core naming those classes: `failure_kind:
 ClassVar[FailureKind]` is read by `classify_failure`, and `diagnostic_code` /
 `diagnostic_suggestion` by `ginkgo doctor` (for example `EnvNotAllowedError`
-declares `INVALID_ENV_KIND`). `FailureKind` (`errors.py`) is a `Literal` of
+declares `invalid_env_kind`). `FailureKind` (`errors.py`) is a `Literal` of
 the categories reports know; a declared value outside it is ignored. An
 exception a plugin raises classifies itself the same way.

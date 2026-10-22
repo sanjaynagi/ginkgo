@@ -10,15 +10,24 @@ def summarize(input_path: file, output_path: Out[file]) -> file:
     ...
 ```
 
+The first positional argument of `@task` is the task kind, so
+`@task("shell")` and `@task(kind="shell")` are the same; with none,
+`@task()` is a Python task.
+
 Use shell tasks when the real unit of work is a command with declared outputs:
 
 ```python
+from shlex import quote
+
 from ginkgo import Out, file, shell, task
 
 @task(kind="shell")
 def normalize(input_path: file, output_path: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {input_path} > {output_path}")
+    return shell(cmd=f"tr a-z A-Z < {quote(input_path)} > {quote(output_path)}")
 ```
+
+Quote every value formatted into `cmd=` with `shlex.quote`; a shell task's
+paths must not contain spaces.
 
 Use script tasks when a standalone script should run in a task-local Pixi env:
 
@@ -56,6 +65,26 @@ _NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
 def render_report(sample_id: str) -> file:
     return notebook(_NOTEBOOKS_DIR / "report.py")
 ```
+
+A notebook should read every file through its arguments, never by a path
+written into the notebook. A figure one task draws and a notebook shows is an
+`Out[file]` of the task that draws it, passed on as a `file` argument:
+
+```python
+@task("notebook")
+def region_report(region: str, figure: Out[file]):
+    return notebook(_NOTEBOOKS_DIR / "region.py")   # saves to args.get("figure")
+
+@task("notebook")
+def overview(figures: list[file]) -> file:
+    return notebook(_NOTEBOOKS_DIR / "overview.py")  # mo.image() each get_all("figures")
+
+reports = region_report().map(region=regions, figure=expand("results/figures/{region}.png", region=regions))
+overview(figures=reports.output["figure"])
+```
+
+A notebook that builds the figure path itself is served stale from the cache
+after the figure is redrawn.
 
 ## Ginkgo types and cache correctness
 
@@ -98,8 +127,40 @@ a `str` parameter whose name looks path-like (`path`, `output_dir`,
 `report_files`, ...), suggesting `file`/`folder` for a read or
 `Out[file]`/`Out[folder]` for a write.
 
-A data file opened by a literal path inside a task body is invisible to the
-cache. Pass it in as a `file` argument instead.
+A task sees only its arguments. Its cache key covers its arguments, its source
+and `version=`; anything else it reads must come in as an argument. A data file
+opened by a path inside a task body, or a script a shell command runs (`bash
+scripts/trim.sh`), is invisible to the cache: pass it in as a `file` argument
+and use the argument instead. A file a task writes to a path that is neither an
+`Out[...]` parameter nor returned is not tracked or restored: declare it
+`Out[file]` or return it. Read an environment variable in the flow body, which
+runs while the graph is built, and pass the value in as an argument:
+
+```python
+threshold = float(os.environ.get("PEAK_THRESHOLD", "0.05"))
+call_peaks(bam=bam, out="results/peaks.bed", threshold=threshold)
+```
+
+A `ginkgo.param` is the other route. A variable read inside a task body is
+invisible to the cache. Every task in a module re-runs when any of the
+module's text changes, comments included.
+
+A shell, script or notebook output that may legitimately not be written is
+wrapped in `optional()` in `output=`; when absent it resolves to `None`, so
+annotate that element `file | None`. `Out[file | None]` is different: it
+means the argument may be `None`, and a path that is passed must still be
+written.
+
+```python
+from ginkgo import file, optional, shell, task
+
+@task("shell")
+def call_variants(sample: str) -> tuple[file, file | None]:
+    return shell(
+        cmd=f"mkdir -p results && echo {sample} > results/{sample}.vcf",
+        output=(f"results/{sample}.vcf", optional(f"results/{sample}.warnings.txt")),
+    )
+```
 
 A task with `Out[...]` parameters and no return annotation has its return
 value inferred from them — one `Out[...]` parameter becomes the return
@@ -197,11 +258,94 @@ Choose `.map()` when lists are meant to line up positionally. Choose
 a grid, build one row per combination in a DataFrame and map over its columns:
 `.map(**rows.to_dict("list"), out=per_branch("results/{a}_{b}.txt"))`.
 
-## Shell commands are not strict
+Give each branch its own output path with `per_branch()`, whose placeholders
+name the call's own arguments and are filled from each branch's values. It is
+the way to name outputs of a `.product_map()` grid; an `expand()` list there
+would be crossed with the grid as one more axis, and is refused:
 
-Local shell tasks run under `/bin/sh -c`, Pixi and Conda environments under
-`bash -c`, and container environments under the shell named by `[container]
-shell` in `ginkgo.toml` (`bash` by default). None sets `errexit` or
-`pipefail`, so a failing line or a failing stage of a pipeline does not fail
-the task. Start strict commands with
-`set -eo pipefail;`.
+```python
+from ginkgo import per_branch
+
+comparisons = compare_thresholds(metrics=["accuracy", "f1"]).product_map(
+    sample_id=["s1", "s2"],
+    threshold=[0.1, 0.2, 0.3],
+    output_path=per_branch("results/{sample_id}_{threshold}.json"),
+)
+```
+
+To fan in, pass the fan-out's result straight to a parameter typed as a list.
+The consumer waits for every branch and receives their results in branch
+order:
+
+```python
+@task()
+def merge_reports(reports: list[file], output_path: Out[file]) -> file:
+    ...
+
+@flow
+def main():
+    reports = build_report(type="html").map(
+        sample_id=["s1", "s2", "s3"],
+        output_path=per_branch("results/{sample_id}.html"),
+    )
+    return merge_reports(reports=reports, output_path="results/merged.html")
+```
+
+To run a task once per file in a folder, list the folder in the `@flow` body,
+which runs when the graph is built, and map over the paths. This sees only
+files that exist before the run starts; for files an upstream task writes,
+have that task return a `list[file]` instead:
+
+```python
+from pathlib import Path
+
+@flow
+def main():
+    fastqs = sorted(Path("data/raw").glob("*.fastq.gz"))
+    return filter_fastq(min_length=8).map(
+        fastq=[str(path) for path in fastqs],
+        output_path=[f"results/filtered/{path.name}" for path in fastqs],
+    )
+```
+
+## Data-dependent fan-out (checkpoints)
+
+When the number of branches depends on data a task writes, write the pieces
+into the task's own `Out[folder]` and return one task per piece; the returned
+tasks run after it, and it completes with their results. A downstream task
+takes that list like any other input (fan-in):
+
+```python
+@task()
+def split(table: file, chunks: Out[folder]) -> list[file]:
+    write_chunks(table, chunks)  # your own helper
+    return [
+        sort_chunk(chunk=str(path), sorted_path=f"results/sorted/{path.name}")
+        for path in sorted(Path(chunks).glob("chunk*.txt"))
+    ]
+
+
+@task()
+def combine(parts: list[file], merged: Out[file]) -> file: ...
+
+
+@flow
+def main():
+    parts = split(table="data/table.txt", chunks="results/chunks")
+    return combine(parts=parts, merged="results/merged.txt")
+```
+
+Every declared `Out[...]` path is removed before its task runs, so globbing
+the task's own `Out[folder]` sees only this run's files. On a cache hit the
+returned tasks are replayed and each is looked up on its own, so editing a
+child's script or module re-runs that child only. A returned task must not
+read a path written by a task downstream of its parent: that is a cycle, and
+the run fails naming it.
+
+## Shell commands are strict
+
+Every shell task runs under `bash -eo pipefail -c` (a container task under
+`[container] shell`, `bash` by default, with the same flags), so a failing
+line or a failing stage of a pipeline fails the task. Append `|| true` to a
+step that may legitimately fail: a `grep` that can match nothing, or the
+stage before `| head`, which `SIGPIPE` kills (`(gzip -cd x.gz || true) | head`).

@@ -233,7 +233,7 @@ so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
 - `ginkgo cache prune`
 - `ginkgo cache explain`
 - `ginkgo env ls` (from the `ginkgo-pixi` plugin)
-- `ginkgo db` (`db path`, `db migrate`, `db check`, `db prune`, `db vacuum`)
+- `ginkgo db` (`db path`, `db check`, `db prune`, `db vacuum`)
 
 For full details on every command, see the [CLI reference](docs/site/guide/cli.md).
 

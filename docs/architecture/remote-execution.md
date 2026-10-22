@@ -30,7 +30,7 @@ executors the run will reach (each `ExecutorType.required_settings` is the one
 home for which keys a backend cannot be built without); a table no task reaches
 stays unvalidated, so a stale `[remote.executors.k8s]` never fails a local run.
 
-`_resolve_placement` returns the executor's name or `None` for local
+`Placement.resolve` (`runtime/placement.py`) returns the executor's name or `None` for local
 placement; `NodeRun.executor_name` carries it, and `NodeRun.remote` is the
 derived predicate. That name is what events and provenance record as
 `execution_backend` (`local` for local placement), and what
@@ -87,7 +87,7 @@ The worker entry point (`remote/worker.py`) runs as
 3. Downloads `file`/`folder` inputs and large values from the artifact store
    into its own scratch directory
 4. Calls the standard `run_task()` worker function. The payload carries no
-   driver-local state (log queue, log paths, transport directory), so task
+   driver-local paths (log files, transport directory), so task
    output goes to the container's stdout/stderr and appears in the pod logs
 5. Uploads outputs and large result values, then prints a JSON result line to
    stdout for the handle to parse

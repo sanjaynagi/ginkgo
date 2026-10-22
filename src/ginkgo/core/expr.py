@@ -10,7 +10,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from types import UnionType
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, get_args
 
 if TYPE_CHECKING:
     from ginkgo.core.task import PartialCall, TaskDef
@@ -78,7 +79,7 @@ class Expr(Generic[T]):
         graph-build time, so the label is the same before dispatch as
         after it.
         """
-        base_name = self.task_def.name.rsplit(".", 1)[-1]
+        base_name = self.task_def.base_name
         if self.display_label_parts:
             return f"{base_name}[{','.join(self.display_label_parts)}]"
         return base_name
@@ -121,6 +122,34 @@ class Expr(Generic[T]):
         if format_spec:
             raise self._deferred_value_error("formatted")
         return str(self)
+
+    def __getattr__(self, name: str) -> Any:
+        """Refuse a missing attribute, explaining the ones users reach for.
+
+        Only reached when normal lookup fails. ``.map()`` belongs to a call
+        that leaves its varying arguments unset, and an ``Out[...]``
+        parameter's value is selected through :attr:`output`. Underscore names
+        are refused plainly: copy, pickle and dataclass internals probe them,
+        sometimes on an instance whose fields are not yet set.
+        """
+        task_def = self.__dict__.get("task_def")
+        if name.startswith("_") or task_def is None:
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+        fn_name = task_def.fn.__name__
+        if name in ("map", "product_map"):
+            raise AttributeError(
+                f"{fn_name}(...) was given every required argument, so it is one call rather "
+                f"than a fan-out, and has no .{name}(). To fan out, leave the varying "
+                f"parameters unset on the call and pass them to .{name}(): "
+                f"{fn_name}(fixed=...).{name}(varying=[...])"
+            )
+        if name in task_def.output_params:
+            raise AttributeError(
+                f"{fn_name}() returns one deferred result, which has no attribute {name!r}. "
+                f"{name!r} is one of its Out[...] parameters: select it with "
+                f"r.output[{name!r}]"
+            )
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
     def _deferred_result_error(self, action: str, *, remedy: str | None = None) -> TypeError:
         """Build the error explaining why *action* cannot work on a deferred call.
@@ -188,7 +217,7 @@ class Expr(Generic[T]):
             else:
                 arg_strs.append(f"{k}={v!r}")
         joined = ", ".join(arg_strs)
-        return f"Expr({self.task_def.name}({joined}))"
+        return f"Expr({self.task_def.base_name}({joined}))"
 
 
 @dataclass(frozen=True)
@@ -276,6 +305,9 @@ class _OutputProxy:
                 task_def=self._source.task_def,
             )
 
+        task_def = self._source.task_def
+        if task_def is not None:
+            _validate_output_index(task_def=task_def, index=index)
         if isinstance(self._source, Expr):
             return OutputIndex(expr=self._source, index=index)
 
@@ -284,6 +316,28 @@ class _OutputProxy:
             exprs=[OutputIndex(expr=e, index=index) for e in self._source],
             task_def=self._source.task_def,
         )
+
+
+def _validate_output_index(*, task_def: TaskDef, index: int) -> None:
+    """Raise a clear error if the task's declared return holds one value.
+
+    Indexing a single ``str`` or path result would otherwise select one of
+    its characters at run time, and the run would succeed with it.
+    """
+    from pathlib import Path
+
+    from ginkgo.core.types import file, folder
+
+    annotation = task_def.effective_return_annotation
+    members = get_args(annotation) if isinstance(annotation, UnionType) else (annotation,)
+    single_values = {file, folder, Path, str, int, float, bool, None, type(None)}
+    if not members or not all(member in single_values for member in members):
+        return
+    raise TypeError(
+        f"{task_def.fn.__name__}() returns a single value, so it has no output [{index}]. "
+        "Pass the result itself, or select an Out[...] parameter by name with "
+        '.output["name"].'
+    )
 
 
 def _validate_output_name(*, task_def: TaskDef, name: str) -> None:

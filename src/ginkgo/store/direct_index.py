@@ -10,7 +10,7 @@ A direct index is therefore a small thing: an open store, a lock so the
 evaluator's threads can share one connection, and a transaction helper. Opening
 one is a decision — to write (:meth:`open`), to read (:meth:`for_reading`), or
 to keep the rows to this process (:meth:`in_memory`) — because the first of
-those creates and migrates a database. Constructing one never does.
+those creates a database and its schema. Constructing one never does.
 """
 
 from __future__ import annotations
@@ -40,15 +40,15 @@ class DirectIndex:
 
     @classmethod
     def open(cls, *, path: Path, readonly: bool = False) -> Self:
-        """Open the index for writing, creating and migrating the database.
+        """Open the index for writing, creating the database if it is missing.
 
         Parameters
         ----------
         path : Path
             The database file, normally ``WorkspaceLayout.db``.
         readonly : bool, optional
-            Open a reader instead: it never creates the file and never
-            migrates it, and fails if there is nothing there to read.
+            Open a reader instead: it never creates the file or its
+            schema, and fails if there is nothing there to read.
 
         Returns
         -------

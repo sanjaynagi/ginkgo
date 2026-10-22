@@ -14,6 +14,8 @@ unavailable.
 
 from __future__ import annotations
 
+import os
+
 import subprocess
 import shutil
 from pathlib import Path
@@ -123,6 +125,34 @@ class TestPixiRegistry:
         manifest = registry.resolve(env=str(env_file))
 
         assert manifest == (tmp_path / ".ginkgo-pixi" / "pixi.toml").resolve()
+
+    def test_an_edited_conda_env_file_is_imported_again(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        env_file = tmp_path / "environment.yml"
+        env_file.write_text("name: demo\n", encoding="utf-8")
+        generated_manifest = tmp_path / ".ginkgo-pixi" / "pixi.toml"
+        generated_manifest.parent.mkdir(parents=True)
+        generated_manifest.write_text("[workspace]\nname = 'old'\n", encoding="utf-8")
+        os.utime(generated_manifest, (0, 0))
+
+        def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            # Like `pixi init`, refuse a directory that already has a manifest.
+            if generated_manifest.exists():
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="pixi.toml already exists"
+                )
+            generated_manifest.write_text("[workspace]\nname = 'new'\n", encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("ginkgo_pixi.environment._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo_pixi.environment.subprocess.run", fake_run)
+
+        PixiRegistry(project_root=_TESTS_DIR).resolve(env=str(env_file))
+
+        assert "new" in generated_manifest.read_text(encoding="utf-8")
 
     def test_resolve_conda_env_file_reuses_generated_manifest_when_fresh(
         self,
@@ -274,9 +304,7 @@ class TestPixiRegistry:
         assert argv[0] == "pixi"
         assert argv[1] == "run"
         assert "--manifest-path" in argv
-        assert "bash" in argv
-        assert "-c" in argv
-        assert "echo hello" in argv
+        assert argv[-5:] == ["bash", "-eo", "pipefail", "-c", "echo hello"]
 
     def test_python_task_with_env_is_rejected_before_env_resolution(self, tmp_path: Path) -> None:
         """evaluate() rejects Python tasks with env= before any env lookup occurs."""

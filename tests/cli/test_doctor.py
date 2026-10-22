@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -68,11 +69,11 @@ def _write_workflow(*, env: str | None) -> None:
     decorator = '@task("shell")' if env is None else f'@task("shell", env="{env}")'
     Path("workflow.py").write_text(
         f"""
-from ginkgo import flow, task
+from ginkgo import flow, shell, task
 
 {decorator}
 def greet() -> str:
-    return "echo hello"
+    return shell(cmd="echo hello")
 
 @flow
 def main():
@@ -127,7 +128,7 @@ def main():
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "MISSING_SECRET"
+        assert payload["diagnostics"][0]["code"] == "missing_secret"
 
 
 class TestDoctorUnreachableCalls:
@@ -136,11 +137,11 @@ class TestDoctorUnreachableCalls:
     def _write_workflow_with_dropped_call(self) -> None:
         Path("workflow.py").write_text(
             """
-from ginkgo import flow, task
+from ginkgo import flow, shell, task
 
 @task("shell")
 def greet(text: str) -> str:
-    return f"echo {text}"
+    return shell(cmd=f"echo {text}")
 
 @flow
 def main():
@@ -235,7 +236,7 @@ def main():
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
         [diagnostic] = payload["diagnostics"]
-        assert diagnostic["code"] == "INCOMPLETE_CALL"
+        assert diagnostic["code"] == "incomplete_call"
         assert "join() is missing required argument(s): right" in diagnostic["message"]
         assert ".map()" in diagnostic["suggestion"]
 
@@ -307,6 +308,70 @@ class TestDoctorWorkspaceLedger:
         assert [item["code"] for item in payload["diagnostics"]] == ["runs_without_ledger"]
         assert payload["diagnostics"][0]["severity"] == "warning"
 
+    def _run_once(self) -> None:
+        Path("workflow.py").write_text(
+            "from ginkgo import flow, task\n\n@task()\ndef one() -> int:\n    return 1\n\n"
+            "@flow\ndef main():\n    return one()\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "run", "workflow.py"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_run_directories_older_than_a_new_ledger_are_reported(self) -> None:
+        """ED-6: a database recreated after a deletion hides the older runs too."""
+        self._run_once()
+        (Path(".ginkgo") / "runs" / "20260101_000000_000000_deadbeef").mkdir()
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "runs_without_ledger"
+        assert "1 run directory under .ginkgo/runs with no row" in diagnostic["message"]
+
+    def test_recorded_runs_without_directories_are_reported(self) -> None:
+        """ED-6: deleting .ginkgo/runs fails db check, so doctor must not pass silently."""
+        self._run_once()
+        shutil.rmtree(Path(".ginkgo") / "runs")
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "runs_without_directory"
+        assert "1 run recorded" in diagnostic["message"]
+
+    def test_cache_rows_without_bytes_are_a_warning(self) -> None:
+        """ED5-7: what `db check` fails on, doctor reports."""
+        self._run_once()
+        for entry in (Path(".ginkgo") / "cache").iterdir():
+            shutil.rmtree(entry)
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "ledger_drift"
+        assert "has a row but no output.json" in diagnostic["message"]
+        assert "db check --fix" in diagnostic["suggestion"]
+
+    def test_a_corrupt_ledger_is_an_error(self) -> None:
+        """ED5-7: doctor must not pass a ledger `db check` cannot open."""
+        _write_workflow(env=None)
+        Path(".ginkgo").mkdir()
+        Path(".ginkgo", "ginkgo.db").write_bytes(b"not a database" * 100)
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        codes = [item["code"] for item in json.loads(result.stdout)["diagnostics"]]
+        assert "corrupt_ledger" in codes
+
     def test_a_workspace_that_has_not_run_yet_is_not_reported(self) -> None:
         _write_workflow(env=None)
         (Path(".ginkgo") / "runs").mkdir(parents=True)
@@ -330,7 +395,7 @@ class TestDoctorEnvValidation:
         result = _run_doctor("--json", cwd=Path.cwd())
 
         payload = json.loads(result.stdout)
-        assert [item["code"] for item in payload["diagnostics"]] == ["INVALID_ENV_KIND"]
+        assert [item["code"] for item in payload["diagnostics"]] == ["invalid_env_kind"]
         assert "kind='subworkflow'" in payload["diagnostics"][0]["message"]
 
 
@@ -358,7 +423,7 @@ class TestDoctorContainerImageValidation:
         result = _run_doctor(cwd=Path.cwd(), path_prefix=fake_bin)
 
         assert result.returncode == 1
-        assert "MISSING_IMAGE" in result.stderr
+        assert "missing_image" in result.stderr
         assert "nope-this-image-does-not-exist:99.99" in result.stderr
 
     def test_bogus_image_is_reported_in_json(self) -> None:
@@ -371,24 +436,42 @@ class TestDoctorContainerImageValidation:
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "MISSING_IMAGE"
+        assert payload["diagnostics"][0]["code"] == "missing_image"
 
 
 class TestDoctorContainerDaemonValidation:
-    """Issue #343: a Docker CLI whose daemon is down fails ``doctor`` with a
-    message naming the daemon, instead of passing and failing the run."""
+    """Issue #343: a Docker CLI whose daemon is down is named by ``doctor``.
+    It is a warning: only a container task that has to run needs the daemon."""
 
-    def test_unreachable_daemon_produces_a_diagnostic(self) -> None:
+    def test_unreachable_daemon_produces_a_warning(self) -> None:
         _write_workflow(env="docker://ubuntu:24.04")
         fake_bin = _write_fake_docker(daemon_up=False)
 
         result = _run_doctor("--json", cwd=Path.cwd(), path_prefix=fake_bin)
 
-        assert result.returncode == 1
+        assert result.returncode == 0, result.stdout
         [diagnostic] = json.loads(result.stdout)["diagnostics"]
-        assert diagnostic["code"] == "CONTAINER_DAEMON_UNREACHABLE"
+        assert diagnostic["severity"] == "warning"
+        assert diagnostic["code"] == "container_daemon_unreachable"
+        assert "cached tasks do not need it" in diagnostic["message"]
         assert "docker daemon is not reachable" in diagnostic["message"]
         assert "failed to connect to the docker API" in diagnostic["message"]
+
+    def test_dry_run_warns_and_passes(self) -> None:
+        _write_workflow(env="docker://ubuntu:24.04")
+        fake_bin = _write_fake_docker(daemon_up=False)
+
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "run", "workflow.py", "--dry-run"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "docker daemon is not reachable" in result.stderr
+        assert "cached tasks do not need it" in result.stderr
 
     def test_workflow_without_container_envs_does_not_probe(self) -> None:
         _write_workflow(env=None)
@@ -444,7 +527,7 @@ class TestDoctorExecutorSelection:
             },
         )
 
-        missing = [item for item in diagnostics if item.code == "FUSE_IMAGE_NOT_CONFIGURED"]
+        missing = [item for item in diagnostics if item.code == "fuse_image_not_configured"]
         assert len(missing) == 1
         assert "[remote.executors.gpu-k8s]" in missing[0].message
 
@@ -542,5 +625,38 @@ def test_only_installed_drivers_that_fail_their_health_check_are_reported(
     with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, drivers))):
         (diagnostic,) = access_doctor._probe_driver_binaries()
 
-    assert diagnostic.code == "FUSE_DRIVERS_NOT_ON_HOST"
+    assert diagnostic.code == "fuse_drivers_not_on_host"
     assert diagnostic.message.endswith("mountpoint-s3 (s3://)")
+
+
+class TestDoctorRefusedDirective:
+    """A directive refused whatever the run's state fails doctor, as it fails a dry run."""
+
+    def test_a_jupyter_notebook_task_is_an_error(self, tmp_path: Path) -> None:
+        pytest.importorskip("ginkgo_notebook")
+        Path("legacy.ipynb").write_text("{}", encoding="utf-8")
+        Path("workflow.py").write_text(
+            """
+from pathlib import Path
+
+from ginkgo import flow, task
+from ginkgo_notebook import notebook
+
+
+@task("notebook")
+def legacy() -> str:
+    return notebook(Path(__file__).parent / "legacy.ipynb")
+
+
+@flow
+def main():
+    return legacy()
+""".lstrip(),
+            encoding="utf-8",
+        )
+
+        result = _run_doctor(cwd=tmp_path)
+
+        assert result.returncode == 1
+        assert "refused_directive" in result.stderr
+        assert "marimo convert" in result.stderr

@@ -16,9 +16,10 @@ to import a workflow can enumerate its inputs without running the flow.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
 import re
 import sys
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ginkgo.errors import GinkgoError
 
@@ -257,7 +258,7 @@ def _loaded_global_names(function: Any) -> set[str]:
 def param(
     name: str,
     *,
-    type: Callable[[str], Any] = str,  # noqa: A002 - matches argparse's keyword
+    type: Callable[[str], Any] | None = None,  # noqa: A002 - matches argparse's keyword
     default: Any = REQUIRED,
     help: str | None = None,  # noqa: A002 - matches argparse's keyword
     choices: Sequence[Any] | None = None,
@@ -271,10 +272,12 @@ def param(
         Parameter name. Must start with a letter and contain only letters,
         digits, and underscores. The command-line flag is the dashed form, so
         ``n_replicates`` is supplied as ``--n-replicates``.
-    type : Callable[[str], Any], optional
+    type : Callable[[str], Any] | None, optional
         Callable applied to string values, following ``argparse``'s ``type``
-        convention. Defaults to ``str``. ``bool`` is handled specially: the flag
-        may be given bare (``--flag``) or with a literal (``--flag false``).
+        convention. When omitted, it is the type of a ``bool``, ``int`` or
+        ``float`` default, so ``default=40.0`` reads ``--threshold 2.5`` as a
+        float; otherwise ``str``. ``bool`` is handled specially: the flag may be
+        given bare (``--flag``) or with a literal (``--flag false``).
     default : Any, optional
         Value used when the parameter is supplied neither on the command line
         nor in config. Omit to make the parameter required.
@@ -300,7 +303,7 @@ def param(
     """
     decl = ParamDecl(
         name=name,
-        value_type=type,
+        value_type=type if type is not None else _type_of_default(default),
         default=default,
         help_text=help,
         choices=tuple(choices) if choices is not None else None,
@@ -402,6 +405,35 @@ def looks_like_flag(token: str) -> bool:
     return False
 
 
+def unrecognized_arguments_message(*, tokens: Sequence[str], known_flags: Iterable[str]) -> str:
+    """Report unrecognised command-line tokens, suggesting the flag each typo meant.
+
+    Parameters
+    ----------
+    tokens : Sequence[str]
+        The tokens nothing claimed, flags and their values alike.
+    known_flags : Iterable[str]
+        Every flag the command accepts, such as ``--dry-run`` or a declared
+        parameter's ``--n-reps``.
+
+    Returns
+    -------
+    str
+        ``unrecognized arguments: ...``, followed by one "did you mean" line
+        per unrecognised flag that closely matches a known one.
+    """
+    candidates = sorted(set(known_flags))
+    lines = [f"unrecognized arguments: {' '.join(tokens)}"]
+    for token in tokens:
+        if not looks_like_flag(token):
+            continue
+        flag = token.split("=", 1)[0]
+        close = difflib.get_close_matches(flag, candidates, n=1)
+        if close:
+            lines.append(f"{flag}: did you mean {close[0]}?")
+    return "\n".join(lines)
+
+
 def extract_flag_values(
     extras: Sequence[str],
     decl: ParamDecl,
@@ -469,13 +501,21 @@ def extract_flag_values(
     return values, consumed
 
 
-def format_param_help(decls: Iterable[ParamDecl]) -> list[str]:
+def format_param_help(
+    decls: Iterable[ParamDecl],
+    *,
+    config_defaults: Mapping[str, tuple[Any, str]] | None = None,
+) -> list[str]:
     """Render declared parameters as aligned help lines.
 
     Parameters
     ----------
     decls : Iterable[ParamDecl]
         Declarations to render, in declaration order.
+    config_defaults : Mapping[str, tuple[Any, str]] | None, optional
+        Parameter name to ``(value, origin)`` for parameters the config sets.
+        Such a parameter shows that value as its default, with the config file
+        it came from, in place of its declared default.
 
     Returns
     -------
@@ -489,7 +529,9 @@ def format_param_help(decls: Iterable[ParamDecl]) -> list[str]:
     signatures = {decl.name: _help_signature(decl) for decl in ordered}
     width = max(len(signature) for signature in signatures.values())
     return [
-        f"  {signatures[decl.name]:<{width}}  {_help_suffix(decl)}".rstrip() for decl in ordered
+        f"  {signatures[decl.name]:<{width}}  "
+        f"{_help_suffix(decl, config_default=(config_defaults or {}).get(decl.name))}".rstrip()
+        for decl in ordered
     ]
 
 
@@ -500,20 +542,34 @@ def _help_signature(decl: ParamDecl) -> str:
     return f"{decl.flag} {decl.type_label.upper()}"
 
 
-def _help_suffix(decl: ParamDecl) -> str:
+def _help_suffix(decl: ParamDecl, *, config_default: tuple[Any, str] | None) -> str:
     """Return the description-and-default portion of a parameter's help line."""
     parts: list[str] = []
     if decl.help_text:
         parts.append(decl.help_text)
     if decl.choices is not None:
         parts.append(f"(choices: {', '.join(str(item) for item in decl.choices)})")
-    if decl.required:
+    if config_default is not None:
+        value, origin = config_default
+        parts.append(f"(default: {value!r}, from {origin})")
+    elif decl.required:
         parts.append("(required)")
     else:
         parts.append(f"(default: {decl.default!r})")
+    if decl.value_type is bool:
+        parts.append(f"(bare {decl.flag} is true; {decl.flag} false turns it off)")
     if decl.multiple:
-        parts.append("(repeatable)")
+        parts.append("(repeatable; the value is a tuple)")
     return " ".join(parts)
+
+
+def _type_of_default(default: Any) -> Callable[[str], Any]:
+    """Return the type a parameter without ``type=`` converts its values to."""
+    # bool first: it is a subclass of int.
+    for candidate in (bool, int, float):
+        if isinstance(default, candidate):
+            return candidate
+    return str
 
 
 def _validate_declaration(decl: ParamDecl) -> None:

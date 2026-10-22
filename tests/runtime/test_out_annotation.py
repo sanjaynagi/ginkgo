@@ -64,6 +64,13 @@ def forgetful(marker: file, out_path: Out[file]) -> file:
 
 
 @task()
+def makes_a_directory(marker: file, out_path: Out[file]) -> file:
+    """Creates a directory where its declared file output should be."""
+    Path(out_path).mkdir()
+    return marker
+
+
+@task()
 def writes_beside_its_output(out_path: Out[file]) -> file:
     """Writes the wrong path, then returns the declared one."""
     Path(out_path + ".x").write_text("x", encoding="utf-8")
@@ -129,11 +136,11 @@ class TestOutRemoteDispatchAllowed:
 
     def test_remote_true_with_output_param_is_placed(self):
         evaluator = self._evaluator()
-        assert evaluator._resolve_placement(task_def=remote_with_output) == "gpu-k8s"
+        assert evaluator.placement.resolve(task_def=remote_with_output) == "gpu-k8s"
 
     def test_named_executor_with_output_param_is_placed(self):
         evaluator = self._evaluator()
-        assert evaluator._resolve_placement(task_def=executor_with_output) == "gpu-k8s"
+        assert evaluator.placement.resolve(task_def=executor_with_output) == "gpu-k8s"
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +232,17 @@ class TestOutPostExecutionValidation:
         with pytest.raises(FileNotFoundError, match="was not written"):
             evaluate(forgetful(marker=file(str(marker)), out_path=str(missing)))
 
+    def test_a_directory_where_a_file_was_declared_is_named(self, tmp_path: Path):
+        """ED5-9: the path was written, as the wrong kind; say so."""
+        marker = tmp_path / "marker.txt"
+        marker.write_text("ok", encoding="utf-8")
+
+        with pytest.raises(
+            DeclaredOutputNotWrittenError,
+            match="is a directory; `Out\\[file\\]` needs a regular file",
+        ):
+            evaluate(makes_a_directory(marker=file(str(marker)), out_path=str(tmp_path / "o.txt")))
+
     def test_unwritten_output_of_a_file_returning_task_names_the_parameter(self, tmp_path: Path):
         """#341: the declared-output check runs before the generic ``.return`` check."""
         out_path = tmp_path / "o.txt"
@@ -270,7 +288,7 @@ class TestOutEndToEndCaching:
         evaluate(write_output(payload="v1", out_path=str(out_path)), event_bus=collector.bus)
         assert collector.cached()
 
-    def test_changing_output_content_does_not_invalidate(self, tmp_path: Path):
+    def test_an_edited_output_is_restored_on_a_hit_whatever_the_return(self, tmp_path: Path):
         out_path = tmp_path / "content_changes.txt"
         evaluate(write_output_untracked_return(payload="v1", out_path=str(out_path)))
 
@@ -282,24 +300,20 @@ class TestOutEndToEndCaching:
             event_bus=collector.bus,
         )
         assert collector.cached()
-        # A cache hit contributes only the Out[...] path to the key, and
-        # nothing restores its content on a hit — the tampered bytes are left
-        # exactly as they were, proving content never gated this hit.
-        assert out_path.read_text(encoding="utf-8") == "tampered"
+        assert out_path.read_text(encoding="utf-8") == "v1"
 
-    def test_deleting_the_output_forces_a_rerun(self, tmp_path: Path):
+    def test_a_deleted_output_is_restored_on_a_hit(self, tmp_path: Path):
         out_path = tmp_path / "deleted.txt"
         evaluate(write_output_untracked_return(payload="v1", out_path=str(out_path)))
 
         out_path.unlink()
-        assert not out_path.exists()
 
         collector = EventCollector()
         evaluate(
             write_output_untracked_return(payload="v1", out_path=str(out_path)),
             event_bus=collector.bus,
         )
-        assert not collector.cached()
+        assert collector.cached()
         assert out_path.read_text(encoding="utf-8") == "v1"
 
     def test_optional_output_absent_is_a_cache_hit_with_no_path_to_check(self, tmp_path: Path):
@@ -319,3 +333,30 @@ class TestOutEndToEndCaching:
         collector = EventCollector()
         evaluate(maybe_write(payload="hi", out_path=str(out_path)), event_bus=collector.bus)
         assert collector.cached()
+
+
+def test_a_read_only_output_left_by_an_earlier_run_is_replaced(tmp_path: Path) -> None:
+    out_path = tmp_path / "left.txt"
+    out_path.write_text("old", encoding="utf-8")
+    out_path.chmod(0o444)
+
+    evaluate(write_output(payload="new", out_path=str(out_path)))
+
+    assert out_path.read_text(encoding="utf-8") == "new"
+
+
+@task()
+def list_folder(out_dir: Out[folder]) -> list[str]:
+    """Writes one file into its folder and reports everything it finds there."""
+    path = Path(out_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "new.txt").write_text("new", encoding="utf-8")
+    return sorted(child.name for child in path.iterdir())
+
+
+def test_a_python_task_starts_with_its_out_folder_cleared(tmp_path: Path) -> None:
+    out_dir = tmp_path / "chunks"
+    out_dir.mkdir()
+    (out_dir / "stale.txt").write_text("stale", encoding="utf-8")
+
+    assert evaluate(list_folder(out_dir=str(out_dir))) == ["new.txt"]

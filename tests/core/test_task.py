@@ -208,6 +208,15 @@ class TestTaskDefCall:
         with pytest.raises(TypeError, match="unexpected keyword arguments"):
             my_fn(x=1, bogus=2)
 
+    def test_positional_call_explains_keyword_only_calls(self):
+        @task()
+        def my_fn(sample: str, reads: int) -> int:
+            return reads
+
+        with pytest.raises(TypeError, match="keyword-only") as excinfo:
+            my_fn("a", 2)
+        assert "Call it as my_fn(sample=..., reads=...)" in str(excinfo.value)
+
     def test_expr_as_argument(self):
         @task()
         def step_a(x: int) -> int:
@@ -224,6 +233,14 @@ class TestTaskDefCall:
 
 
 class TestPartialCallMap:
+    def test_an_argument_cannot_be_both_fixed_and_mapped(self):
+        @task()
+        def process(item: str, scale: int) -> str:
+            return item * scale
+
+        with pytest.raises(TypeError, match=r"'item' given both on the call and to \.map\(\)"):
+            process(item="x").map(item=["a", "b"], scale=[1, 2])
+
     def test_map_produces_exprlist(self):
         @task()
         def process(item: str, scale: int) -> str:
@@ -464,6 +481,47 @@ class TestPartialCallMap:
         # rather than come back empty.
         assert result[0].display_label_parts == ("alpha",)
         assert result[1].display_label_parts == ("beta",)
+
+    def test_map_over_selected_outputs_inherits_upstream_label(self):
+        """F15: a selected output labels like its call, never by its repr."""
+
+        @task()
+        def split(item: str) -> tuple[str, str]:
+            return item, item
+
+        @task()
+        def package_brief(brief: str) -> str:
+            return brief
+
+        halves = split().map(item=["alpha", "beta"])
+        result = package_brief().map(brief=halves.output[0])
+
+        assert [expr.display_label_parts for expr in result] == [("alpha",), ("beta",)]
+
+    def test_map_on_a_full_call_explains_how_to_fan_out(self):
+        @task()
+        def fit(sample: str, lr: float) -> str:
+            return sample
+
+        with pytest.raises(AttributeError, match=r"fit\(fixed=\.\.\.\)\.map\(varying="):
+            fit(sample="s1", lr=0.1).map(lr=[0.1, 0.2])
+
+    def test_map_on_a_task_definition_explains_how_to_fan_out(self):
+        @task()
+        def fit(sample: str, lr: float) -> str:
+            return sample
+
+        with pytest.raises(AttributeError, match="task definition, not a call"):
+            fit.map(lr=[0.1, 0.2])
+
+    def test_scalar_varying_argument_names_the_parameter(self):
+        @task()
+        def fit(sample: str, lr: float) -> str:
+            return sample
+
+        with pytest.raises(TypeError, match="argument 'lr' is a single float") as excinfo:
+            fit(sample="s1").map(lr=3.0)
+        assert "lr=3.0 as a fixed argument" in str(excinfo.value)
 
     def test_map_two_scalar_axes_labels_every_branch_distinctly(self):
         """Issue #286: zipping two varying axes must not collapse every
@@ -717,6 +775,23 @@ class TestFanOutDerivedArguments:
             downstream().product_map(
                 temperature=[upstream()],
                 output_path=per_branch("results/{temperature}.json"),
+            )
+
+    def test_per_branch_placeholder_on_selected_output_raises(self):
+        """F12: ``t.output[1]`` is a task result too, not a value to render."""
+
+        @task()
+        def upstream() -> tuple[float, str]:
+            return 1.0, "note"
+
+        @task()
+        def downstream(temperature: float, note: str, output_path: str) -> str:
+            return output_path
+
+        with pytest.raises(ValueError, match="task result"):
+            downstream(note=upstream().output[1]).map(
+                temperature=[300],
+                output_path=per_branch("results/{note}.json"),
             )
 
     def test_per_branch_only_call_raises(self):

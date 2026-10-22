@@ -9,9 +9,9 @@ The current runtime still has important boundaries and tradeoffs:
 - pre-ledger workspaces are not migrated: runs and cache entries recorded
   before `.ginkgo/ginkgo.db` existed lived in files ginkgo no longer reads, so they are invisible to the CLI. There is no import path; delete
   `.ginkgo/` and re-run
-- before 1.0 the schema is edited in place rather than migrated: a workspace
-  written at an older schema version (1 or 2) is refused with
-  `StaleWorkspaceError`; delete `.ginkgo/` and re-run
+- before 1.0 there are no schema migrations: a workspace written at any other
+  schema version is refused with `StaleWorkspaceError`; delete `.ginkgo/` and
+  re-run
 - a lost `ginkgo.db` colds the cache and loses the run history. `ginkgo db
   check` finds the bytes it stranded; back the file up as you would `.git`
 

@@ -8,11 +8,16 @@ pair, without duplicating its hashing logic.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
+import pytest
+
 from ginkgo.core.remote import RemoteFileRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.types import file, folder, tmp_dir, untracked
 from ginkgo.remote.access.protocol import encode_fuse_ref
-from ginkgo.runtime.task_validation import label_input_value
+from ginkgo.runtime.task_validation import TaskValidator, label_input_value
 
 
 def _remote_ref() -> RemoteFileRef:
@@ -266,3 +271,40 @@ class TestIsUntrackedDirectoryValue:
         from ginkgo.runtime.task_validation import is_untracked_directory_value
 
         assert is_untracked_directory_value(annotation=folder, value=str(tmp_path)) is False
+
+
+class TestScalarAnnotation:
+    @staticmethod
+    def _validate(annotation, value) -> None:
+        TaskValidator().validate_annotated_value(annotation=annotation, value=value, label="t.n")
+
+    @pytest.mark.parametrize(
+        ("annotation", "value"),
+        [
+            (int, 3),
+            (int, np.int64(3)),
+            (float, 3),
+            (float, np.float32(3.5)),
+            (bool, np.bool_(True)),
+            (str, "a"),
+            (str, file("a.txt")),
+            (str, Path("a.txt")),
+            (int, None),
+            (int, SecretRef(name="N")),
+        ],
+    )
+    def test_accepts(self, annotation, value) -> None:
+        self._validate(annotation, value)
+
+    @pytest.mark.parametrize(
+        ("annotation", "value"),
+        [(int, "thirty"), (int, 3.7), (int, True), (float, "1.5"), (bool, 1), (str, 3)],
+    )
+    def test_rejects(self, annotation, value) -> None:
+        with pytest.raises(TypeError, match=f"t.n is annotated '{annotation.__name__}'"):
+            self._validate(annotation, value)
+
+    @pytest.mark.parametrize("value", [[1, 2], (1, 2)])
+    def test_rejects_a_list_for_one_value(self, value) -> None:
+        with pytest.raises(TypeError, match="annotated 'int' but was given a list"):
+            self._validate(int, value)

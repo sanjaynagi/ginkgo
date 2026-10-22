@@ -10,21 +10,28 @@ command that imports a workflow.
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ginkgo.cli.renderers.common import task_base_name
-from ginkgo.config import PARAMS_CONFIG_KEY, config_session, load_runtime_config_layers
+from ginkgo.config import (
+    PARAMS_CONFIG_KEY,
+    config_session,
+    load_runtime_config_layers,
+    runtime_config_paths,
+)
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import (
     GlobalParamRead,
-    ParamDecl,
     ParamError,
     find_global_param_reads,
     flag_for,
+    format_param_help,
+    unrecognized_arguments_message,
 )
 from ginkgo.runtime.module_loader import load_module_from_path
 
 if TYPE_CHECKING:
+    from ginkgo.runtime.graph import TaskNode
     from ginkgo.config import _ConfigSession
 
 
@@ -91,7 +98,7 @@ def load_param_config(
     )
 
 
-def validate_param_extras(session: _ConfigSession) -> None:
+def validate_param_extras(session: _ConfigSession, *, command_flags: Iterable[str] = ()) -> None:
     """Reject command-line tokens that no parameter declaration claimed.
 
     Call once the flow has been built, so that parameters declared inside the
@@ -101,6 +108,10 @@ def validate_param_extras(session: _ConfigSession) -> None:
     ----------
     session : _ConfigSession
         The session the workflow was imported under.
+    command_flags : Iterable[str], optional
+        The command's own flags. An unclaimed token reaches here whether it
+        mistypes a declared parameter or one of these, so both are offered as
+        suggestions.
 
     Raises
     ------
@@ -111,18 +122,18 @@ def validate_param_extras(session: _ConfigSession) -> None:
     if not unknown:
         return
 
-    declared = sorted(session.declarations)
-    known = ", ".join(flag_for(name) for name in declared) if declared else "none"
-    raise ParamError(
-        f"unrecognized arguments: {' '.join(unknown)}\n"
-        f"Parameters declared by this workflow: {known}"
+    declared = [flag_for(name) for name in sorted(session.declarations)]
+    known = ", ".join(declared) if declared else "none"
+    message = unrecognized_arguments_message(
+        tokens=unknown, known_flags=[*declared, *command_flags]
     )
+    raise ParamError(f"{message}\nParameters declared by this workflow: {known}")
 
 
 def global_param_reads(
     *,
     declaration_globals: dict[str, dict[str, Any]],
-    evaluator: Any,
+    nodes: Iterable[TaskNode],
 ) -> list[GlobalParamRead]:
     """Find validated tasks whose bodies read a declared parameter as a global.
 
@@ -131,8 +142,8 @@ def global_param_reads(
     declaration_globals : dict[str, dict[str, Any]]
         Parameter name to the globals of its declaring module, from the session
         the workflow was imported under.
-    evaluator : Any
-        An evaluator whose graph has been validated, supplying the task nodes.
+    nodes : Iterable[TaskNode]
+        The validated graph's task nodes.
 
     Returns
     -------
@@ -140,23 +151,25 @@ def global_param_reads(
         One finding per task and parameter.
     """
     tasks = [
-        (task_base_name(node.task_def.name), node.task_def.fn)
-        for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id)
+        (node.task_def.base_name, node.task_def.fn)
+        for node in sorted(nodes, key=lambda item: item.node_id)
         if node.task_def.kind == "python"
     ]
     return find_global_param_reads(declaration_globals=declaration_globals, tasks=tasks)
 
 
-def collect_param_declarations(
+def collect_param_help(
     *,
     workflow_path: Path,
     config_paths: Sequence[str | Path] | None = None,
-) -> list[ParamDecl]:
-    """Import a workflow and return the parameters it declares, in declaration order.
+) -> list[str]:
+    """Import a workflow and render the parameters it declares as help lines.
 
     Used to render ``ginkgo run <workflow> --help``. Required parameters need not
     be supplied, and a flow body that fails to build still yields whatever was
-    declared at module level.
+    declared at module level. A parameter set in the ``[params]`` table shows
+    that value as its default, with the config file it came from, because that
+    is the value a run without the flag would use.
 
     Parameters
     ----------
@@ -167,13 +180,19 @@ def collect_param_declarations(
 
     Returns
     -------
-    list[ParamDecl]
-        The declarations found, in the order they were declared.
+    list[str]
+        One help line per declared parameter, in declaration order. Empty when
+        the workflow declares none.
     """
-    param_config = load_param_config(
-        project_root=Path.cwd(),
-        config_paths=config_paths,
-    )
+    source_paths = runtime_config_paths(project_root=Path.cwd(), override_paths=config_paths)
+    layers = load_runtime_config_layers(project_root=Path.cwd(), override_paths=config_paths)
+    param_config = params_table(layers)
+    # Later sources win, so the last file to set a parameter is its origin.
+    origins = {
+        name: path.name
+        for path, layer in zip(source_paths, layers, strict=True)
+        for name in layer.get(PARAMS_CONFIG_KEY, {})
+    }
     with config_session(
         override_paths=config_paths,
         param_config=param_config,
@@ -186,11 +205,16 @@ def collect_param_declarations(
             # Module-level declarations are still worth listing even when the
             # flow body cannot be built without real parameter values.
             pass
-        return list(session.declarations.values())
+        config_defaults = {
+            name: (resolution.value, origins[name])
+            for name, resolution in session.resolutions.items()
+            if resolution.source == "config"
+        }
+        return format_param_help(session.declarations.values(), config_defaults=config_defaults)
 
 
 __all__ = [
-    "collect_param_declarations",
+    "collect_param_help",
     "global_param_reads",
     "load_param_config",
     "params_table",

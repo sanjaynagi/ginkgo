@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ginkgo import expand, file, task
+from ginkgo import Out, expand, file, task
 from ginkgo_notebook import notebook
 
 
@@ -36,6 +36,7 @@ def write_delivery_manifest(
     summary_path: file,
     notebook_html: file,
     package_reports: list[file],
+    output_path: Out[file],
 ) -> file:
     """Write the final delivery manifest for the starter workflow.
 
@@ -46,7 +47,9 @@ def write_delivery_manifest(
     notebook_html : file
         Rendered notebook HTML.
     package_reports : list[file]
-        Packaging reports produced by the Docker task.
+        Packaging reports produced by the shell task.
+    output_path : Out[file]
+        Where the Markdown manifest is written.
 
     Returns
     -------
@@ -66,7 +69,5 @@ def write_delivery_manifest(
         *expand("- {path}", path=[str(path) for path in package_reports]),
     ]
 
-    output = Path("results/delivery_manifest.md")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return file(str(output))
+    Path(output_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return file(output_path)

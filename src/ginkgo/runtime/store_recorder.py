@@ -21,8 +21,8 @@ from typing import Any
 from ginkgo.runtime.events import GinkgoEvent
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.rundir import RunDir
-from ginkgo.store.projector import TERMINAL_EVENTS
-from ginkgo.store.protocol import ProjectionOp, StoredEvent
+from ginkgo.store.projector import TERMINAL_EVENTS, projection_ops
+from ginkgo.store.protocol import ProjectionOp, ProvenanceStore, StoredEvent
 from ginkgo.store.sqlite import open_store
 from ginkgo.store.writer import StoreWriter
 
@@ -55,14 +55,21 @@ def stored_event(event: GinkgoEvent) -> StoredEvent:
         The row, with the filtered columns lifted out of the payload.
     """
     payload = event.to_payload()
+    # Each is stored once, in its column; StoredEvent.fields puts them back.
+    task_id = _column(payload, "task_id")
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), int) else None
+    cache_key = _column(payload, "cache_key")
+    for name, value in (("task_id", task_id), ("attempt", attempt), ("cache_key", cache_key)):
+        if value is not None:
+            del payload[name]
     return StoredEvent(
-        run_id=payload.get("run_id") or "",
-        ts=payload.get("ts") or "",
-        type=payload.get("event") or "",
-        v=int(payload.get("v") or 1),
-        task_id=_column(payload, "task_id"),
-        attempt=payload.get("attempt") if isinstance(payload.get("attempt"), int) else None,
-        cache_key=_column(payload, "cache_key"),
+        run_id=payload.pop("run_id", None) or "",
+        ts=payload.pop("ts", None) or "",
+        type=payload.pop("event", None) or "",
+        v=int(payload.pop("v", None) or 1),
+        task_id=task_id,
+        attempt=attempt,
+        cache_key=cache_key,
         payload=json.dumps(payload, sort_keys=True, default=str),
     )
 
@@ -115,6 +122,9 @@ class StoreRecorder:
         """Handle one bus event."""
         if event.event in _IGNORED:
             return
+        if self._manifest_written:
+            self._record_after_completion(event)
+            return
         self._writer.put(stored_event(event))
         self._undelivered.append(event)
         if event.event == "run_completed":
@@ -158,6 +168,26 @@ class StoreRecorder:
             for handler in self._committed:
                 handler(event)
 
+    def _record_after_completion(self, event: GinkgoEvent) -> None:
+        """Append an event that arrived once the run had closed, and re-export.
+
+        A notification posted for ``RunCompleted`` can only fail after the run
+        has finished, and its failure belongs in the run's record all the same.
+        The writer has stopped by then, so the row goes through a connection of
+        this thread. Committed handlers are not told: the run is over for them.
+        """
+        row = stored_event(event)
+        with open_store(self._path) as store:
+            with store.transaction():
+                store.append([row])
+                store.apply(projection_ops(row))
+            self._export_manifest(store)
+
+    def _export_manifest(self, store: ProvenanceStore) -> None:
+        """Write the run's manifest from what the ledger now holds."""
+        summary = RunSummary.load(store, self._run_dir.run_id, runs_root=self._run_dir.root)
+        self._run_dir.write_manifest(summary.to_payload())
+
     def _finalize(self) -> None:
         """Commit the run, export its manifest, and record that it was written."""
         if self._manifest_written:
@@ -168,8 +198,7 @@ class StoreRecorder:
         # there is nothing left uncommitted to miss.
         self._writer.close()
         with open_store(self._path) as store:
-            summary = RunSummary.load(store, self._run_dir.run_id, runs_root=self._run_dir.root)
-            self._run_dir.write_manifest(summary.to_payload())
+            self._export_manifest(store)
             with store.transaction():
                 store.apply(
                     [

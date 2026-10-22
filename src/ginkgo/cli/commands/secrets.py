@@ -11,7 +11,9 @@ from ginkgo.cli.workflow_params import load_param_config, validate_param_extras
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
-from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.graph import TaskGraph
+from ginkgo.runtime.placement import Placement
+from ginkgo.runtime.task_validation import TaskValidator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import build_secret_resolver, collect_secret_refs
@@ -35,24 +37,22 @@ def command_secrets(args) -> int:
         module = load_module_from_path(workflow_path)
         flow = discover_flow(module)
         expr = flow()
-        validate_param_extras(session)
+        validate_param_extras(session, command_flags=getattr(args, "command_flags", ()))
         config = session.merged_loaded_values()
 
-    evaluator = ConcurrentEvaluator(
-        executor_registry=ExecutorRegistry.for_validation(
-            project_root=Path.cwd(),
-            config_paths=config_paths,
-        )
+    graph = TaskGraph.build(expr)
+    graph.validate(
+        validator=TaskValidator(),
+        placement=Placement(
+            executor_registry=ExecutorRegistry.for_validation(
+                project_root=Path.cwd(),
+                config_paths=config_paths,
+            )
+        ),
     )
-    evaluator.build_graph(expr)
-    evaluator.validate_graph()
 
     refs = sorted(
-        {
-            ref
-            for node in evaluator.task_nodes.values()
-            for ref in collect_secret_refs(node.expr.args)
-        },
+        {ref for node in graph.nodes.values() for ref in collect_secret_refs(node.expr.args)},
         key=lambda item: (item.backend, item.name),
     )
     rich_console = console(sys.stdout)

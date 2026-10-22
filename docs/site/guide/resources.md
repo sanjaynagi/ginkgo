@@ -26,6 +26,8 @@ def train_model(dataset: folder) -> file:
   to additionally export `OMP_NUM_THREADS` and related BLAS/OpenMP variables.
 - `memory="8Gi"` declares the memory footprint. Format is Kubernetes-style
   (`512Mi`, `4Gi`, `16Gi`). Remote executors map this to pod resource requests.
+  For scheduling against `--memory`, the value is rounded up to whole GiB with
+  a minimum of 1 GiB, so `512Mi` reserves 1 GiB and `1.5Gi` reserves 2 GiB.
 - `gpu=N` declares a GPU requirement. It is satisfied from the local `--gpus`
   budget when it fits, dispatched to the remote executor when one is
   configured (`--executor`), and a build error otherwise. `gpu_type` selects
@@ -88,10 +90,30 @@ declared `threads`/`memory` in the run manifest. Measurement happens on
 failure too: usage recorded right before an OOM kill is exactly what you
 need to size the retry.
 
-`ginkgo report` surfaces it as a **Peak RSS** column in the task ledger
-(`measured / declared`, e.g. `3.2 GiB / 16 GiB`); `ginkgo runs show --json`
-includes the raw `resource_usage` record per task. See
-[Reports](reports.md).
+A Python task runs in a worker process that is already resident before the
+task starts: the interpreter, ginkgo, and the workflow module with everything
+it imports, which is often 100 MB or more. That memory is the worker's, not the
+task's, so a Python task's `peak_rss_bytes` is its peak *above* the worker's
+resident memory as the body started, and the worker's figure is recorded
+beside it as `baseline_rss_bytes`. The measurement stops as the body returns,
+before the worker encodes the result, so a task that allocates nothing measures
+close to zero even as the first task of a fresh worker. CPU time is likewise
+measured over the body alone, after the workflow module is imported. A
+subprocess task's figure is its whole process tree, which is all the task's
+own.
+
+A subprocess tree is sampled every quarter second, the first sample a quarter
+second after the command starts. A shell or script task that finishes sooner
+has no memory figure at all, and one that runs a little longer is measured from
+a sample or two, which can miss a short spike. Read a quick task's missing or
+small figure as "too short to sample", not as "used nothing".
+
+`ginkgo report` surfaces it as a **Peak memory** column in the task ledger
+(`measured / declared`, e.g. `3.2 GiB / 16Gi`, with the declaration as
+written). A cache hit measured nothing in its run, so the report shows the peak
+of the earlier run that produced the result, named after it
+(`3.2 GiB (run 9e1f3e6c)`). `ginkgo runs show --json` includes the raw
+`resource_usage` record per task. See [Reports](reports.md).
 
 ### Across Runs
 
@@ -131,6 +153,10 @@ themselves:
   run ever hit, from a sampler whose resolution is a periodic `ps` of the
   process tree — a short spike can be missed entirely.
 
+The declared figure is the declaration as written, in GiB: `memory="512Mi"`
+reads `declared 0.5 GiB`, and the percentage is of that, not of the whole GiB
+the scheduler rounds it up to when budgeting.
+
 Where a retry escalated under `memory_retry_multiplier`, the declaration and
 the budget the attempt ran against are recorded separately, and the summary
 says so (`declared 16 GiB · ran against 32 GiB after escalation`). Comparing a
@@ -159,7 +185,8 @@ memory = "32Gi"
 ```
 
 A selector matches a task's short name (`align_reads`) or fully qualified
-name (`workflow.modules.align.align_reads`), and may be an `fnmatch` glob
+name (`workflow.modules.align.align_reads`, or `<workflow>.align_reads` for a task
+in a single-file workflow), and may be an `fnmatch` glob
 over either. Exact matches beat globs; among globs, the first selector in
 config order wins. Keys an override omits keep their declared values. An
 override's `custom` table replaces the declared `custom` dict wholesale
@@ -223,7 +250,13 @@ grows by `retry_backoff_multiplier` on each attempt and is capped at
 
 Retries cannot help with a malformed input: it fails identically every time.
 By default the first failure a task's retries cannot absorb stops the run —
-in-flight tasks finish, nothing new is dispatched. In a wide fan-out that
+in-flight tasks finish, nothing new is dispatched. Tasks that never started
+are reported `skipped` in `ginkgo runs show`: blocked by the failure when they
+depend on it, otherwise not started because the run stopped. An in-flight task
+that then fails is not retried, even with retries left, and neither is a task
+already waiting for its retry; both are reported `failed`, and a notice such as
+`retry 1/2 not attempted: the run is stopping after an earlier failure` says
+so. In a wide fan-out that
 throws away the work of every healthy branch.
 
 ```python

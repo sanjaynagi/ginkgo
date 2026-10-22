@@ -17,6 +17,7 @@ import pytest
 from ginkgo.cli.commands.init import write_starter_project
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.cli.commands.run import run_workflow
+from ginkgo.core.shell import shell_argv
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
 from tests.conftest import latest_run_view
@@ -73,7 +74,7 @@ def _mock_docker() -> Iterator[None]:
     """Mock Docker runtime so container shell tasks execute locally.
 
     Docker argv is intercepted at the shell runner's ``run_subprocess`` level:
-    the shell command is extracted and executed directly via ``bash -c``,
+    the shell command is extracted and executed directly under strict bash,
     bypassing the container runtime while producing real file outputs.
     """
     from ginkgo.runtime.task_runners.shell import ShellRunner
@@ -83,35 +84,17 @@ def _mock_docker() -> Iterator[None]:
     def _patched_run_subprocess(
         self_runner: Any,
         *,
-        argv: str | list[str],
-        use_shell: bool,
+        argv: list[str],
         on_stdout: Any = None,
         on_stderr: Any = None,
         **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
-        # Docker argv: ["docker", "run", ..., "bash", "-c", "<cmd>"]
-        if isinstance(argv, list) and argv and argv[0] == "docker":
-            cmd = argv[-1]
-            completed = subprocess.run(
-                cmd,
-                shell=True,
-                text=True,
-                capture_output=True,
-            )
-            if on_stdout is not None and completed.stdout:
-                on_stdout(completed.stdout)
-            if on_stderr is not None and completed.stderr:
-                on_stderr(completed.stderr)
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=completed.returncode,
-                stdout=completed.stdout or "",
-                stderr=completed.stderr or "",
-            )
+        # Run the command the container would have run on the host instead.
+        if argv[0] == "docker":
+            argv = shell_argv(shell="bash", cmd=argv[-1])
         return original_run_subprocess(
             self_runner,
             argv=argv,
-            use_shell=use_shell,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
         )

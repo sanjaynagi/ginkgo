@@ -56,7 +56,9 @@ my-project/
 no explicit path, autodiscovery looks for a file named `flow.py` at the project
 root or in one of its immediate subdirectories. The directory name does not
 matter, and `__init__.py` is not required. Exactly one candidate is used
-automatically; several candidates raise an error asking you to pass an explicit
+automatically. With several, `workflow/flow.py` wins over a `flow.py` in any
+other subdirectory, so a child workflow in its own folder does not get in the
+way; otherwise several candidates raise an error asking you to pass an explicit
 path. An explicit path accepts any file name, anywhere.
 
 ### What's the smallest possible workflow?
@@ -170,9 +172,12 @@ def main():
     return combine(results=per_sample)                 # reduce: depends on all branches
 ```
 
-`ExprList.map(...)` also exists to extend each existing branch with further
-zipped columns, and `max_concurrent=` on any of these throttles how many
-generated branches run at once, independently of the global `--jobs`/`--cores`
+`ExprList.map(...)` also exists to chain a second fan-out: each existing
+branch is combined with each new zipped row, giving one flat `ExprList`, so
+two branches mapped over three rows make six (see
+[Chaining Fan-Out](guide/tasks-and-flows.md#chaining-fan-out)).
+`max_concurrent=` on any of these throttles how many generated branches run
+at once, independently of the global `--jobs`/`--cores`
 budget. For building the input/output path lists you map over, see
 [Building The Varying Lists With `expand()`](guide/tasks-and-flows.md#building-the-varying-lists-with-expand);
 for one output path per grid cell, see
@@ -202,7 +207,10 @@ def plan(manifest: file) -> list[str]:
 A Python task (`kind="python"`) may return dynamic expressions but must not
 return an execution directive (`shell(...)`, `notebook(...)`, etc.) — doing so
 raises `TypeError`. Driver tasks (shell/script/notebook/subworkflow) return
-their directive, and may also return dynamic expressions.
+their directive, and may also return dynamic expressions. A driver task whose
+every `return` is a plain string or other literal can never return its
+directive, so `ginkgo doctor` and `ginkgo run --dry-run` warn about it
+(`missing_directive_return`) before a run fails there.
 
 ## Task Kinds
 
@@ -341,7 +349,7 @@ include it.
 Ginkgo reports these rather than dropping them quietly: `ginkgo doctor` emits an
 `unreachable_task_call` warning, `ginkgo run --dry-run` lists them under
 "Dropped (not reachable from the flow return value)", and a real run prints a
-notice before starting.
+notice, with the same fix, before starting.
 
 ## Environments
 
@@ -482,6 +490,13 @@ multi-core hashing of large files). Because the key is derived from content,
 moving or renaming a file changes nothing, but changing its bytes produces a new
 key.
 
+Hashing a large file on every run would be slow, so each digest is memoised
+under the file's device, inode, size and modification time, and reused while
+those four agree. A rewrite that keeps the size and the modification time —
+a tool that restores timestamps, `touch -r`, or a filesystem with coarse
+timestamps — is therefore not re-hashed, and the old digest stands. `touch`
+the file to make the next run hash it again.
+
 ### What exactly goes into a task's cache key?
 
 The key hashes a sorted object with exactly these fields: the task name, the task
@@ -530,16 +545,37 @@ function whose body holds an unindented line inside a triple-quoted string —
 both fall back to hashing the decorator text, which invalidates more often than
 strictly needed but never less.
 
+### Does changing an environment variable re-run a task?
+
+Only when the variable reaches the task as an argument. Read it in the flow
+body, which runs while the graph is built, and pass the value in:
+`call_peaks(..., threshold=float(os.environ.get("PEAK_THRESHOLD", "0.05")))`.
+A variable read inside the task body is invisible to the cache. See
+[A Task Sees Only Its Arguments](guide/caching-and-provenance.md#a-task-sees-only-its-arguments).
+
+### Does editing a file a task opens by its own path re-run it?
+
+No. A task's key covers its arguments, its source and `version=`, so a file it
+opens itself (`open("data/genes.tsv")`), a script a shell command runs (`bash
+scripts/trim.sh`), or a figure a notebook embeds by path is invisible to it.
+Pass the file in as a `file` argument, and declare a file another task writes
+as that task's `Out[file]`.
+
 ### How do warm runs skip work?
 
 Cache lookups happen during node *preparation*, before any worker is dispatched.
 Once a task's inputs are resolved, Ginkgo tries to satisfy the node straight from
 cache; on a hit the node is marked complete and no execution slot is ever used.
 The default path builds the full content-addressed key and also validates that
-cached file/folder outputs are still materialised correctly. Running with
-`--trust-mtimes` enables a faster path that skips content hashing and only
-checks that output files exist — quicker for warm reruns, but weaker, since it
-trusts the working tree instead of re-verifying bytes.
+cached file/folder outputs are still materialised correctly. It hashes a file
+only when its stat metadata has changed since the digest was memoised (see
+above). Running with `--trust-mtimes` goes further: it skips content hashing and
+only checks that output files exist — quicker for warm reruns, but weaker again,
+since it trusts the working tree instead of re-verifying bytes.
+
+Two runs started at the same time in one project are safe, since each keeps its
+own run record and the ledger and cache take their writes in turn. A run only
+sees cache entries that already exist, though, so both may compute the same task.
 
 ### How do I evict or prune the cache, and how do I force a re-run?
 
@@ -559,10 +595,12 @@ flag on `ginkgo run`. To force a task to re-execute, either bump its `version=`
 source, or `ginkgo cache clear <cache-key>` for that entry.
 
 `cache clear` needs the *full* 64-character key: a prefix, even a long one, is
-reported as `Cache entry not found`. `ginkgo cache ls` lists the full keys, and
-`ginkgo cache explain <run_id>` prints each task's key beside its branch label
-(`fst[2L,YRI,CEU]`), which is the easiest way to find the key of one branch of a
-fan-out. To discard everything and start cold, run
+reported as `Cache entry not found`. `ginkgo cache ls` lists the full keys, one
+per line, and `ginkgo cache ls --task fst` narrows them to one task (it also
+takes a branch label); `ginkgo cache explain <run_id>` prints each task's key
+beside its branch label (`fst[2L,YRI,CEU]`), which is the easiest way to find
+the key of one branch of a fan-out. `--json` on `cache ls` gives the same list
+to a script. To discard everything and start cold, run
 `ginkgo cache prune --max-entries 0`.
 
 ### Where does the artifact store fit in for file/folder outputs?
@@ -572,7 +610,10 @@ File and folder outputs are copied into a content-addressed artifact store under
 declared output path — is the durable source of truth. On a cache hit, the
 artifact store re-materialises the output into the working tree: a tracked
 output file or folder that is missing or modified on disk is restored without
-re-running the task, overwriting any hand edits. Only when no stored artifact
+re-running the task, overwriting any hand edits. An edit counts when it moves the
+file's size or modification time; one that keeps both is taken as unchanged and
+stays (see
+[What The Cache Cannot See](guide/caching-and-provenance.md#what-the-cache-cannot-see)). Only when no stored artifact
 exists to restore from, such as a task with an explicit `-> None` return, does
 the missing output count as a miss and the task re-run. Large serialized return
 values are also offloaded to the store rather than inlined.
@@ -582,11 +623,29 @@ values are also offloaded to the store rather than inlined.
 ### How does Ginkgo serialize values passed between tasks?
 
 Values crossing a task boundary go through a codec that turns a Python object
-into a JSON-safe payload tagged with a type marker. Primitives (`None`, `bool`,
-`int`, `float`, `str`) pass through as-is; `file`/`folder`/`tmp_dir` get typed
-wrappers; and `list`/`tuple`/`dict` are encoded recursively. Anything else falls through to a binary encoder, which
-serializes a NumPy array via `.npy`, a pandas DataFrame via Parquet (falling
-back to pickle), and every other object via `pickle` (protocol 5).
+into a JSON-safe payload tagged with a type marker. The same codec carries a
+value to a worker, back to the driver, and into and out of the cache, so a
+consumer sees the same value whether its producer ran or was served from the
+cache.
+
+- `None` and exact `bool`, `int`, `float` and `str` values pass through as-is.
+- `file`, `folder` and `tmp_dir` get typed wrappers.
+- An exact `list`, `tuple` or `dict` is encoded item by item.
+- Anything else goes to a binary encoder: a NumPy array as `.npy`, a pandas
+  DataFrame as Parquet (falling back to pickle), and every other object with
+  `pickle` (protocol 5).
+
+Only the exact builtins are encoded structurally. A subclass is pickled whole,
+so it comes back as itself: a NumPy scalar such as `np.float64`, a
+`namedtuple`, an `OrderedDict`, a `defaultdict` (with its default factory) or
+your own `list` subclass. A `file` or `folder` inside such a container is still
+tracked by content in the consumer's cache key.
+
+A class or enum defined in a workflow file round-trips too, on fresh, cached
+and `--rerun` runs alike, and after the project is moved or copied. A
+single-file workflow is loaded under a module name that only one process
+knows, so Ginkgo pickles its classes by the workflow file's path relative to
+the project root and finds that module again wherever the value is decoded.
 
 ### What's the inline-versus-artifact threshold?
 
@@ -600,9 +659,9 @@ callers do not see the difference.
 
 The codec is the same in both cases; the difference is what carries the bytes.
 Locally, the evaluator encodes task args into a transport directory and the
-process-pool worker decodes them; results often come back as a direct in-memory
-Python object with no re-serialization, while the Pixi subprocess path uses a
-pickle-over-JSON bridge. For remote execution the encoded payload is layered with
+process-pool worker decodes them, then encodes the result the same way for the
+driver to decode. Only a result holding task expressions (a dynamic task)
+comes back as one pickled object instead. For remote execution the encoded payload is layered with
 a remote-transfer step: `file`/`folder` artifacts, and binary values over the
 256 KiB inline limit, are uploaded to a shared remote artifact store (object
 storage) as references, and the remote worker downloads them before running,
@@ -614,8 +673,10 @@ job payload itself.
 Any value the codec can encode: the typed cases above, plus anything that
 survives the binary encoder. A value with no dedicated codec is pickled
 (protocol 5) as the final fallback, so most standard Python objects work — but an
-object that cannot be pickled fails. Ginkgo validates process-bound values up
-front and raises an error naming the offending value's type if it cannot be
+object that cannot be pickled fails. Pickle finds a class by name, so it must
+be defined at module level: a `namedtuple` or class created inside a function
+cannot cross a task boundary. Ginkgo validates process-bound values up front
+and raises an error naming the offending value's type if it cannot be
 encoded, so unpicklable objects fail loudly rather than mid-transport.
 
 ## Outputs
@@ -640,6 +701,11 @@ the cache entry that holds its bytes, and the inputs that task recorded. It also
 takes an artifact id, and `--json` emits the same as a structured payload. From
 Python, `ginkgo.query.Query.why` returns the same answer.
 
+It can only name a file ginkgo tracked. A task that returns a path as a plain
+`str` leaves no record of the file, and `why` says nothing produced it: annotate
+the return `-> file` (or `-> folder`), or write the file through an `Out[file]`
+parameter.
+
 ## Reports
 
 ### What's in the exported HTML report, and how is it structured/bundled?
@@ -658,10 +724,12 @@ The report contains the run summary and stat cards, run parameters, an SVG
 task-graph laid out as a layered DAG, per-task status and timing, failure cards
 with log tails, and links to rendered pages such as notebooks. By default it is written as a
 directory bundle at `.ginkgo/reports/<run-id>/` that you can open or share.
-Useful flags: `--single-file` (inline CSS, fonts and script into one file),
-`--out <dir>`, `--max-log-lines N` (default 80), and `--open`/`--no-open`. In
-the terminal, `ginkgo run` lists the run's rendered pages when it finishes;
-they live under the run directory's `notebooks/`.
+Useful flags: `--single-file` (inline CSS, fonts and script into one file,
+written to `.ginkgo/reports/<run-id>.html`; rendered pages and logs are linked
+but not included), `--out <path>` (a directory for a bundle, or the `.html`
+file with `--single-file`), `--max-log-lines N` (default 80), and
+`--open`/`--no-open`. In the terminal, `ginkgo run` lists the run's rendered
+pages when it finishes; they live under the run directory's `notebooks/`.
 
 ## Failures And Retries
 
@@ -672,7 +740,12 @@ running. On the first unretryable failure the evaluator records the failure and
 cancels only the futures that are still queued and have not started. The main
 loop then keeps waiting on the already-running futures until they complete — it
 simply stops dispatching new tasks — after which it re-raises the stored failure
-and the run ends with status `failed`.
+and the run ends with status `failed`. No task is left without an outcome:
+tasks that never started are recorded `skipped`, those downstream of the
+failure as blocked by it and the rest as not started because the run stopped.
+A task that fails after that point is not retried, even with retries left; nor
+is one already waiting to retry. Each is recorded `failed` with its last
+failure, and a notice on the task says which retry was not attempted.
 
 That is the default. `@task(on_failure="ignore")`, or `--keep-going` for the
 whole run, makes a failure non-fatal: dispatch continues, only the tasks
@@ -717,13 +790,25 @@ from scratch.
 ### How do I debug a failed task — where are the logs, and what do the commands show?
 
 Per-task `stdout`/`stderr` are written to `<run_dir>/logs/` (under
-`.ginkgo/runs/<run_id>/logs/`). `ginkgo debug [RUN_ID]` prints a panel per failed
-task with the classified category and a log tail (add `--json` for
-machine-readable output); it defaults to the latest run if no id is given.
+`.ginkgo/runs/<run_id>/logs/`). The logs are the only place a command's full
+output is kept: a failed shell, script or notebook task quotes at most the last
+4096 characters of each stream in its error, which is what the terminal, the
+ledger and the manifest record. Output is decoded as UTF-8, so bytes that are
+not valid UTF-8 are logged as the replacement character `�` (three bytes each);
+a command printing binary to stdout leaves a log larger than what it printed —
+redirect binary output to a file instead. `ginkgo debug [RUN_ID]` prints a panel per failed
+task with the classified category, followed by its log tail (add `--json` for
+machine-readable output); it defaults to the latest run if no id is given. A
+retried task's tail shows its last attempt, the one that failed. In `--json`,
+each failure carries its `status` and its error as `failure.message`; the
+top-level `error` is set only when the run failed for a reason no task's
+failure already gives.
 `ginkgo runs show [RUN_ID]` prints the run and its tasks; add `--json` for the
 full snapshot — per-task status, attempts, cache key, exit code, the `failure`
 record, log paths, timings, dependencies, and (for remote tasks) the remote job
-id and backend.
+id and backend. A task that was retried also lists each attempt, with its
+status and failure, under `attempt_history`; the text view lists them under
+**Attempts**.
 
 ## Remote Execution
 
@@ -900,9 +985,9 @@ timestamp plus a discriminator) holding the bytes:
 - `logs/` — per-task stdout/stderr.
 - `notebooks/` — rendered notebook HTML pages (`task_NNNN.html`).
 
-Runs recorded by a version of ginkgo older than the database are not migrated
-and are not visible. Delete `.ginkgo/`, or keep it and accept that the older
-runs no longer show up.
+Before 1.0 there are no schema migrations: a database written by a ginkgo with
+a different schema version is refused, with an error naming the workspace.
+Delete `.ginkgo/` and run again.
 
 ## Configuration And Secrets
 
@@ -934,7 +1019,12 @@ string form is a placeholder like `<secret:env:NAME>`, never the value. Task
 stdout/stderr pass through a redacting writer that replaces any resolved secret
 value with `[REDACTED]`, and exceptions are sanitised the same way before being
 recorded or displayed, so the plaintext secret does not reach logs, the manifest,
-or the report.
+or the report. That holds for every task kind: a shell, script or notebook
+command's output is redacted line by line before it is logged.
+
+Redaction covers what ginkgo records about a task, not what the task writes. A
+secret a task writes into an output file is stored in that file, and in its
+cached copy under `.ginkgo/`, like any other content.
 
 ## Sub-Workflows And Composition
 

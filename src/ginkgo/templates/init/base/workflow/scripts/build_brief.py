@@ -33,7 +33,7 @@ def main() -> None:
                 "## Notes",
                 "",
                 "- Built by the Pixi-backed script task.",
-                "- Used later by the Docker packaging task.",
+                "- Used later by the shell packaging task.",
                 "",
             ]
         ),

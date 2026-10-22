@@ -62,10 +62,13 @@ class TestLoadModuleFromPath:
         assert callable(ginkgo.config)
         assert not isinstance(ginkgo.config, ModuleType)
 
-    def test_import_roots_for_path_include_package_root_parent(self, tmp_path: Path) -> None:
+    def test_import_roots_for_path_include_package_root_parent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         repo_root = tmp_path / "AmpSeeker"
         package_dir = repo_root / "ampseeker_ginkgo"
         package_dir.mkdir(parents=True)
+        monkeypatch.chdir(repo_root)
 
         (package_dir / "__init__.py").write_text("", encoding="utf-8")
         workflow_path = package_dir / "workflow.py"
@@ -74,6 +77,20 @@ class TestLoadModuleFromPath:
         roots = import_roots_for_path(workflow_path)
 
         assert roots == [str(package_dir.resolve()), str(repo_root.resolve())]
+
+    def test_import_roots_fall_back_to_the_working_directory_without_ginkgo_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N7: ``exp/flow.py`` can import ``exp.tasks`` from an unconfigured project."""
+        experiment = tmp_path / "exp"
+        experiment.mkdir()
+        flow_path = experiment / "flow.py"
+        flow_path.write_text("", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        roots = import_roots_for_path(flow_path)
+
+        assert roots == [str(experiment.resolve()), str(tmp_path.resolve())]
 
     def test_load_module_supports_importing_own_package(self, tmp_path: Path) -> None:
         repo_root = tmp_path / "AmpSeeker"
@@ -366,9 +383,7 @@ class TestCacheNameIsPathIndependent:
     absolute path>``) leaked into the task's cache-key identity.
     """
 
-    def test_byte_identical_workflows_share_a_cache_name_across_paths(
-        self, tmp_path: Path
-    ) -> None:
+    def test_byte_identical_workflows_share_a_name_across_paths(self, tmp_path: Path) -> None:
         source = (
             "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n"
         )
@@ -392,15 +407,14 @@ class TestCacheNameIsPathIndependent:
 
         # The synthetic module names themselves still differ per path/name...
         assert first_module.__name__ != second_module.__name__
-        assert first_module.greet.name != second_module.greet.name
 
-        # ...but the cache identity used for the cache key must agree.
-        assert first_module.greet.cache_name == second_module.greet.cache_name
-        assert first_module.greet.cache_name == "<workflow>.greet"
+        # ...but the task's recorded identity must agree.
+        assert first_module.greet.name == second_module.greet.name == "<workflow>.greet"
+        assert first_module.greet.base_name == "greet"
 
         # The source hash folds in the entry module's own name as part of its
         # local import closure; that must be path-independent too, or an
-        # identical cache_name still lands on a different cache key.
+        # identical name still lands on a different cache key.
         assert first_module.greet.cache_source_hash == second_module.greet.cache_source_hash
 
     def test_dotted_package_tasks_keep_their_real_name(self, tmp_path: Path) -> None:
@@ -421,7 +435,7 @@ class TestCacheNameIsPathIndependent:
             _forget_workflow_package()
 
         assert module.greet.name == "workflow.flow.greet"
-        assert module.greet.cache_name == module.greet.name
+        assert module.greet.base_name == "greet"
 
 
 class TestRelativeImportGuidance:
