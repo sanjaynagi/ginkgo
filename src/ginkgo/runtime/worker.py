@@ -298,17 +298,17 @@ def run_task(
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
         # With no task log file (a remote worker, or a run without a run
         # directory) the traceback goes to the process's own stderr.
-        with (
-            Path(stderr_path).open("a", encoding="utf-8")
-            if stderr_path is not None
-            else contextlib.nullcontext(sys.stderr)
-        ) as handle:
-            traceback.print_exception(
-                type(exc),
-                exc,
-                _traceback_from_task(exc=exc, fn=fn),
-                file=_RedactingWriter(handle=handle, secret_values=secret_values),
-            )
+        trace = redact_text(
+            text="".join(
+                traceback.format_exception(type(exc), exc, _traceback_from_task(exc=exc, fn=fn))
+            ),
+            secret_values=secret_values,
+        )
+        if stderr_path is not None:
+            with Path(stderr_path).open("a", encoding="utf-8") as handle:
+                handle.write(trace)
+        else:
+            sys.stderr.write(trace)
         # The message travels as the rebuilt exception's one argument. A
         # KeyError's message is its key's repr, so it carries the key itself,
         # or the rebuilt one would quote it twice.

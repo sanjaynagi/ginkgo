@@ -266,6 +266,11 @@ def remote_double(frame: pd.DataFrame) -> pd.DataFrame:
     return frame * 2
 
 
+@task(remote=True)
+def remote_fails() -> int:
+    raise ValueError("boom in the pod")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -281,6 +286,15 @@ class TestRemotePayloadTransport:
         captured = capsys.readouterr()
         assert "hello from the pod" in captured.out
         assert "a warning" in captured.err
+
+    def test_failing_task_traceback_goes_to_the_pods_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(ValueError, match="boom in the pod"):
+            _evaluate(remote_fails())
+
+        # Writing the traceback must leave the process's stderr open.
+        assert "Traceback" in capsys.readouterr().err
 
     def test_large_dataframe_crosses_both_ways(self) -> None:
         # Random floats keep the encoded frame well over the inline limit.
