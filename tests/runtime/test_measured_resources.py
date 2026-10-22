@@ -114,7 +114,7 @@ class TestBodyMeasurement:
     ) -> None:
         # A fresh worker's first encode imports and allocates; a task that
         # allocates nothing must still read close to zero.
-        def heavy_encode(value: Any, *, base_dir: Path) -> Any:
+        def heavy_encode(value: Any, *, base_dir: Path, artifact_store: Any) -> Any:
             _held.append(b"x" * 100_000_000)
             return value
 
