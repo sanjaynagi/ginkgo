@@ -20,6 +20,7 @@ from ginkgo.runtime.remote_executor import (
 )
 
 if TYPE_CHECKING:
+    from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
     from ginkgo.runtime.evaluator import NodeRun
 
 # Payload keys that name paths on the driver's filesystem. A remote worker
@@ -117,7 +118,7 @@ class RemoteDispatchManager:
         return watcher.submit(self._poll_job, handle, node=node)
 
     @property
-    def artifact_store(self) -> Any:
+    def artifact_store(self) -> RemoteArtifactStore | None:
         """The shared remote artifact store, or ``None`` when none is configured."""
         self._ensure_artifact_store()
         return self._artifact_store

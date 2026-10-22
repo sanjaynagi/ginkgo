@@ -17,7 +17,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
@@ -103,6 +103,9 @@ from ginkgo.runtime.task_validation import (
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 from ginkgo.workspace_layout import WorkspaceLayout
+
+if TYPE_CHECKING:
+    from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 
 
 class RootSkippedError(GinkgoError, RuntimeError):
@@ -1789,7 +1792,7 @@ class ConcurrentEvaluator:
             artifact_store=self._value_store(node=node),
         )
 
-    def _value_store(self, *, node: NodeRun) -> Any:
+    def _value_store(self, *, node: NodeRun) -> RemoteArtifactStore | None:
         """Return the store large values go through for *node*, if not its transport dir.
 
         A remote worker cannot read the driver's transport directory, so a
