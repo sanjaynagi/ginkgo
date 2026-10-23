@@ -262,6 +262,19 @@ Build for Linux (required for cloud VMs, even when building on macOS):
 docker buildx build --platform linux/amd64 -t <image-uri> --push .
 ```
 
+### What a worker needs to read
+
+A worker reads and writes object storage itself: the artifact store
+(`[remote.artifacts] store`) for `file`/`folder` values and large results,
+and, in `direct` mode (the default), the bucket of every remote input it is
+given. Grant the worker's identity (the Kubernetes service account, or the
+GCP Batch service account) read access to those source buckets as well as
+read/write access to the artifact store. A worker without it fails on the
+input it cannot read, naming the URI. To keep source-bucket access on the
+driver alone, set `[remote.access] default = "stage"`, or `access="stage"`
+on the input; the driver then downloads it and hands it over through the
+artifact store.
+
 ### Adding workflow dependencies on top of the base image
 
 Most workflows need extra Python packages (PyTorch, scikit-learn, biopython,

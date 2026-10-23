@@ -146,37 +146,31 @@ def resolve_access(
     config = config or AccessConfig()
     task_policy = task_policy or TaskAccessPolicy()
 
-    # 1. Explicit ref.access always wins (bypass streaming_compatible).
-    if ref.access in ("direct", "stage"):
-        return ref.access
-    if ref.access == "fuse":
-        if not task_policy.streaming_compatible:
-            return "stage"
-        return "fuse" if driver_available else "stage"
+    # A fuse request that cannot be met falls back to downloading, the way
+    # the config downloads: "direct" unless it says "stage".
+    download = "stage" if config.default == "stage" else "direct"
+    can_stream = task_policy.streaming_compatible and driver_available
+
+    def honour(mode: str) -> str:
+        return download if mode == "fuse" and not can_stream else mode
+
+    # 1. Explicit ref.access always wins.
+    if ref.access is not None:
+        return honour(ref.access)
 
     # 2. Task decorator default.
     if task_policy.remote_input_access is not None:
-        mode = task_policy.remote_input_access
-        if mode == "fuse":
-            if not task_policy.streaming_compatible:
-                return "stage"
-            return "fuse" if driver_available else "stage"
-        return mode  # "direct" or "stage"
+        return honour(task_policy.remote_input_access)
 
     # 3. Pattern-based config default.
     pattern_mode = _match_pattern(ref=ref, patterns=config.pattern_defaults)
     if pattern_mode is not None:
-        if pattern_mode == "fuse":
-            if not task_policy.streaming_compatible or not driver_available:
-                return "stage"
-            return "fuse"
-        return pattern_mode
+        return honour(pattern_mode)
 
     # 4. Auto-enable heuristic.
     if (
         config.auto_fuse
-        and task_policy.streaming_compatible
-        and driver_available
+        and can_stream
         and config.doctor_ok
         and known_size is not None
         and known_size >= config.auto_fuse_min_bytes
@@ -184,7 +178,7 @@ def resolve_access(
         return "fuse (auto)"
 
     # 5. Config default.
-    return config.default
+    return honour(config.default)
 
 
 def _match_pattern(

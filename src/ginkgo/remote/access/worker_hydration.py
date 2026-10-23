@@ -15,7 +15,7 @@ from typing import Any
 from ginkgo.core.remote import RemoteFileRef, RemoteRef
 from ginkgo.core.types import file, folder
 from ginkgo.remote.access.mounted import MountedAccess
-from ginkgo.remote.access.protocol import decode_remote_input, is_remote_input
+from ginkgo.remote.access.protocol import decode_remote_input, is_fuse_policy, is_remote_input
 from ginkgo.remote.access.staged import StagedAccess
 from ginkgo.remote.staging import StagingCache
 from ginkgo.store.sqlite import MEMORY
@@ -84,7 +84,7 @@ class _Hydrator:
 
     def _hydrate(self, *, value: dict[str, Any]) -> Any:
         ref, policy = decode_remote_input(value)
-        if not policy.startswith("fuse"):
+        if not is_fuse_policy(policy):
             return self._download(ref=ref)
         try:
             if self.mounted_access is None:

@@ -48,6 +48,11 @@ def encode_remote_input(*, ref: RemoteRef, policy: str) -> dict[str, Any]:
     }
 
 
+def is_fuse_policy(policy: str) -> bool:
+    """Return True when an access policy mounts the input (``fuse`` or ``fuse (auto)``)."""
+    return policy.startswith("fuse")
+
+
 def is_remote_input(value: Any) -> bool:
     """Return True when ``value`` is a remote-input marker dict."""
     return isinstance(value, dict) and value.get("__ginkgo_type__") in {
@@ -58,7 +63,7 @@ def is_remote_input(value: Any) -> bool:
 
 def is_fuse_input(value: Any) -> bool:
     """Return True when ``value`` is a remote-input marker the worker mounts."""
-    return is_remote_input(value) and value["policy"].startswith("fuse")
+    return is_remote_input(value) and is_fuse_policy(value["policy"])
 
 
 def decode_remote_input(value: dict[str, Any]) -> tuple[RemoteRef, str]:
@@ -71,7 +76,7 @@ def decode_remote_input(value: dict[str, Any]) -> tuple[RemoteRef, str]:
         "key": value["key"],
         "namespace": value.get("namespace"),
         "version_id": value.get("version_id"),
-        "access": "fuse" if policy.startswith("fuse") else "direct",
+        "access": "fuse" if is_fuse_policy(policy) else "direct",
     }
     if value["__ginkgo_type__"] == REMOTE_FILE_TYPE:
         ref: RemoteRef = RemoteFileRef(**common, etag=value.get("etag"), size=value.get("size"))

@@ -29,6 +29,7 @@ from ginkgo.remote.access.protocol import (
     decode_remote_input,
     encode_remote_input,
     is_fuse_input,
+    is_fuse_policy,
     is_remote_input,
 )
 from ginkgo.remote.access.resolver import (
@@ -52,6 +53,7 @@ __all__ = [
     "decode_remote_input",
     "encode_remote_input",
     "is_fuse_input",
+    "is_fuse_policy",
     "is_remote_input",
     "load_access_config",
     "local_streaming_available",

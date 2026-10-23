@@ -42,7 +42,7 @@ from ginkgo.core.types import (
     rebuild_sequence,
 )
 from ginkgo.remote.access.doctor import local_streaming_available
-from ginkgo.remote.access.protocol import encode_remote_input
+from ginkgo.remote.access.protocol import encode_remote_input, is_fuse_policy
 from ginkgo.remote.access.resolver import (
     AccessConfig,
     TaskAccessPolicy,
@@ -344,24 +344,15 @@ class RemoteStager:
         task_policy = TaskAccessPolicy.from_task_def(task_def)
         access_config = self._get_access_config()
 
-        # Fuse mounting is wired for the remote dispatch path (the worker
-        # mounts markers via `MountedAccess`) and for local process-pool
-        # tasks (hydrated in `run_task` against a task-local mount root).
         # A driver kind's body runs on the scheduler or in a driver
-        # subprocess, not through ``run_task``, so it has no mount lifecycle
-        # and always stages. Local worker tasks stream only when the host has
-        # a healthy driver + `/dev/fuse`; that per-scheme check is deferred to
-        # `resolve_access` via `require_local_driver`.
-        require_local_driver = False
-        if not dispatches_remote:
-            if task_kind(task_def).execution_mode == "driver":
-                task_policy = TaskAccessPolicy(
-                    remote_input_access="stage",
-                    streaming_compatible=False,
-                    fuse_prefetch=task_policy.fuse_prefetch,
-                )
-            else:
-                require_local_driver = True
+        # subprocess, not through ``run_task``, so it has no mount lifecycle:
+        # its inputs are downloaded here.
+        if not dispatches_remote and task_kind(task_def).execution_mode == "driver":
+            task_policy = TaskAccessPolicy(
+                remote_input_access="direct",
+                streaming_compatible=False,
+                fuse_prefetch=task_policy.fuse_prefetch,
+            )
 
         staged: dict[str, Any] = {}
         for name, value in resolved_args.items():
@@ -376,7 +367,6 @@ class RemoteStager:
                 value=value,
                 task_policy=task_policy,
                 access_config=access_config,
-                require_local_driver=require_local_driver,
                 dispatches_remote=dispatches_remote,
             )
         return staged
@@ -388,17 +378,15 @@ class RemoteStager:
         value: Any,
         task_policy: TaskAccessPolicy | None = None,
         access_config: AccessConfig | None = None,
-        require_local_driver: bool = False,
         dispatches_remote: bool = False,
     ) -> Any:
         """Stage a single value, recursing into typed containers.
 
-        When ``require_local_driver`` is ``True`` (local worker tasks),
-        fuse selection is gated per scheme on the local host having a
-        healthy driver + ``/dev/fuse``; otherwise fuse degrades to
-        ``stage``. Remote dispatch leaves this ``False`` and assumes the
-        pod carries the drivers. A ``direct`` input is left to the worker
-        only when ``dispatches_remote``; on this host it is staged.
+        A task on this host streams only when the host has a healthy driver
+        and ``/dev/fuse`` for the scheme; otherwise fuse falls back to a
+        download. A remote task's pod is assumed to carry the drivers. A
+        ``direct`` input is left to the worker only when ``dispatches_remote``;
+        on this host it is staged.
         """
         task_policy = task_policy or TaskAccessPolicy()
         access_config = access_config or self._get_access_config()
@@ -411,9 +399,7 @@ class RemoteStager:
                 value = remote_folder(value)
 
         if isinstance(value, (RemoteFileRef, RemoteFolderRef)):
-            driver_available = (
-                local_streaming_available(scheme=value.scheme) if require_local_driver else True
-            )
+            driver_available = dispatches_remote or local_streaming_available(scheme=value.scheme)
             policy = resolve_access(
                 ref=value,
                 task_policy=task_policy,
@@ -421,7 +407,7 @@ class RemoteStager:
                 known_size=value.size if isinstance(value, RemoteFileRef) else None,
                 driver_available=driver_available,
             )
-            if policy.startswith("fuse") or (policy == "direct" and dispatches_remote):
+            if is_fuse_policy(policy) or (policy == "direct" and dispatches_remote):
                 return encode_remote_input(ref=value, policy=policy)
             staged_path = str(self._stage_remote_ref(ref=value))
             return file(staged_path) if isinstance(value, RemoteFileRef) else folder(staged_path)
@@ -437,7 +423,6 @@ class RemoteStager:
                     value=item,
                     task_policy=task_policy,
                     access_config=access_config,
-                    require_local_driver=require_local_driver,
                     dispatches_remote=dispatches_remote,
                 )
                 for item in value
@@ -445,6 +430,10 @@ class RemoteStager:
             return rebuild_sequence(like=value, items=staged_items)
 
         return value
+
+    def default_access(self, *, task_def: Any) -> str:
+        """Return the access mode a task's remote input gets without a hint of its own."""
+        return task_def.remote_input_access or self._get_access_config().default
 
     def _get_access_config(self) -> AccessConfig:
         """Return the cached access config, loading it on first use."""

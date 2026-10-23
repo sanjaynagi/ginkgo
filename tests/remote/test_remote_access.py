@@ -135,14 +135,25 @@ class TestResolveAccess:
             == "direct"
         )
 
-    def test_driver_missing_falls_back(self) -> None:
+    def test_driver_missing_falls_back_to_downloading(self) -> None:
         ref = remote_file("s3://b/k.txt", access="fuse")
-        assert resolve_access(ref=ref, driver_available=False) == "stage"
+        assert resolve_access(ref=ref, driver_available=False) == "direct"
 
     def test_streaming_incompatible_blocks_explicit_fuse(self) -> None:
         ref = remote_file("s3://b/k.txt", access="fuse")
         policy = TaskAccessPolicy(streaming_compatible=False)
-        assert resolve_access(ref=ref, task_policy=policy) == "stage"
+        assert resolve_access(ref=ref, task_policy=policy) == "direct"
+
+    def test_a_fuse_fallback_downloads_the_way_the_config_does(self) -> None:
+        ref = remote_file("s3://b/k.txt", access="fuse")
+        config = AccessConfig(default="stage")
+        assert resolve_access(ref=ref, config=config, driver_available=False) == "stage"
+
+    def test_a_fuse_config_default_falls_back_when_streaming_is_refused(self) -> None:
+        ref = remote_file("s3://b/k.txt")
+        policy = TaskAccessPolicy(streaming_compatible=False)
+        config = AccessConfig(default="fuse")
+        assert resolve_access(ref=ref, task_policy=policy, config=config) == "direct"
 
 
 class TestAccessConfig:

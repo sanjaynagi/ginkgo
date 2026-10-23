@@ -30,6 +30,7 @@ import pytest
 from ginkgo import Out, file, folder, task
 from ginkgo.core.remote import remote_file
 from ginkgo.remote.staging import RemoteIdentityError
+from ginkgo.runtime.events import TaskStaging
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
@@ -480,6 +481,15 @@ class TestDirectRemoteInputs:
 
         assert not (tmp_path / ".ginkgo" / "staging").exists()
         assert b"from the source" not in self._artifact_blobs(tmp_path)
+
+    def test_staging_reports_direct_access(self, tmp_path: Path) -> None:
+        uri = self._put_source(tmp_path, b"from the source")
+        collector = EventCollector()
+
+        _evaluate(remote_read(path=remote_file(uri)), event_bus=collector.bus)
+
+        staging = [event for event in collector.events if isinstance(event, TaskStaging)]
+        assert [event.access_method for event in staging] == ["direct"]
 
     def test_an_input_marked_stage_goes_through_the_driver(self, tmp_path: Path) -> None:
         uri = self._put_source(tmp_path, b"staged by the driver")

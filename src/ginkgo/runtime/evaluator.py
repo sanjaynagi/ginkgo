@@ -977,7 +977,10 @@ class ConcurrentEvaluator:
             TaskStaging,
             node=node,
             remote_input_count=count_remote_inputs(node.resolved_args),
-            access_method=_classify_access_method(value=node.resolved_args),
+            access_method=_classify_access_method(
+                value=node.resolved_args,
+                default=self._stager.default_access(task_def=node.task_def),
+            ),
         )
         future = self._executors.staging.submit(self._stager.stage_task_inputs, node=node)
         self._track(future, node=node, on_done=self._on_inputs_staged)
@@ -2339,21 +2342,21 @@ def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, A
     ]
 
 
-def _classify_access_method(*, value: Any) -> str:
-    """Return ``"stage"``, ``"fuse"``, or ``"hybrid"`` for a resolved-args tree.
+def _classify_access_method(*, value: Any, default: str) -> str:
+    """Return the access mode a resolved-args tree asks for, or ``"hybrid"``.
 
-    Walks the value recursively, inspecting explicit ``access`` hints on
-    :class:`RemoteRef` leaves. Refs without an explicit ``access`` hint
-    count as ``"stage"`` for reporting purposes; the auto-enable
-    heuristic may still promote them at staging time.
+    Walks the value recursively, reading the ``access`` hint on each
+    :class:`RemoteRef` leaf; a ref without one takes *default*, the task's or
+    the config's mode.
     """
     from ginkgo.core.remote import RemoteRef
+    from ginkgo.remote.access.protocol import is_fuse_policy
 
     seen: set[str] = set()
 
     def walk(item: Any) -> None:
         if isinstance(item, RemoteRef):
-            seen.add(item.access or "stage")
+            seen.add(item.access or default)
             return
         if isinstance(item, dict):
             for v in item.values():
@@ -2364,8 +2367,7 @@ def _classify_access_method(*, value: Any) -> str:
                 walk(v)
 
     walk(value)
-    if "fuse" in seen and len(seen) > 1:
+    if len(seen) > 1:
         return "hybrid"
-    if "fuse" in seen:
-        return "fuse"
-    return "stage"
+    mode = seen.pop() if seen else default
+    return "fuse" if is_fuse_policy(mode) else mode
