@@ -80,7 +80,8 @@ no installed plugin provides fails before the run starts:
 [remote.executors.k8s]: No installed plugin provides executor type 'k8s'. Available: none. Install ginkgo-k8s to add it.
 ```
 
-The plugins are needed where `ginkgo run` submits jobs, not in the worker image
+The plugins are needed where `ginkgo run` submits jobs. A worker needs none,
+but the repository's image includes `ginkgo-k8s` so it can run a driver too
 (see [Worker Docker Image](#worker-docker-image)).
 
 ## Named Executors
@@ -203,6 +204,56 @@ bash scripts/gke-setup.sh     # creates cluster, registry, builds/pushes image
 bash scripts/gke-teardown.sh   # deletes everything when done
 ```
 
+### Running on OKE
+
+On Oracle Kubernetes Engine the driver runs as a Job beside its workers, and
+both sign their OCI requests with Workload Identity, so no API key is mounted
+anywhere. `deploy/oke/` in the ginkgo repository holds a reference for each
+piece below. The `kind` job in CI runs this layout on a generic cluster with
+an S3 store; it has not yet run on OKE itself.
+
+1. **Identity.** Workload Identity needs an Enhanced cluster. Choose the
+   namespace and service account the driver and its workers run as, and let
+   them read the source buckets and read and write the artifact store. The
+   driver needs read access too: it checks each remote input's version or ETag
+   to build cache keys before anything is dispatched.
+
+    ```text
+    Allow any-user to read objects in compartment <compartment> where all {
+      request.principal.type = 'workload',
+      request.principal.cluster_id = '<cluster-ocid>',
+      request.principal.namespace = '<namespace>',
+      request.principal.service_account = '<service-account>' }
+    Allow any-user to manage objects in compartment <compartment> where all {
+      request.principal.type = 'workload',
+      request.principal.cluster_id = '<cluster-ocid>',
+      request.principal.namespace = '<namespace>',
+      request.principal.service_account = '<service-account>',
+      target.bucket.name = '<artifacts-bucket>' }
+    ```
+
+2. **Image.** Build the repository's `Dockerfile` and push it to OCIR as the
+   base, then build the workflow's image on it with `deploy/oke/Dockerfile`.
+   The driver and its workers run that one image, so a worker loads a task
+   from the same path the driver did. Create a pull secret for OCIR in the
+   namespace.
+3. **Permissions.** The driver creates a Job per task, lists the Job's pods,
+   reads their logs, and deletes Jobs when a run is cancelled. Apply
+   `deploy/oke/driver-role.yaml` and `driver-role-binding.yaml`. CI's kind
+   test runs its driver with only this Role.
+4. **Config.** `deploy/oke/ginkgo.toml` sets Workload Identity for the driver
+   (`[remote.oci]`) and for workers (the executor's `env`), the artifact
+   store, and an `oke` executor. Tasks run there when they name it,
+   `@task(executor="oke")`, or when the run makes it the default with
+   `--executor oke`.
+5. **Run.** `deploy/oke/driver-job.yaml` runs `ginkgo run` in the image.
+   It mounts a PVC at the project's `.ginkgo/`, so run history and the cache
+   outlive the pod and a rerun reuses earlier results. `.ginkgo/` holds a
+   SQLite database, so check that the volume supports its file locking, and
+   give each workflow its own `subPath`. Set `GINKGO_PARENT_RUN_ID` to the
+   caller's run ID, then delete a cancelled run's workers with
+   `kubectl delete jobs -l ginkgo/parent-run-id=<run-id>`.
+
 ### GCP Batch (`type = "batch"`)
 
 Submits tasks as serverless GCP Batch jobs. No cluster to manage -- each job
@@ -264,10 +315,11 @@ image.
 
 ## Worker Docker Image
 
-The worker image needs Python 3.11+ and ginkgo installed. It needs no
-executor plugin — a worker runs tasks, it does not submit them — so core with
-the `cloud` extra (the GCS object store) is enough. The repository's
-`Dockerfile`:
+The worker image needs Python 3.11+, ginkgo, and the plugin for each object
+store it reads. It needs no executor plugin, since a worker runs tasks rather
+than submitting them. The repository's `Dockerfile` adds `ginkgo-k8s` anyway,
+so the same image can run a driver on Kubernetes with the command
+`ginkgo run <workflow>`:
 
 ```dockerfile
 FROM python:3.11-slim
@@ -281,7 +333,9 @@ COPY src/ginkgo/ src/ginkgo/
 COPY plugins/ginkgo-aws/ plugins/ginkgo-aws/
 COPY plugins/ginkgo-gcp/ plugins/ginkgo-gcp/
 COPY plugins/ginkgo-oci/ plugins/ginkgo-oci/
-RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci
+COPY plugins/ginkgo-k8s/ plugins/ginkgo-k8s/
+RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci \
+    ./plugins/ginkgo-k8s
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]
 ```

@@ -1,0 +1,18 @@
+# What the driver needs from Kubernetes: it runs each task as a Job, watches
+# the Job's pod, reads its log, and deletes the Job when a run is cancelled.
+# Apply it in the namespace the driver and its workers run in:
+#   kubectl apply -n <namespace> -f driver-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ginkgo-driver
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]

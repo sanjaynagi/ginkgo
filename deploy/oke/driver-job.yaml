@@ -1,0 +1,40 @@
+# One workflow run: the driver runs the workflow and dispatches its remote
+# tasks as worker Jobs in the same namespace. Values in <> are yours.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: ginkgo-driver-
+  namespace: <namespace>
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      serviceAccountName: <service-account>
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: <ocir-pull-secret>
+      containers:
+        - name: driver
+          image: <region>.ocir.io/<os-namespace>/ginkgo/<workflow>:<tag>
+          # The image runs a worker by default; this runs the workflow instead.
+          command: ["ginkgo", "run", "<workflow>/flow.py"]
+          env:
+            # Labels every worker Job, so the caller can delete a run's Jobs:
+            #   kubectl delete jobs -l ginkgo/parent-run-id=<run-id>
+            - name: GINKGO_PARENT_RUN_ID
+              value: "<run-id>"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            # Run history and the cache, kept across runs so a rerun reuses
+            # what earlier runs computed.
+            - name: state
+              mountPath: /project/.ginkgo
+              subPath: ginkgo/<workflow>
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: <pvc>
