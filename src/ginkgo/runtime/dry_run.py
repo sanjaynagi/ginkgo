@@ -621,9 +621,9 @@ def _probe_node(
         )
     except (FileNotFoundError, ValueError):
         # Hashing a file input the live run would restore first, or a remote
-        # ref the probe deliberately left unstaged (``_hash_value`` refuses a
-        # ``RemoteRef`` without a ``version_id``). Cannot know without
-        # executing — the same reasoning as the block above.
+        # input whose identity the probe deliberately left unresolved
+        # (``_hash_value`` refuses one). Cannot know without executing — the
+        # same reasoning as the block above.
         return "unknown", (), None
     except Exception as exc:
         probe_failures.append(_probe_failure(node=node, stage="cache_key", exc=exc))

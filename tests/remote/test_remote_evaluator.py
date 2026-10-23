@@ -6,10 +6,12 @@ from pathlib import Path
 from threading import Barrier, Lock
 from unittest.mock import MagicMock, patch
 
-from ginkgo import evaluate, file, task
-from ginkgo.core.remote import remote_file
+import pytest
+
+from ginkgo import evaluate, file, folder, task
+from ginkgo.core.remote import remote_file, remote_folder
 from ginkgo.remote.backend import RemoteObjectMeta
-from ginkgo.remote.staging import StagingCache
+from ginkgo.remote.staging import RemoteInputChangedError, StagingCache
 from tests.conftest import EventCollector, make_download_backend
 
 
@@ -284,3 +286,166 @@ class TestRemoteFileEvaluator:
 
         assert result == ["shared payload", len(b"shared payload")]
         assert download_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Remote input identity: the cache is checked before anything is downloaded
+# ---------------------------------------------------------------------------
+
+
+@task()
+def count_folder_files(*, path: folder) -> int:
+    """Count the files a folder holds."""
+    return sum(1 for item in Path(str(path)).rglob("*") if item.is_file())
+
+
+class _CountingStore:
+    """In-memory object store that counts the requests made of it."""
+
+    def __init__(self, objects: dict[str, tuple[bytes, str | None]]) -> None:
+        self.objects = objects
+        self.heads = 0
+        self.lists = 0
+        self.downloads = 0
+
+    def _meta(self, *, bucket: str, key: str) -> RemoteObjectMeta:
+        content, etag = self.objects[key]
+        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=len(content), etag=etag)
+
+    def head(self, *, bucket: str, key: str) -> RemoteObjectMeta:
+        self.heads += 1
+        return self._meta(bucket=bucket, key=key)
+
+    def list_prefix(self, *, bucket: str, prefix: str) -> list[RemoteObjectMeta]:
+        self.lists += 1
+        return [
+            self._meta(bucket=bucket, key=key)
+            for key in sorted(self.objects)
+            if key.startswith(prefix)
+        ]
+
+    def download(self, *, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
+        self.downloads += 1
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(self.objects[key][0])
+        return self._meta(bucket=bucket, key=key)
+
+
+def _evaluate_against(
+    store: _CountingStore, *, staging_root: Path, expr: object, collector: EventCollector
+) -> object:
+    """Evaluate with a given staging cache, as a driver with that disk would."""
+    with (
+        patch(
+            "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
+            return_value=StagingCache(root=staging_root),
+        ),
+        patch("ginkgo.remote.staging.resolve_backend", return_value=store),
+    ):
+        return evaluate(expr, event_bus=collector.bus)
+
+
+class TestRemoteInputIdentity:
+    def test_a_cache_hit_on_a_fresh_driver_downloads_nothing(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", "e1")})
+        ref = remote_file("s3://bucket/data/a.txt")
+
+        _evaluate_against(
+            store,
+            staging_root=tmp_path / "first",
+            expr=read_file_content(path=ref),
+            collector=EventCollector(),
+        )
+        # A second driver with an empty staging cache, as a fresh pod has.
+        collector = EventCollector()
+        result = _evaluate_against(
+            store,
+            staging_root=tmp_path / "second",
+            expr=read_file_content(path=ref),
+            collector=collector,
+        )
+
+        assert result == "alpha"
+        assert collector.cached()
+        assert store.downloads == 1
+        assert store.heads == 2
+
+    def test_an_overwritten_object_misses(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", "e1")})
+        ref = remote_file("s3://bucket/data/a.txt")
+        _evaluate_against(
+            store,
+            staging_root=tmp_path / "staging",
+            expr=read_file_content(path=ref),
+            collector=EventCollector(),
+        )
+
+        store.objects["data/a.txt"] = (b"beta", "e2")
+        collector = EventCollector()
+        result = _evaluate_against(
+            store,
+            staging_root=tmp_path / "staging",
+            expr=read_file_content(path=ref),
+            collector=collector,
+        )
+
+        assert result == "beta"
+        assert not collector.cached()
+
+    def test_a_folder_cache_hit_lists_without_downloading(self, tmp_path) -> None:
+        store = _CountingStore({"run/a.txt": (b"a", "ea"), "run/b.txt": (b"b", "eb")})
+        expr = count_folder_files(path=remote_folder("s3://bucket/run/"))
+        _evaluate_against(
+            store, staging_root=tmp_path / "first", expr=expr, collector=EventCollector()
+        )
+
+        collector = EventCollector()
+        result = _evaluate_against(
+            store, staging_root=tmp_path / "second", expr=expr, collector=collector
+        )
+
+        assert result == 2
+        assert collector.cached()
+        assert store.downloads == 2
+
+    def test_an_object_changed_after_the_cache_check_fails_the_task(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", "e1")})
+        real_download = store.download
+
+        def download_after_an_overwrite(*, bucket, key, dest_path):
+            store.objects[key] = (b"beta", "e2")
+            return real_download(bucket=bucket, key=key, dest_path=dest_path)
+
+        store.download = download_after_an_overwrite
+
+        with pytest.raises(RemoteInputChangedError, match="changed after its cache key"):
+            _evaluate_against(
+                store,
+                staging_root=tmp_path / "staging",
+                expr=read_file_content(path=remote_file("s3://bucket/data/a.txt")),
+                collector=EventCollector(),
+            )
+
+    def test_an_object_without_an_etag_is_refused(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", None)})
+
+        with pytest.raises(ValueError, match="version_id"):
+            _evaluate_against(
+                store,
+                staging_root=tmp_path / "staging",
+                expr=read_file_content(path=remote_file("s3://bucket/data/a.txt")),
+                collector=EventCollector(),
+            )
+
+    def test_tasks_reading_one_uri_ask_the_store_once(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", "e1")})
+        ref = remote_file("s3://bucket/data/a.txt")
+
+        _evaluate_against(
+            store,
+            staging_root=tmp_path / "staging",
+            expr=[read_file_content(path=ref), count_file_bytes(path=ref)],
+            collector=EventCollector(),
+        )
+
+        assert store.heads == 1

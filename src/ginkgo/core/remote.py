@@ -13,6 +13,7 @@ ginkgo-oci. Core knows no scheme by name.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlparse
 
 _VALID_ACCESS_MODES = frozenset({"stage", "fuse"})
@@ -51,15 +52,59 @@ class RemoteRef:
     version_id: str | None = None
     access: str | None = field(default=None, compare=False)
 
+    def identity(self) -> dict[str, Any] | None:
+        """Return what identifies the object's bytes, or ``None`` until resolved.
+
+        A pinned ``version_id`` identifies them on its own. Otherwise the
+        store's metadata does, once the evaluator has read it; see
+        :func:`ginkgo.remote.staging.resolve_identity`.
+        """
+        if self.version_id is not None:
+            return {"version_id": self.version_id}
+        return self._resolved_identity()
+
+    def _resolved_identity(self) -> dict[str, Any] | None:
+        raise NotImplementedError
+
 
 @dataclass(frozen=True, kw_only=True)
 class RemoteFileRef(RemoteRef):
-    """Remote reference to a single file."""
+    """Remote reference to a single file.
+
+    Parameters
+    ----------
+    etag : str | None
+        The object's ETag, as the store reported it when resolved.
+    size : int | None
+        The object's size in bytes, as the store reported it when resolved.
+    """
+
+    etag: str | None = None
+    size: int | None = None
+
+    def _resolved_identity(self) -> dict[str, Any] | None:
+        if self.etag is None:
+            return None
+        return {"etag": self.etag, "size": self.size}
 
 
 @dataclass(frozen=True, kw_only=True)
 class RemoteFolderRef(RemoteRef):
-    """Remote reference to a directory prefix."""
+    """Remote reference to a directory prefix.
+
+    Parameters
+    ----------
+    listing_digest : str | None
+        Digest of the prefix's listing (each object's URI, size, ETag and
+        version), as the store reported it when resolved.
+    """
+
+    listing_digest: str | None = None
+
+    def _resolved_identity(self) -> dict[str, Any] | None:
+        if self.listing_digest is None:
+            return None
+        return {"listing_digest": self.listing_digest}
 
 
 def remote_file(

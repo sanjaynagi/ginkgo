@@ -951,22 +951,34 @@ class ConcurrentEvaluator:
                 tmp_paths=node.tmp_paths,
                 stage_remote_refs=False,
             )
-            remote_input_count = count_remote_inputs(node.resolved_args)
-            if remote_input_count > 0:
+            if count_remote_inputs(node.resolved_args) > 0:
                 node.state = "staging"
-                access_method = _classify_access_method(value=node.resolved_args)
-                self._emit_task_event(
-                    TaskStaging,
-                    node=node,
-                    remote_input_count=remote_input_count,
-                    access_method=access_method,
-                )
-                assert self._executors is not None
-                future = self._executors.staging.submit(self._stager.stage_task_inputs, node=node)
-                self._track(future, node=node, on_done=self._on_inputs_staged)
+                # An input whose identity is unknown is resolved first, so a
+                # cache hit downloads nothing; staging follows only a miss.
+                if self._stager.needs_identity(node=node):
+                    assert self._executors is not None
+                    future = self._executors.staging.submit(
+                        self._stager.resolve_task_identities, node=node
+                    )
+                    self._track(future, node=node, on_done=self._on_identities_resolved)
+                else:
+                    self._stage_inputs(node=node)
                 continue
 
             self._start_task_execution(node=node)
+
+    def _stage_inputs(self, *, node: NodeRun) -> None:
+        """Stage a node's remote inputs on the staging pool, then start it."""
+        assert node.resolved_args is not None
+        assert self._executors is not None
+        self._emit_task_event(
+            TaskStaging,
+            node=node,
+            remote_input_count=count_remote_inputs(node.resolved_args),
+            access_method=_classify_access_method(value=node.resolved_args),
+        )
+        future = self._executors.staging.submit(self._stager.stage_task_inputs, node=node)
+        self._track(future, node=node, on_done=self._on_inputs_staged)
 
     def _consume_completed_futures(self, done_futures: set[Future[Any]]) -> None:
         """Hand each finished future's result to the handler it was submitted with."""
@@ -1042,6 +1054,13 @@ class ConcurrentEvaluator:
             # The decoded result no longer refers to the transport directory.
             self._cleanup_transport(node)
         self._handle_task_body_result(node=node, completed_value=completed_value)
+
+    def _on_identities_resolved(self, *, node: NodeRun, completed_value: Any) -> None:
+        """Look a node up once its remote inputs' identities are known; stage on a miss."""
+        node.resolved_args = completed_value
+        if self._try_cache_hit(node=node):
+            return
+        self._stage_inputs(node=node)
 
     def _on_inputs_staged(self, *, node: NodeRun, completed_value: Any) -> None:
         """Start task execution after remote inputs have been staged locally."""
@@ -1921,10 +1940,10 @@ class ConcurrentEvaluator:
     def _try_prepare_cache_hit(self, *, node: NodeRun) -> bool:
         """Attempt to complete a node from cache during preparation.
 
-        This fast path only runs when cache identity can be decided without
-        staging remote inputs first.
+        This fast path only runs once every remote input's identity is known;
+        a node whose identities must be resolved is looked up after that.
         """
-        if node.resolved_args is None or self._stager.cache_lookup_requires_staging(node=node):
+        if node.resolved_args is None or self._stager.needs_identity(node=node):
             return False
         return self._try_cache_hit(node=node)
 

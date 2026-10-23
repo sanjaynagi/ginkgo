@@ -72,7 +72,9 @@ _KEY_FORMAT = 3
 Bumped when an entry written by an older version can no longer be trusted, so
 those entries miss once instead. Format 2 stores a dynamic task's returned
 expressions rather than the value they resolved to. Format 3 names each
-component's BLAKE3 digest ``digest`` rather than ``sha256``.
+component's BLAKE3 digest ``digest`` rather than ``sha256``, and identifies a
+remote input by its store's metadata (ETag and size, or a folder's listing
+digest) rather than by its downloaded bytes.
 """
 
 MISSING = object()
@@ -97,6 +99,28 @@ class DynamicTemplate:
     """
 
     template: Any
+
+
+def _remote_ref_component(ref: RemoteRef) -> dict[str, Any]:
+    """Return a remote input's key component: where it is, and what identifies its bytes.
+
+    Raises
+    ------
+    ValueError
+        If the ref's identity has not been resolved.
+    """
+    identity = ref.identity()
+    if identity is None:
+        raise ValueError(
+            f"The identity of remote input {ref.uri} must be resolved before its cache key is built."
+        )
+    return {
+        "bucket": ref.bucket,
+        "key": ref.key,
+        "scheme": ref.scheme,
+        "type": type(ref).__name__,
+        **identity,
+    }
 
 
 def key_components(meta: dict[str, Any]) -> dict[str, Any]:
@@ -1109,40 +1133,14 @@ class CacheStore:
             return self._hash_path_string_leaf(value=value)
         if is_untracked_annotation(annotation):
             return self._hash_path_string_leaf(value=value)
-        if isinstance(value, RemoteRef):
-            if value.version_id is None:
-                raise ValueError(
-                    "Remote inputs without version_id must be staged before cache lookup."
-                )
-            return {
-                "bucket": value.bucket,
-                "key": value.key,
-                "scheme": value.scheme,
-                "type": type(value).__name__,
-                "version_id": value.version_id,
-            }
-        # Fuse-streamed inputs carry their identity in a marker dict. Hash
-        # them the same as the equivalent ``RemoteRef`` so toggling
-        # streaming on/off does not perturb cache keys. The ``policy``
-        # field is deliberately excluded.
-        from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
+        # A fuse-streamed input's marker carries the ref it stands for, so it
+        # keys exactly as that ref does, whatever the access mode.
+        from ginkgo.remote.access.protocol import decode_fuse_ref, is_fuse_ref
 
-        if isinstance(value, dict) and value.get("__ginkgo_type__") in {
-            FUSE_FILE_TYPE,
-            FUSE_FOLDER_TYPE,
-        }:
-            type_name = (
-                "RemoteFileRef"
-                if value["__ginkgo_type__"] == FUSE_FILE_TYPE
-                else "RemoteFolderRef"
-            )
-            return {
-                "bucket": value["bucket"],
-                "key": value["key"],
-                "scheme": value["scheme"],
-                "type": type_name,
-                "version_id": value.get("version_id"),
-            }
+        if is_fuse_ref(value):
+            value, _policy = decode_fuse_ref(value)
+        if isinstance(value, RemoteRef):
+            return _remote_ref_component(value)
         if isinstance(value, SecretRef):
             return secret_identity(value)
 
@@ -1475,46 +1473,14 @@ class CacheStore:
         if is_untracked_annotation(annotation):
             return self._hash_path_string_leaf(value=value)
 
+        # A remote input is represented by its identity, as in the content
+        # key; a fuse marker by the ref it stands for.
+        from ginkgo.remote.access.protocol import decode_fuse_ref, is_fuse_ref
+
+        if is_fuse_ref(value):
+            value, _policy = decode_fuse_ref(value)
         if isinstance(value, RemoteRef):
-            if value.version_id is None:
-                return {
-                    "bucket": value.bucket,
-                    "key": value.key,
-                    "scheme": value.scheme,
-                    "type": type(value).__name__,
-                    "unversioned": True,
-                }
-            return {
-                "bucket": value.bucket,
-                "key": value.key,
-                "scheme": value.scheme,
-                "type": type(value).__name__,
-                "version_id": value.version_id,
-            }
-
-        # Fuse marker dicts stand in for a RemoteRef at stat-index time.
-        from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
-
-        if isinstance(value, dict) and value.get("__ginkgo_type__") in {
-            FUSE_FILE_TYPE,
-            FUSE_FOLDER_TYPE,
-        }:
-            type_name = (
-                "RemoteFileRef"
-                if value["__ginkgo_type__"] == FUSE_FILE_TYPE
-                else "RemoteFolderRef"
-            )
-            stat_entry = {
-                "bucket": value["bucket"],
-                "key": value["key"],
-                "scheme": value["scheme"],
-                "type": type_name,
-            }
-            if value.get("version_id") is None:
-                stat_entry["unversioned"] = True
-            else:
-                stat_entry["version_id"] = value["version_id"]
-            return stat_entry
+            return _remote_ref_component(value)
 
         if annotation is file or isinstance(value, file):
             path = Path(str(value)).resolve()

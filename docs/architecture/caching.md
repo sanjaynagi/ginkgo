@@ -319,7 +319,8 @@ following hold:
   the `core/types.py` predicates rather than repeating them).
 
 A remote reference never trips this: it is not path-like, and the cache keys
-it by version id (its `version` label), so a content change does invalidate the
+it by its version id or by the ETag and size (a folder: its listing digest) its
+store reports (its `version` label), so a content change does invalidate the
 consumer.
 
 Arguments are walked in step with their resolved values, so a path reaching the
