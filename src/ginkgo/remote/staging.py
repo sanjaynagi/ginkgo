@@ -37,7 +37,7 @@ from ginkgo.store.sqlite import MEMORY
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = [
-    "RemoteInputChangedError",
+    "RemoteIdentityError",
     "StagingCache",
     "StagingEntry",
     "StagingIndex",
@@ -45,8 +45,12 @@ __all__ = [
 ]
 
 
-class RemoteInputChangedError(RuntimeError):
-    """Raised when a remote input no longer matches the identity its cache key used."""
+class RemoteIdentityError(RuntimeError):
+    """Raised when a remote input cannot be identified, or no longer matches its identity.
+
+    Either way the input cannot be trusted to be what the cache key says, and
+    trying again within the run changes nothing, so it is never retried.
+    """
 
 
 def resolve_identity(*, ref: RemoteRef, backend: ObjectStore | None = None) -> RemoteRef:
@@ -70,7 +74,7 @@ def resolve_identity(*, ref: RemoteRef, backend: ObjectStore | None = None) -> R
 
     Raises
     ------
-    ValueError
+    RemoteIdentityError
         If the store reports no ETag for a file, so a change to it could not
         be detected.
     """
@@ -83,7 +87,7 @@ def resolve_identity(*, ref: RemoteRef, backend: ObjectStore | None = None) -> R
 
     meta = backend.head(bucket=ref.bucket, key=ref.key)
     if meta.etag is None:
-        raise ValueError(
+        raise RemoteIdentityError(
             f"The store reports no ETag for {ref.uri}, so a change to it cannot be "
             "detected. Pin it with remote_file(..., version_id=...)."
         )
@@ -321,7 +325,7 @@ class StagingCache:
         objects = backend.list_prefix(bucket=ref.bucket, prefix=ref.key)
         folder_digest = _folder_manifest_digest(uri=ref.uri, objects=objects)
         if ref.listing_digest is not None and folder_digest != ref.listing_digest:
-            raise RemoteInputChangedError(
+            raise RemoteIdentityError(
                 f"{ref.uri} changed after its cache key was computed. "
                 "Run again to use the new contents."
             )
@@ -496,7 +500,7 @@ class StagingCache:
                 dest_path=temp_path,
             )
             if ref.etag is not None and meta.etag is not None and meta.etag != ref.etag:
-                raise RemoteInputChangedError(
+                raise RemoteIdentityError(
                     f"{ref.uri} changed after its cache key was computed "
                     f"(ETag {ref.etag} became {meta.etag}). Run again to use the new version."
                 )

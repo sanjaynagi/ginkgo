@@ -23,8 +23,10 @@ Inputs annotated `file` or `folder` are hashed by content. A remote input
 (`remote_file`, `remote_folder`, or a remote URI under a `file`/`folder`
 annotation) is keyed by what its store reports instead, so checking the cache
 never downloads it: its `version_id` when pinned, otherwise its ETag and size
-(one HEAD) or, for a folder, the digest of its listing (one LIST). Re-uploading
-identical bytes changes the ETag on most stores, so it is a miss. A plain `str` (or
+(one HEAD) or, for a folder, the digest of its listing (one LIST). That
+identifies where the input is and what its store says about it, not its
+content: the same bytes copied to another URI miss, and so does a re-upload of
+identical bytes on stores whose ETag changes on every write. A plain `str` (or
 `Any`/`list[str]`/...) value that names an existing *file* and reads as a path
 (a separator or a file extension) is hashed by content too, whatever its
 annotation — everything else is hashed from its `repr`. See

@@ -82,8 +82,9 @@ and keys exactly as its ref does.
 
 Staging checks the bytes it fetches against that identity: a file whose ETag
 moved, or a folder whose listing changed, after the key was built fails with
-`RemoteInputChangedError` instead of running on bytes the key does not
-describe.
+`RemoteIdentityError` instead of running on bytes the key does not
+describe. So does an object whose store reports no ETag. Neither is retried:
+within a run the memoised identity stays the same, so only a new run helps.
 
 ## Mount lifecycle
 

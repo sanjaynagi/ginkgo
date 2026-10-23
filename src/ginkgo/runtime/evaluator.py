@@ -28,6 +28,7 @@ from ginkgo.plugins.registry import plugin_registry
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
+from ginkgo.remote.staging import RemoteIdentityError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.advisories import (
     access_fallback_notice,
@@ -1014,7 +1015,11 @@ class ConcurrentEvaluator:
                     self._remote_dispatch.capture_logs(node=node, handle=remote_handle)
                 on_done(node=node, completed_value=completed_value)
             except BaseException as exc:
-                self._handle_task_exception(node=node, exc=exc)
+                # A remote input that cannot be identified, or changed under
+                # its key, fails every attempt in this run the same way.
+                self._handle_task_exception(
+                    node=node, exc=exc, retryable=not isinstance(exc, RemoteIdentityError)
+                )
 
         if self._failure is None:
             self._finalize_dynamic_nodes()

@@ -35,6 +35,7 @@ from ginkgo.core.remote import (
 )
 from ginkgo.core.types import (
     PLAIN_SCALAR_TYPES,
+    annotation_includes,
     file,
     folder,
     plain_data_strings,
@@ -69,7 +70,10 @@ def remote_value_needs_identity(*, annotation: Any, value: Any) -> bool:
     if isinstance(value, RemoteRef):
         return value.identity() is None
     if isinstance(value, str):
-        return (annotation is file or annotation is folder) and is_remote_uri(value)
+        return is_remote_uri(value) and (
+            annotation_includes(annotation=annotation, expected=file)
+            or annotation_includes(annotation=annotation, expected=folder)
+        )
 
     item_annotation, value_annotation = _element_annotations(annotation)
     if isinstance(value, list | tuple):
@@ -271,7 +275,8 @@ class RemoteStager:
         if isinstance(value, RemoteRef):
             return self._resolve_ref(ref=value)
         if isinstance(value, str):
-            ref = remote_file(value) if annotation is file else remote_folder(value)
+            names_file = annotation_includes(annotation=annotation, expected=file)
+            ref = remote_file(value) if names_file else remote_folder(value)
             return self._resolve_ref(ref=ref)
 
         item_annotation, value_annotation = _element_annotations(annotation)

@@ -11,7 +11,7 @@ import pytest
 from ginkgo import evaluate, file, folder, task
 from ginkgo.core.remote import remote_file, remote_folder
 from ginkgo.remote.backend import RemoteObjectMeta
-from ginkgo.remote.staging import RemoteInputChangedError, StagingCache
+from ginkgo.remote.staging import RemoteIdentityError, StagingCache
 from tests.conftest import EventCollector, make_download_backend
 
 
@@ -293,6 +293,18 @@ class TestRemoteFileEvaluator:
 # ---------------------------------------------------------------------------
 
 
+@task(retries=2)
+def read_file_content_with_retries(*, path: file) -> str:
+    """Read a file, retrying a failed attempt twice."""
+    return Path(str(path)).read_text(encoding="utf-8").strip()
+
+
+@task()
+def read_optional_file(*, path: file | None) -> str:
+    """Read a file the caller may leave out."""
+    return "" if path is None else Path(str(path)).read_text(encoding="utf-8").strip()
+
+
 @task()
 def count_folder_files(*, path: folder) -> int:
     """Count the files a folder holds."""
@@ -418,7 +430,7 @@ class TestRemoteInputIdentity:
 
         store.download = download_after_an_overwrite
 
-        with pytest.raises(RemoteInputChangedError, match="changed after its cache key"):
+        with pytest.raises(RemoteIdentityError, match="changed after its cache key"):
             _evaluate_against(
                 store,
                 staging_root=tmp_path / "staging",
@@ -429,7 +441,7 @@ class TestRemoteInputIdentity:
     def test_an_object_without_an_etag_is_refused(self, tmp_path) -> None:
         store = _CountingStore({"data/a.txt": (b"alpha", None)})
 
-        with pytest.raises(ValueError, match="version_id"):
+        with pytest.raises(RemoteIdentityError, match="version_id"):
             _evaluate_against(
                 store,
                 staging_root=tmp_path / "staging",
@@ -449,3 +461,37 @@ class TestRemoteInputIdentity:
         )
 
         assert store.heads == 1
+
+    def test_a_changed_input_is_not_retried(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", "e1")})
+        real_download = store.download
+
+        def download_after_an_overwrite(*, bucket, key, dest_path):
+            store.objects[key] = (b"beta", "e2")
+            return real_download(bucket=bucket, key=key, dest_path=dest_path)
+
+        store.download = download_after_an_overwrite
+
+        with pytest.raises(RemoteIdentityError):
+            _evaluate_against(
+                store,
+                staging_root=tmp_path / "staging",
+                expr=read_file_content_with_retries(path=remote_file("s3://bucket/data/a.txt")),
+                collector=EventCollector(),
+            )
+
+        assert store.downloads == 1
+
+    def test_a_uri_under_an_optional_file_annotation_is_keyed_by_its_store(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", "e1")})
+        expr = read_optional_file(path="s3://bucket/data/a.txt")
+        _evaluate_against(
+            store, staging_root=tmp_path / "staging", expr=expr, collector=EventCollector()
+        )
+
+        store.objects["data/a.txt"] = (b"beta", "e2")
+        result = _evaluate_against(
+            store, staging_root=tmp_path / "staging", expr=expr, collector=EventCollector()
+        )
+
+        assert result == "beta"
