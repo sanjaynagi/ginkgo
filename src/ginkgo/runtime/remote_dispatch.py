@@ -20,7 +20,13 @@ from ginkgo.runtime.remote_executor import (
 )
 
 if TYPE_CHECKING:
+    from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
     from ginkgo.runtime.evaluator import NodeRun
+
+# Payload keys that name paths on the driver's filesystem. A remote worker
+# runs elsewhere, so it writes task output to its own streams and keeps its
+# own transport directory.
+_DRIVER_LOCAL_KEYS = ("stdout_path", "stderr_path", "transport_dir")
 
 
 @dataclass(kw_only=True)
@@ -68,6 +74,8 @@ class RemoteDispatchManager:
         """Submit one task to a named executor and return its watcher future."""
         code_bundle = self._ensure_code_bundle(executor_name=executor_name)
         self._ensure_artifact_store()
+        for key in _DRIVER_LOCAL_KEYS:
+            payload.pop(key, None)
         payload["resources"] = {
             "threads": node.threads,
             "memory_gb": node.memory_gb,
@@ -108,6 +116,12 @@ class RemoteDispatchManager:
         self.stats.record_submit(executor=executor_name)
         self._handles[node.node_id] = handle
         return watcher.submit(self._poll_job, handle, node=node)
+
+    @property
+    def artifact_store(self) -> RemoteArtifactStore | None:
+        """The shared remote artifact store, or ``None`` when none is configured."""
+        self._ensure_artifact_store()
+        return self._artifact_store
 
     def handle_for(self, node_id: int) -> RemoteJobHandle | None:
         """Return the in-flight job handle for a node, if any."""

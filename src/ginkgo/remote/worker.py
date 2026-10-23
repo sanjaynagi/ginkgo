@@ -15,6 +15,10 @@ import base64
 import json
 import os
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 
 
 def main() -> None:
@@ -63,6 +67,7 @@ def run_worker_payload(payload: dict) -> dict:
     code_bundle = payload.pop("code_bundle", None)
     remote_artifact_config = payload.pop("remote_artifact_store", None)
     output_param_entries = payload.pop("output_param_entries", None)
+    payload["transport_dir"] = str(_scratch_root() / "ginkgo-transport")
 
     mounted_access = None
     try:
@@ -73,8 +78,10 @@ def run_worker_payload(payload: dict) -> dict:
 
         # Hydrate file / folder inputs that were uploaded to the shared
         # remote artifact store on the client side.
+        remote_store = None
         if remote_artifact_config is not None:
-            _hydrate_remote_inputs(payload, config=remote_artifact_config)
+            remote_store = _worker_remote_store(remote_artifact_config)
+            _hydrate_remote_inputs(payload, remote_store=remote_store)
 
         # Turn declared Out[...] markers into real, writable scratch paths
         # before the task body runs — see stage_output_params_for_dispatch.
@@ -86,7 +93,9 @@ def run_worker_payload(payload: dict) -> dict:
 
         from ginkgo.runtime.worker import run_task
 
-        result = run_task(payload)
+        # Large values are read from and written to the shared store directly,
+        # since nothing in the pod's transport directory reaches the client.
+        result = run_task(payload, artifact_store=remote_store)
 
         # Fold remote-input-access stats into the envelope for provenance.
         if mounted_access is not None and result.get("ok"):
@@ -95,21 +104,19 @@ def run_worker_payload(payload: dict) -> dict:
         # Publish declared Out[...] outputs the task body wrote back to the
         # shared artifact store so the client can restore them at their
         # declared driver paths.
-        if output_param_entries and result.get("ok") and remote_artifact_config is not None:
-            _stage_output_params(
-                result, entries=output_param_entries, config=remote_artifact_config
-            )
+        if output_param_entries and result.get("ok") and remote_store is not None:
+            _stage_output_params(result, entries=output_param_entries, remote_store=remote_store)
 
         # Publish produced file/folder outputs back to the shared artifact
         # store so the client can hydrate them. Skipped for dynamic results
         # and failures — both contain no encoded file/folder leaves.
         if (
-            remote_artifact_config is not None
+            remote_store is not None
             and result.get("ok")
             and result.get("result_encoding") == "encoded"
         ):
             _stage_remote_outputs(
-                result, config=remote_artifact_config, output_param_entries=output_param_entries
+                result, remote_store=remote_store, output_param_entries=output_param_entries
             )
     except Exception as exc:
         if mounted_access is not None:
@@ -168,26 +175,15 @@ def _scratch_root():
 def _stage_remote_outputs(
     result: dict,
     *,
-    config: dict[str, str],
+    remote_store: RemoteArtifactStore,
     output_param_entries: list[dict[str, str]] | None = None,
 ) -> None:
     """Upload encoded file/folder outputs to the shared remote store."""
-    from ginkgo.runtime.artifacts.remote_arg_transfer import (
-        build_worker_remote_store,
-        stage_result_for_remote,
-    )
+    from ginkgo.runtime.artifacts.remote_arg_transfer import stage_result_for_remote
 
-    root = _scratch_root()
-    local_root = root / "ginkgo-remote-cas"
-    remote_store = build_worker_remote_store(
-        scheme=config["scheme"],
-        bucket=config["bucket"],
-        prefix=config["prefix"],
-        local_root=local_root,
-    )
     output_param_paths = None
     if output_param_entries:
-        scratch_dir = root / "ginkgo-outputs"
+        scratch_dir = _scratch_root() / "ginkgo-outputs"
         output_param_paths = {
             str(scratch_dir / entry["relative"]): entry["original"]
             for entry in output_param_entries
@@ -222,48 +218,36 @@ def _remove_output_param_scratch(*, entries: list[dict[str, str]]) -> None:
 
 
 def _stage_output_params(
-    result: dict, *, entries: list[dict[str, str]], config: dict[str, str]
+    result: dict, *, entries: list[dict[str, str]], remote_store: RemoteArtifactStore
 ) -> None:
     """Upload each declared ``Out[...]`` output the task body wrote."""
-    from ginkgo.runtime.artifacts.remote_arg_transfer import (
-        build_worker_remote_store,
-        stage_output_param_results,
-    )
+    from ginkgo.runtime.artifacts.remote_arg_transfer import stage_output_param_results
 
-    root = _scratch_root()
-    local_root = root / "ginkgo-remote-cas"
-    scratch_dir = root / "ginkgo-outputs"
-    remote_store = build_worker_remote_store(
-        scheme=config["scheme"],
-        bucket=config["bucket"],
-        prefix=config["prefix"],
-        local_root=local_root,
-    )
     result["output_param_results"] = stage_output_param_results(
-        entries=entries, remote_store=remote_store, scratch_dir=scratch_dir
+        entries=entries, remote_store=remote_store, scratch_dir=_scratch_root() / "ginkgo-outputs"
     )
 
 
-def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:
+def _hydrate_remote_inputs(payload: dict, *, remote_store: RemoteArtifactStore) -> None:
     """Download remote-staged ``file`` / ``folder`` inputs into the pod."""
-    from ginkgo.runtime.artifacts.remote_arg_transfer import (
-        build_worker_remote_store,
-        hydrate_args_from_remote,
-    )
+    from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_args_from_remote
 
-    root = _scratch_root()
-    local_root = root / "ginkgo-remote-cas"
-    scratch_dir = root / "ginkgo-inputs"
-    remote_store = build_worker_remote_store(
-        scheme=config["scheme"],
-        bucket=config["bucket"],
-        prefix=config["prefix"],
-        local_root=local_root,
-    )
     payload["args"] = hydrate_args_from_remote(
         args=payload.get("args", {}),
         remote_store=remote_store,
-        scratch_dir=scratch_dir,
+        scratch_dir=_scratch_root() / "ginkgo-inputs",
+    )
+
+
+def _worker_remote_store(config: dict[str, str]) -> RemoteArtifactStore:
+    """Build the shared artifact store, with its local CAS in the pod's scratch."""
+    from ginkgo.runtime.artifacts.remote_arg_transfer import build_worker_remote_store
+
+    return build_worker_remote_store(
+        scheme=config["scheme"],
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        local_root=_scratch_root() / "ginkgo-remote-cas",
     )
 
 

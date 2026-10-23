@@ -19,4 +19,4 @@ def test_settings_map_onto_the_executor_with_defaults() -> None:
 
     assert isinstance(executor, KubernetesExecutor)
     assert (executor.image, executor.namespace) == ("reg/worker:1", "ml")
-    assert executor.backoff_limit == 2
+    assert executor.backoff_limit == 0

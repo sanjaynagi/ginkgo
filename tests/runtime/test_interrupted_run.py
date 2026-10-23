@@ -69,6 +69,64 @@ print("handled" if seen else "swallowed")
 """
 
 
+#: Runs one remote task whose job never finishes, SIGTERMs itself half a
+#: second in, and prints how long the scheduler took to cancel the job.
+_REMOTE_CANCEL_SCRIPT = """
+import os
+import signal
+import threading
+import time
+
+from ginkgo import task
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
+from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobResult, RemoteJobState
+
+signalled_at = []
+cancelled_at = []
+
+
+class Handle:
+    job_id = "job-1"
+
+    def state(self):
+        return RemoteJobState.CANCELLED if cancelled_at else RemoteJobState.RUNNING
+
+    def result(self):
+        return RemoteJobResult(state=self.state(), payload=None)
+
+    def cancel(self):
+        cancelled_at.append(time.monotonic())
+
+    def logs_tail(self, *, lines=100):
+        return ""
+
+
+class NeverFinishes(RemoteExecutor):
+    def submit(self, *, attempt):
+        return Handle()
+
+
+@task(remote=True)
+def forever() -> int:
+    return 1
+
+
+def interrupt():
+    signalled_at.append(time.monotonic())
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+threading.Timer(0.5, interrupt).start()
+registry = ExecutorRegistry.for_executor(NeverFinishes(), name="remote")
+try:
+    ConcurrentEvaluator(jobs=1, executor_registry=registry).evaluate(forever())
+except KeyboardInterrupt:
+    pass
+print(f"{cancelled_at[0] - signalled_at[0]:.2f}")
+"""
+
+
 def _write_project(root: Path, *, sleep_seconds: int = 3) -> None:
     """Write a workspace whose one workflow runs six tasks of *sleep_seconds* each."""
     (root / "ginkgo.toml").write_text('[project]\nname = "interrupt"\n', encoding="utf-8")
@@ -148,6 +206,22 @@ class TestCpSatSignalHandling:
         )
 
         assert seen == [False]
+
+
+class TestRemoteJobCancellation:
+    """SIGTERM cancels remote jobs promptly, not when some job next finishes."""
+
+    def test_sigterm_cancels_an_in_flight_remote_job(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(_REMOTE_CANCEL_SCRIPT)],
+            check=False,
+            text=True,
+            capture_output=True,
+            cwd=tmp_path,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert float(result.stdout.strip()) < 2.0
 
 
 class TestCancelledRunSummary:

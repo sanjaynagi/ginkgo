@@ -11,6 +11,9 @@ The current implementation supports:
 - parquet-first DataFrame transport with pickle fallback
 
 The same codec layer is used for both task transport and cache persistence.
+Large values normally go to the task's transport directory. For a remote task
+both sides pass the shared remote artifact store instead, since a pod cannot
+read the driver's transport directory or the driver the pod's.
 
 Only exact `list`, `tuple` and `dict` values, and exact scalars, are encoded
 structurally; a subclass (`np.float64`, a `namedtuple`, a `defaultdict`) is
