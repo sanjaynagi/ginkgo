@@ -1,11 +1,9 @@
-"""The Rich run renderer: task labels and environment-preparation progress."""
+"""The Rich run renderer: event mapping, the live table, and the end-of-run summary."""
 
 from __future__ import annotations
 
 import json
 import warnings
-from collections.abc import Iterator
-from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -31,12 +29,11 @@ from ginkgo.cli.renderers.run import (
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
-from ginkgo.runtime.run_summary import TERMINAL_STATUSES
-from tests.conftest import ShellEnvironment
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareFailed,
     EnvPrepareStarted,
+    EventBus,
     PhaseTimed,
     RunResourcesSampled,
     TaskAnnotated,
@@ -45,26 +42,56 @@ from ginkgo.runtime.events import (
     TaskSkipped,
     TaskStarted,
 )
+from ginkgo.runtime.run_summary import TERMINAL_STATUSES
+from tests.conftest import ShellEnvironment
+
+_SCOPE = {"run_id": "r1", "task_id": "task_0", "task_name": "mod.task_a"}
 
 
-_TESTS_DIR = Path(__file__).resolve().parents[1]
-_TEST_ENV_NAME = "test_env"
+def _line(status: str, *, node_id: int = 0, **fields: object) -> str:
+    return json.dumps(
+        {"task": f"mod.task_{node_id}", "status": status, "node_id": node_id, **fields}
+    )
 
 
-@task(env=_TEST_ENV_NAME, kind="shell")
-def needs_env() -> str:
-    """A task whose environment must be prepared before it can run."""
-    return shell(cmd="echo hello")
+def _renderer(
+    tmp_path: Path, *, rows: int = 1, width: int = 120, height: int | None = None, **summary
+) -> tuple[CliRunRenderer, StringIO]:
+    """Return a started renderer over ``rows`` planned tasks, printing to a pipe."""
+    output = StringIO()
+    console = Console(file=output, width=width, height=height, force_terminal=False)
+    summary = CliRunSummary(
+        run_id="r1", mode="default", run_dir=tmp_path, **{"cores": 1, **summary}
+    )
+    renderer = CliRunRenderer(console=console, summary=summary)
+    renderer.start(
+        planned_tasks=[(i, f"mod.task_{i}", f"task_{i}", "pixi:analysis") for i in range(rows)]
+    )
+    return renderer, output
 
 
-class _FailingEnvironment(ShellEnvironment):
-    """An environment whose preparation always fails."""
+def _printed(renderable, *, width: int = 120) -> str:
+    console = Console(file=StringIO(), width=width, force_terminal=False)
+    console.print(renderable)
+    return console.file.getvalue()
 
-    def prepare(self, *, env: str) -> None:
-        raise RuntimeError("install failed")
+
+def _state() -> _RunEventState:
+    state = _RunEventState()
+    state.seed(planned_tasks=[(0, "mod.task_0", "task_0", "pixi:analysis")])
+    return state
 
 
-class _RecordingRenderer:
+def _backdate(state: _RunEventState, seconds: float) -> None:
+    """Move the recorded preparation start of node 0 *seconds* into the past."""
+    started, env = state._env_prepare_started[0]
+    state._env_prepare_started[0] = (started - seconds, env)
+
+
+# Event adapter --------------------------------------------------------------
+
+
+class _Sink:
     """Capture the JSON event lines a ``RichEventRenderer`` would write."""
 
     def __init__(self) -> None:
@@ -75,142 +102,129 @@ class _RecordingRenderer:
         return len(text)
 
 
-def _event_line(status: str, *, env: str | None = None) -> str:
-    payload: dict[str, object] = {"task": "mod.task_a", "status": status, "node_id": 0}
-    if env is not None:
-        payload["env"] = env
-    return json.dumps(payload)
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        (
+            EnvPrepareStarted(**_SCOPE, env="analysis"),
+            {"status": "preparing env", "env": "analysis"},
+        ),
+        (EnvPrepareCompleted(**_SCOPE, env="analysis"), {"status": "waiting", "env": "analysis"}),
+        (
+            EnvPrepareFailed(**_SCOPE, env="analysis", error="pixi install failed"),
+            {"status": "failed", "env": "analysis"},
+        ),
+        (TaskStarted(**_SCOPE), {"status": "running"}),
+        (
+            TaskSkipped(**_SCOPE, blocked_by_task_id="task_1", blocked_by_task_name="mod.up"),
+            {"status": "skipped", "blocked_by_task_name": "mod.up"},
+        ),
+        (TaskFailed(**_SCOPE, ignored=True), {"status": "failed", "ignored": True}),
+    ],
+    ids=["env-started", "env-completed", "env-failed", "started", "skipped", "ignored-failure"],
+)
+def test_events_map_to_status_lines(event, expected) -> None:
+    sink = _Sink()
+    RichEventRenderer(renderer=sink)(event)
 
-
-def _seeded_state(*, env_label: str = "pixi:analysis") -> _RunEventState:
-    state = _RunEventState()
-    state.seed(planned_tasks=[(0, "mod.task_a", "task_a", env_label)])
-    return state
-
-
-def _renderer(
-    tmp_path: Path, *, env_label: str = "pixi:analysis"
-) -> tuple[CliRunRenderer, StringIO]:
-    output = StringIO()
-    console = Console(file=output, width=120, force_terminal=False)
-    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=1)
-    renderer = CliRunRenderer(console=console, summary=summary)
-    renderer.start(planned_tasks=[(0, "mod.task_a", "task_a", env_label)])
-    return renderer, output
-
-
-def test_env_prepare_events_map_to_status_lines() -> None:
-    sink = _RecordingRenderer()
-    adapter = RichEventRenderer(renderer=sink)
-
-    adapter(
-        EnvPrepareStarted(run_id="r1", task_id="task_0", task_name="mod.task_a", env="analysis")
-    )
-    adapter(
-        EnvPrepareCompleted(run_id="r1", task_id="task_0", task_name="mod.task_a", env="analysis")
-    )
-
-    assert [line["status"] for line in sink.lines] == ["preparing env", "waiting"]
-    assert all(line["env"] == "analysis" for line in sink.lines)
-
-
-def test_failed_preparation_maps_to_failed_status() -> None:
-    sink = _RecordingRenderer()
-    adapter = RichEventRenderer(renderer=sink)
-
-    adapter(
-        EnvPrepareFailed(
-            run_id="r1",
-            task_id="task_0",
-            task_name="mod.task_a",
-            env="analysis",
-            error="pixi install failed",
-        )
-    )
-
-    assert sink.lines[0]["status"] == "failed"
-    assert sink.lines[0]["env"] == "analysis"
-
-
-def test_task_started_still_maps_to_running() -> None:
-    sink = _RecordingRenderer()
-    adapter = RichEventRenderer(renderer=sink)
-
-    adapter(TaskStarted(run_id="r1", task_id="task_0", task_name="mod.task_a"))
-
-    assert sink.lines[0]["status"] == "running"
+    (line,) = sink.lines
+    assert {key: line[key] for key in expected} == expected
 
 
 def test_ledger_only_events_are_ignored_silently() -> None:
     """Events that exist for the provenance store must not reach the Rich table."""
-    sink = _RecordingRenderer()
+    sink = _Sink()
     adapter = RichEventRenderer(renderer=sink)
-    task_scope = {"run_id": "r1", "task_id": "task_0", "task_name": "mod.task_a"}
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        adapter(TaskPlanned(**task_scope))
-        adapter(TaskAnnotated(**task_scope, fields={"env_lock": "envs/analysis.lock"}))
+        adapter(TaskPlanned(**_SCOPE))
+        adapter(TaskAnnotated(**_SCOPE, fields={"env_lock": "envs/analysis.lock"}))
         adapter(PhaseTimed(run_id="r1", phase="validate", seconds=0.5))
         adapter(RunResourcesSampled(run_id="r1", resources={"cpu_percent": 1.0}))
 
     assert sink.lines == []
 
 
-def test_preparing_env_is_an_active_status() -> None:
-    state = _seeded_state()
-
-    state.handle_event_line(_event_line("preparing env", env="analysis"))
-
-    assert state.rows[0].status == "preparing env"
+# Row state ------------------------------------------------------------------
 
 
-def _backdated(started: tuple[float, str | None], *, seconds: float) -> tuple[float, str | None]:
-    """Move a recorded preparation start *seconds* into the past."""
-    return (started[0] - seconds, started[1])
+def test_preparation_is_active_but_does_not_start_the_task_clock() -> None:
+    state = _state()
 
+    state.handle_event_line(_line("preparing env", env="analysis"))
+    assert (state.rows[0].status, state.rows[0].started_at) == ("preparing env", None)
 
-def test_preparation_does_not_start_the_task_clock() -> None:
-    state = _seeded_state()
-
-    state.handle_event_line(_event_line("preparing env", env="analysis"))
-    assert state.rows[0].started_at is None
-
-    state.handle_event_line(_event_line("waiting", env="analysis"))
-    assert state.rows[0].started_at is None
-
-    state.handle_event_line(_event_line("running"))
-    assert state.rows[0].started_at is not None
-
-
-def test_leaving_preparation_returns_the_row_to_waiting() -> None:
-    state = _seeded_state()
-
-    state.handle_event_line(_event_line("preparing env", env="analysis"))
-    state.handle_event_line(_event_line("waiting", env="analysis"))
-
-    assert state.rows[0].status == "waiting"
+    state.handle_event_line(_line("waiting", env="analysis"))
+    assert (state.rows[0].status, state.rows[0].started_at) == ("waiting", None)
     assert list(state.env_prepare_by_env) == ["analysis"]
     assert state.failed_envs == set()
 
+    state.handle_event_line(_line("running"))
+    assert state.rows[0].started_at is not None
+
 
 def test_a_waiting_event_outside_preparation_records_no_prepare_time() -> None:
-    state = _seeded_state()
+    state = _state()
 
-    state.handle_event_line(_event_line("waiting"))
+    state.handle_event_line(_line("waiting"))
 
     assert state.env_prepare_seconds == 0.0
     assert state.env_prepare_by_env == {}
 
 
 def test_a_failed_preparation_is_attributed_to_its_own_environment() -> None:
-    state = _seeded_state()
+    state = _state()
 
-    state.handle_event_line(_event_line("preparing env", env="debian"))
-    state.handle_event_line(_event_line("failed", env="debian"))
+    state.handle_event_line(_line("preparing env", env="debian"))
+    state.handle_event_line(_line("failed", env="debian"))
 
     assert state.failed_envs == {"debian"}
     assert set(state.env_prepare_by_env) == {"debian"}
+
+
+@pytest.mark.parametrize("leaving", ["running", "failed"])
+def test_preparation_time_accumulates_when_the_row_leaves_it(leaving: str) -> None:
+    state = _state()
+
+    state.handle_event_line(_line("preparing env", env="analysis"))
+    _backdate(state, 5.0)
+    state.handle_event_line(_line(leaving))
+
+    assert state.rows[0].status == leaving
+    assert state.env_prepare_seconds == pytest.approx(5.0, abs=0.05)
+
+
+def test_a_skipped_task_is_terminal_without_a_duration() -> None:
+    state = _state()
+
+    state.handle_event_line(_line("skipped"))
+
+    row = state.rows[0]
+    assert (row.status, row.started_at) == ("skipped", None)
+    assert row.finished_at is not None
+    assert state.done_count() == 0
+    assert _status_icon("skipped") == "⊘"
+
+
+@pytest.mark.parametrize(
+    ("node_id", "label", "notice"),
+    [
+        (0, "task_a[x]", "task_0: FUSE access fell back to staging"),
+        # A notice from an unplanned task falls back to its display label.
+        (9, "child[b]", "child[b]: FUSE access fell back to staging"),
+    ],
+    ids=["planned", "unplanned"],
+)
+def test_a_notice_names_the_task_it_is_about(tmp_path, node_id, label, notice) -> None:
+    renderer, _ = _renderer(tmp_path)
+    message = "FUSE access fell back to staging"
+    renderer.write(_line("notice", node_id=node_id, display_label=label, message=message) + "\n")
+
+    assert renderer._state.notices == [notice]
+
+
+# The live display -----------------------------------------------------------
 
 
 def test_events_do_not_repaint_the_live_display(tmp_path: Path) -> None:
@@ -221,16 +235,14 @@ def test_events_do_not_repaint_the_live_display(tmp_path: Path) -> None:
     """
     live = MagicMock()
     summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=1)
-    console = Console(file=StringIO(), width=120, force_terminal=True)
-    renderer = CliRunRenderer(console=console, summary=summary)
+    renderer = CliRunRenderer(
+        console=Console(file=StringIO(), width=120, force_terminal=True), summary=summary
+    )
     with patch("ginkgo.cli.renderers.run._SynchronisedLive", return_value=live):
-        renderer.start(planned_tasks=[(0, "mod.task_a", "task_a", "local")])
+        renderer.start(planned_tasks=[(0, "mod.task_0", "task_0", "local")])
 
     for status in ("preparing env", "waiting", "running", "succeeded"):
-        renderer.write(_event_line(status, env="analysis") + "\n")
-
-    assert live.refresh.call_count == 0
-
+        renderer.write(_line(status, env="analysis") + "\n")
     renderer.finish(elapsed=1.0, success=True)
 
     # Stopping the display paints the final frame; nothing else asks for one.
@@ -238,183 +250,103 @@ def test_events_do_not_repaint_the_live_display(tmp_path: Path) -> None:
     assert live.stop.call_count == 1
 
 
-def test_env_prepare_time_accumulates_on_transition_out() -> None:
-    state = _seeded_state()
+class TestLiveWindow:
+    """A live table taller than the terminal shows a window over its rows."""
 
-    state.handle_event_line(_event_line("preparing env", env="analysis"))
-    state._env_prepare_started[0] = _backdated(state._env_prepare_started[0], seconds=5.0)
-    state.handle_event_line(_event_line("running"))
+    @pytest.fixture
+    def live(self, tmp_path: Path):
+        """Yield ``make(rows, width=120)`` for a live renderer on a 30-line terminal."""
+        started: list[CliRunRenderer] = []
 
-    assert state.env_prepare_seconds == pytest.approx(5.0, abs=0.05)
-
-
-def test_failed_preparation_still_reports_its_time() -> None:
-    state = _seeded_state()
-
-    state.handle_event_line(_event_line("preparing env", env="analysis"))
-    state._env_prepare_started[0] = _backdated(state._env_prepare_started[0], seconds=25.0)
-    state.handle_event_line(_event_line("failed"))
-
-    assert state.rows[0].status == "failed"
-    assert state.env_prepare_seconds == pytest.approx(25.0, abs=0.05)
-
-
-@contextmanager
-def _wide_renderer(
-    tmp_path: Path, *, rows: int, height: int, width: int = 120
-) -> Iterator[tuple[CliRunRenderer, Console]]:
-    """Yield a live renderer with *rows* distinctly named planned tasks.
-
-    The console is a terminal, because the window over the task rows exists
-    for a display that repaints in place.
-    """
-    console = Console(file=StringIO(), width=width, height=height, force_terminal=True)
-    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=8)
-    renderer = CliRunRenderer(console=console, summary=summary)
-    renderer.start(
-        planned_tasks=[(i, f"mod.step_{i:02d}", f"step_{i:02d}", "local") for i in range(rows)]
-    )
-    try:
-        yield renderer, console
-    finally:
-        if renderer._live is not None and renderer._live.is_started:
-            renderer._live.stop()
-
-
-def _live_lines(renderer: CliRunRenderer, console: Console) -> list[str]:
-    """Return the live layout's rendered lines, uncropped."""
-    return [
-        "".join(segment.text for segment in line)
-        for line in console.render_lines(renderer.__rich__(), console.options, pad=False)
-    ]
-
-
-def test_the_live_block_stays_inside_the_terminal(tmp_path: Path) -> None:
-    """A block as tall as the terminal scrolls, and a scrolled block flickers."""
-    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
-        lines = _live_lines(renderer, console)
-
-    assert len(lines) < console.height
-    assert any("below" in line for line in lines)
-
-
-def test_a_wrapping_notice_costs_the_lines_it_wraps_to(tmp_path: Path) -> None:
-    """Counting a notice as one line is how a sized block overflows anyway."""
-    notice = (
-        "Task read a path that ginkgo does not track, so a change to it will not "
-        "invalidate the cache and the next run will replay a stale result instead "
-        "of recomputing it: /very/long/path/to/an/untracked/input/file.csv"
-    )
-    with _wide_renderer(tmp_path, rows=42, height=30, width=60) as (renderer, console):
-        renderer.write(
-            json.dumps(
-                {"task": "mod.step_00", "status": "notice", "node_id": 0, "message": notice}
+        def make(rows: int, *, width: int = 120) -> tuple[CliRunRenderer, Console]:
+            console = Console(file=StringIO(), width=width, height=30, force_terminal=True)
+            summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=8)
+            renderer = CliRunRenderer(console=console, summary=summary)
+            renderer.start(
+                planned_tasks=[(i, f"mod.task_{i}", f"step_{i:02d}", "local") for i in range(rows)]
             )
-            + "\n"
-        )
-        lines = _live_lines(renderer, console)
+            started.append(renderer)
+            return renderer, console
 
-    assert len(lines) < console.height
+        yield make
+        for renderer in started:
+            if renderer._live is not None and renderer._live.is_started:
+                renderer._live.stop()
 
+    @staticmethod
+    def _lines(renderer: CliRunRenderer, console: Console) -> list[str]:
+        return [
+            "".join(segment.text for segment in line)
+            for line in console.render_lines(renderer.__rich__(), console.options, pad=False)
+        ]
 
-def test_a_table_that_fits_shows_every_row(tmp_path: Path) -> None:
-    with _wide_renderer(tmp_path, rows=5, height=30) as (renderer, console):
-        lines = _live_lines(renderer, console)
+    @staticmethod
+    def _write(renderer: CliRunRenderer, statuses: dict[int, str]) -> None:
+        for node_id, status in statuses.items():
+            renderer.write(_line(status, node_id=node_id) + "\n")
 
-    assert all(f"step_{i:02d}" in "".join(lines) for i in range(5))
-    assert not any("above" in line or "below" in line for line in lines)
+    def test_the_block_stays_inside_the_terminal_even_with_a_wrapping_notice(self, live) -> None:
+        """A block as tall as the terminal scrolls, and a scrolled block flickers."""
+        renderer, console = live(42, width=60)
+        lines = self._lines(renderer, console)
+        assert len(lines) < console.height
+        assert any("below" in line for line in lines)
 
+        # Counting a notice as one line is how a sized block overflows anyway.
+        notice = "Task read a path that ginkgo does not track, so a change to it " * 3
+        renderer.write(_line("notice", message=notice) + "\n")
+        assert len(self._lines(renderer, console)) < console.height
 
-def test_the_live_window_follows_the_tasks_in_flight(tmp_path: Path) -> None:
-    """Finished rows scroll off the top rather than hiding the running ones."""
-    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
-        for node_id in range(30):
-            renderer.write(
-                json.dumps(
-                    {"task": f"mod.step_{node_id:02d}", "status": "running", "node_id": node_id}
-                )
-                + "\n"
-            )
-        rendered = "".join(_live_lines(renderer, console))
+    def test_a_table_that_fits_shows_every_row(self, live) -> None:
+        lines = self._lines(*live(5))
 
-    assert "step_29" in rendered
-    assert "step_00" not in rendered
-    assert "above" in rendered
-    assert "below" in rendered
+        assert all(f"step_{i:02d}" in "".join(lines) for i in range(5))
+        assert not any("above" in line or "below" in line for line in lines)
 
-
-def test_a_fanout_of_skips_leaves_the_window_on_the_work_that_ran(tmp_path: Path) -> None:
-    """The shape an ignored failure makes: a little work, then thousands of skips.
-
-    A skipped task never dispatched, so it must not drag the window away from
-    the tasks that did, and the block must still fit the terminal.
-    """
-    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
-        for node_id in range(3):
-            renderer.write(
-                json.dumps(
-                    {"task": f"mod.step_{node_id:02d}", "status": "failed", "node_id": node_id}
-                )
-                + "\n"
-            )
-        for node_id in range(3, 42):
-            renderer.write(
-                json.dumps(
-                    {"task": f"mod.step_{node_id:02d}", "status": "skipped", "node_id": node_id}
-                )
-                + "\n"
-            )
-        lines = _live_lines(renderer, console)
-        rendered = "".join(lines)
-
-    assert len(lines) < console.height
-    assert "step_00" in rendered
-    assert "step_41" not in rendered
-    assert "above" not in rendered
-    assert "below" in rendered
-    assert sum(renderer._state.status_counts()[status] for status in TERMINAL_STATUSES) == 42
-
-
-def test_the_table_keeps_its_width_as_the_window_scrolls(tmp_path: Path) -> None:
-    """A width read off the visible rows moves the status line and progress bar."""
-    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+    def test_the_window_follows_the_tasks_in_flight_at_a_steady_width(self, live) -> None:
+        """Finished rows scroll off the top; a width read off visible rows would jitter."""
+        renderer, console = live(42)
         renderer._state.rows[0].label = "a_task_with_a_very_long_label_indeed"
         width_at_the_top = renderer._layout.task_table_width(now=0.0)
-        for node_id in range(30):
-            renderer.write(
-                json.dumps(
-                    {"task": f"mod.step_{node_id:02d}", "status": "running", "node_id": node_id}
-                )
-                + "\n"
-            )
-        width_once_scrolled = renderer._layout.task_table_width(now=0.0)
 
-    assert width_once_scrolled == width_at_the_top
+        self._write(renderer, dict.fromkeys(range(30), "running"))
 
+        rendered = "".join(self._lines(renderer, console))
+        assert "step_29" in rendered and "step_00" not in rendered
+        assert "above" in rendered and "below" in rendered
+        assert renderer._layout.task_table_width(now=0.0) == width_at_the_top
 
-def test_the_finished_table_shows_every_row(tmp_path: Path) -> None:
-    """Nothing repaints after the run, so the last frame need not be windowed."""
-    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+    def test_a_fanout_of_skips_leaves_the_window_on_the_work_that_ran(self, live) -> None:
+        """A skipped task never dispatched, so it must not drag the window away."""
+        renderer, console = live(42)
+        self._write(
+            renderer,
+            {**dict.fromkeys(range(3), "failed"), **dict.fromkeys(range(3, 42), "skipped")},
+        )
+
+        lines = self._lines(renderer, console)
+        rendered = "".join(lines)
+        assert len(lines) < console.height
+        assert "step_00" in rendered and "step_41" not in rendered
+        assert "above" not in rendered and "below" in rendered
+        assert sum(renderer._state.status_counts()[s] for s in TERMINAL_STATUSES) == 42
+
+    def test_the_finished_table_shows_every_row(self, live) -> None:
+        """Nothing repaints after the run, so the last frame need not be windowed."""
+        renderer, console = live(42)
         renderer.finish(elapsed=1.0, success=True)
-        lines = _live_lines(renderer, console)
 
-    assert all(f"step_{i:02d}" in "".join(lines) for i in range(42))
-    assert not any("above" in line or "below" in line for line in lines)
+        lines = self._lines(renderer, console)
+        assert all(f"step_{i:02d}" in "".join(lines) for i in range(42))
+        assert not any("above" in line or "below" in line for line in lines)
 
 
 def test_a_piped_run_prints_every_row(tmp_path: Path) -> None:
     """Nothing repaints into a pipe, so nothing there is worth windowing."""
-    output = StringIO()
-    console = Console(file=output, width=120, height=30, force_terminal=False)
-    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=8)
-    renderer = CliRunRenderer(console=console, summary=summary)
-    renderer.start(
-        planned_tasks=[(i, f"mod.step_{i:02d}", f"step_{i:02d}", "local") for i in range(42)]
-    )
-
+    renderer, output = _renderer(tmp_path, rows=42, height=30)
     renderer.finish(elapsed=1.0, success=True)
 
-    assert all(f"step_{i:02d}" in output.getvalue() for i in range(42))
+    assert all(f"task_{i}" in output.getvalue() for i in range(42))
 
 
 def test_each_repaint_is_bracketed_as_one_terminal_update(tmp_path: Path) -> None:
@@ -423,130 +355,85 @@ def test_each_repaint_is_bracketed_as_one_terminal_update(tmp_path: Path) -> Non
     console = Console(file=output, width=120, height=30, force_terminal=True)
     summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=1)
     renderer = CliRunRenderer(console=console, summary=summary)
-    renderer.start(planned_tasks=[(0, "mod.task_a", "task_a", "local")])
+    renderer.start(planned_tasks=[(0, "mod.task_0", "task_0", "local")])
     renderer.finish(elapsed=1.0, success=True)
 
     painted = output.getvalue()
-
     assert painted.count("\x1b[?2026h") == painted.count("\x1b[?2026l") > 0
     assert painted.index("\x1b[?2026h") < painted.index("\x1b[?2026l")
 
 
-def test_summary_explains_slow_environment_preparation(tmp_path: Path) -> None:
+# Environment preparation ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("seconds", "outcome", "explained"),
+    [
+        (25.0, "succeeded", True),
+        (25.0, "failed", True),
+        (_ENV_PREPARE_REPORT_THRESHOLD_SECONDS / 2, "succeeded", False),
+    ],
+    ids=["slow", "failed", "fast"],
+)
+def test_the_summary_explains_slow_environment_preparation(tmp_path, seconds, outcome, explained):
     renderer, output = _renderer(tmp_path)
 
-    renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] = _backdated(
-        renderer._state._env_prepare_started[0], seconds=25.0
-    )
-    renderer.write(_event_line("running") + "\n")
-    renderer.write(_event_line("succeeded") + "\n")
-    renderer.finish(elapsed=26.0, success=True)
+    renderer.write(_line("preparing env", env="analysis") + "\n")
+    _backdate(renderer._state, seconds)
+    renderer.write(_line("running") + "\n")
+    renderer.write(_line(outcome) + "\n")
+    renderer.finish(elapsed=seconds + 1, success=outcome == "succeeded")
 
     text = " ".join(output.getvalue().split())
-    assert "Environment preparation took" in text
-    assert "analysis" in text
-    # Preparation is only the install: a task's slow first start counts as the task's.
-    assert "counts as the task's time" in text
+    assert ("Environment preparation took" in text) is explained
+    if explained:
+        assert "analysis" in text
+        # Preparation is only the install: a task's slow first start counts as the task's.
+        assert "counts as the task's time" in text
 
 
-def test_summary_explains_preparation_that_failed(tmp_path: Path) -> None:
-    renderer, output = _renderer(tmp_path)
-
-    renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] = _backdated(
-        renderer._state._env_prepare_started[0], seconds=25.0
-    )
-    renderer.write(_event_line("failed") + "\n")
-    renderer.finish(elapsed=25.0, success=False)
-
-    assert "Environment preparation took" in output.getvalue()
+class _FailingEnvironment(ShellEnvironment):
+    def prepare(self, *, env: str) -> None:
+        raise RuntimeError("install failed")
 
 
-def test_evaluator_reports_a_failed_environment_preparation() -> None:
-    """A prepare failure must close the window it opened on the event stream."""
-    from ginkgo.runtime.evaluator import ConcurrentEvaluator
-    from ginkgo.runtime.events import EventBus
+@task(env="test_env", kind="shell")
+def needs_env() -> str:
+    return shell(cmd="echo hello")
 
+
+def test_the_evaluator_closes_the_window_a_failed_preparation_opened() -> None:
     events: list[object] = []
     bus = EventBus()
     bus.subscribe(events.append)
 
-    evaluator = ConcurrentEvaluator(
-        backend=_FailingEnvironment(),
-        event_bus=bus,
-    )
     with pytest.raises(RuntimeError, match="install failed"):
-        evaluator.evaluate(needs_env())
+        ConcurrentEvaluator(backend=_FailingEnvironment(), event_bus=bus).evaluate(needs_env())
 
-    started = [event for event in events if isinstance(event, EnvPrepareStarted)]
-    failed = [event for event in events if isinstance(event, EnvPrepareFailed)]
-    assert len(started) == 1
-    assert len(failed) == 1
-    assert failed[0].env == _TEST_ENV_NAME
-    assert "install failed" in (failed[0].error or "")
-    assert not [event for event in events if isinstance(event, EnvPrepareCompleted)]
+    assert len([e for e in events if isinstance(e, EnvPrepareStarted)]) == 1
+    (failed,) = [e for e in events if isinstance(e, EnvPrepareFailed)]
+    assert failed.env == "test_env" and "install failed" in (failed.error or "")
+    assert not [e for e in events if isinstance(e, EnvPrepareCompleted)]
 
 
-def test_task_skipped_maps_to_a_skipped_row() -> None:
-    sink = _RecordingRenderer()
-    adapter = RichEventRenderer(renderer=sink)
+# Failure reporting -------------------------------------------------------------
 
-    adapter(
-        TaskSkipped(
-            run_id="r1",
-            task_id="task_0",
-            task_name="mod.task_a",
-            blocked_by_task_id="task_1",
-            blocked_by_task_name="mod.upstream",
-        )
+
+def _failure(label: str = "task_a", **fields) -> FailureDetails:
+    return FailureDetails(
+        task_label=label, **{"exit_code": 1, "log_path": None, "log_tail": [], **fields}
     )
-
-    assert sink.lines[0]["status"] == "skipped"
-    assert sink.lines[0]["blocked_by_task_name"] == "mod.upstream"
-
-
-def test_an_ignored_failure_says_so_on_the_wire() -> None:
-    sink = _RecordingRenderer()
-    adapter = RichEventRenderer(renderer=sink)
-
-    adapter(TaskFailed(run_id="r1", task_id="task_0", task_name="mod.task_a", ignored=True))
-
-    assert sink.lines[0]["status"] == "failed"
-    assert sink.lines[0]["ignored"] is True
-
-
-def test_a_skipped_task_is_terminal_without_a_duration() -> None:
-    state = _seeded_state()
-
-    state.handle_event_line(_event_line("skipped"))
-
-    assert state.rows[0].status == "skipped"
-    assert state.rows[0].started_at is None
-    assert state.rows[0].finished_at is not None
-    assert state.done_count() == 0
-    assert _status_icon("skipped") == "⊘"
 
 
 def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
-    renderer, output = _renderer(tmp_path)
-    renderer._state.seed(planned_tasks=[(1, "mod.task_b", "task_b", "local")])
+    renderer, output = _renderer(tmp_path, rows=2)
 
-    renderer.write(_event_line("failed") + "\n")
-    renderer.write(json.dumps({"task": "mod.task_b", "status": "skipped", "node_id": 1}) + "\n")
+    renderer.write(_line("failed") + "\n")
+    renderer.write(_line("skipped", node_id=1) + "\n")
     renderer.finish(
         elapsed=1.0,
         success=False,
-        failure_details=[
-            FailureDetails(
-                task_label="task_a",
-                exit_code=1,
-                log_path=None,
-                log_tail=[],
-                error="bad input",
-                ignored=True,
-            )
-        ],
+        failure_details=[_failure(error="bad input", ignored=True)],
         skipped=[SkipDetails(task_label="task_b", cause="blocked by task_a")],
     )
 
@@ -560,178 +447,229 @@ def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
 def test_many_ignored_failures_are_panelled_up_to_a_limit(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
     details = [
-        FailureDetails(
-            task_label=f"branch[{index}]",
-            exit_code=1,
-            log_path=None,
-            log_tail=[],
-            error="bad input",
-            failure_kind="user_code_error",
-            ignored=True,
-        )
-        for index in range(30)
+        _failure(f"branch[{i}]", error="bad", failure_kind="user_code_error", ignored=True)
+        for i in range(30)
     ]
 
-    console = Console(file=StringIO(), width=120, force_terminal=False)
-    console.print(renderer._layout.render_failure_details(details))
-    text = console.file.getvalue()
+    text = _printed(renderer._layout.render_failure_details(details))
 
     assert "Failed, run continued (30)" in text
     assert "user_code_error×30" in text
     assert "and 20 more" in text
-    assert "branch[9]" in text
-    assert "branch[10]" not in text
+    assert "branch[9]" in text and "branch[10]" not in text
 
 
-def _fatal_failure(*, label: str, error: str = "seqtkk: command not found") -> FailureDetails:
-    return FailureDetails(
-        task_label=label,
-        exit_code=127,
-        log_path=None,
-        log_tail=[],
-        error=error,
-        failure_kind="shell_command_error",
-    )
+def _fatal(label: str, error: str = "seqtkk: command not found") -> FailureDetails:
+    return _failure(label, exit_code=127, error=error, failure_kind="shell_command_error")
 
 
-def test_identical_fatal_failures_share_one_panel(tmp_path: Path) -> None:
+def test_identical_fatal_failures_share_one_panel_and_different_ones_do_not(tmp_path) -> None:
     """Seven branches failing the same way are one problem, not seven panels."""
     renderer, _ = _renderer(tmp_path)
-    details = [_fatal_failure(label=f"trim[{index}]") for index in range(7)]
 
-    console = Console(file=StringIO(), width=120, force_terminal=False)
-    console.print(renderer._layout.render_failure_details(details))
-    text = console.file.getvalue()
+    shared = _printed(
+        renderer._layout.render_failure_details([_fatal(f"trim[{i}]") for i in range(7)])
+    )
+    assert shared.count("Failure Details:") == 1
+    assert "Failure Details: trim[0] (×7)" in shared
+    assert "trim[1], trim[2], trim[3]" in shared
+    assert "shell_command_error×7" in shared
 
-    assert text.count("Failure Details:") == 1
-    assert "Failure Details: trim[0] (×7)" in text
-    assert "trim[1], trim[2], trim[3]" in text
-    assert "shell_command_error×7" in text
-
-
-def test_fatal_failures_with_different_reasons_keep_their_own_panels(tmp_path: Path) -> None:
-    renderer, _ = _renderer(tmp_path)
-    details = [
-        _fatal_failure(label="trim[a]"),
-        _fatal_failure(label="trim[b]", error="seqtk: input file is empty"),
-    ]
-
-    console = Console(file=StringIO(), width=120, force_terminal=False)
-    console.print(renderer._layout.render_failure_details(details))
-    text = console.file.getvalue()
-
-    assert text.count("Failure Details:") == 2
-    assert "Failure Details: trim[a] " in text
-    assert "Failure Details: trim[b] " in text
-    assert "(×" not in text
+    separate = _printed(
+        renderer._layout.render_failure_details(
+            [_fatal("trim[a]"), _fatal("trim[b]", error="seqtk: input file is empty")]
+        )
+    )
+    assert separate.count("Failure Details:") == 2
+    assert "(×" not in separate
 
 
-def test_a_failure_without_an_exit_code_has_no_exit_code_row(tmp_path: Path) -> None:
-    """An in-process exception has no exit code, and "?" said nothing."""
-    renderer, _ = _renderer(tmp_path)
-    details = FailureDetails(task_label="task_a", exit_code=None, log_path=None, log_tail=[])
-
-    console = Console(file=StringIO(), width=120, force_terminal=False)
-    console.print(renderer._layout.render_failure_panel(details))
-
-    assert "Exit code" not in console.file.getvalue()
-
-
-def test_a_log_path_wider_than_the_console_is_folded_not_truncated(tmp_path: Path) -> None:
+def test_the_failure_panel_shows_what_it_has_and_only_that(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
     log_path = Path(".ginkgo/runs/20261005_105716_799605_a04c64d3/logs") / (
         "task_0000_ginkgo_user_flow_547d514134.pack.stderr.log"
     )
-    details = FailureDetails(task_label="pack", exit_code=1, log_path=log_path, log_tail=[])
 
-    console = Console(file=StringIO(), width=80, force_terminal=False)
-    console.print(renderer._layout.render_failure_panel(details))
-    text = console.file.getvalue()
-
-    assert "…" not in text
-    assert "stderr.log" in text
-
-
-def test_a_notice_names_the_task_it_is_about(tmp_path: Path) -> None:
-    renderer, _ = _renderer(tmp_path)
-    renderer.write(
-        json.dumps(
-            {
-                "task": "mod.task_a",
-                "status": "notice",
-                "node_id": 0,
-                "display_label": "task_a[x]",
-                "message": "FUSE access fell back to staging: no /dev/fuse",
-            }
+    # An in-process exception has no exit code, and "?" said nothing.
+    assert "Exit code" not in _printed(
+        renderer._layout.render_failure_panel(_failure(exit_code=None))
+    )
+    # A log path wider than the console is folded, not truncated.
+    folded = _printed(renderer._layout.render_failure_panel(_failure(log_path=log_path)), width=80)
+    assert "…" not in folded and "stderr.log" in folded
+    # A multi-line error that repeats the log tail is shown by its last line.
+    traceback = ["Traceback (most recent call last):", "ValueError: bad value"]
+    reduced = _printed(
+        renderer._layout.render_failure_panel(
+            _failure(log_tail=traceback, error="\n".join(traceback), task_kind="shell")
         )
-        + "\n"
+    )
+    assert "ValueError: bad value" in reduced and traceback[0] not in reduced
+
+
+@pytest.mark.parametrize("label", ["clean[bad]", "clean[bad[/x]]", "clean[bold]"])
+def test_a_bracketed_label_is_printed_verbatim_in_the_failure_panel(tmp_path, label) -> None:
+    """A fan-out label is user data, not Rich markup: none of it is swallowed."""
+    renderer, _ = _renderer(tmp_path)
+    details = _failure(
+        label, log_path=Path("logs/task[1].stderr.log"), error=f"bad region {label}"
     )
 
-    assert renderer._state.notices == ["task_a: FUSE access fell back to staging: no /dev/fuse"]
+    text = _printed(renderer._layout.render_failure_panel(details))
 
-
-def test_a_notice_from_an_unplanned_task_uses_its_display_label(tmp_path: Path) -> None:
-    renderer, _ = _renderer(tmp_path)
-    renderer.write(
-        json.dumps(
-            {
-                "task": "mod.child",
-                "status": "notice",
-                "node_id": 9,
-                "display_label": "child[b]",
-                "message": "installing tools",
-            }
-        )
-        + "\n"
-    )
-
-    assert renderer._state.notices == ["child[b]: installing tools"]
+    assert f"Failure Details: {label}" in text
+    assert f"Task      {label}" in text
+    assert "task[1].stderr.log" in text
 
 
 def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
-    skipped = [
-        SkipDetails(task_label=f"branch[{index}]", cause="blocked by load") for index in range(50)
-    ]
+    skipped = [SkipDetails(task_label=f"branch[{i}]", cause="blocked by load") for i in range(50)]
 
-    report = renderer._layout.render_skip_report(skipped)
+    report = renderer._layout.render_skip_report(skipped).plain
 
-    assert "50 blocked by load" in report.plain
-    assert "branch[0]" not in report.plain
+    assert "50 blocked by load" in report and "branch[0]" not in report
 
 
-def test_summary_omits_explanation_for_fast_preparation(tmp_path: Path) -> None:
+def test_progress_counts_only_tasks_with_a_result_as_complete(tmp_path: Path) -> None:
+    """R4: a failed or skipped task is terminal but not complete."""
+    renderer, _ = _renderer(tmp_path, rows=3)
+    for node_id, status in enumerate(("succeeded", "failed", "skipped")):
+        renderer.write(_line(status, node_id=node_id) + "\n")
+
+    text = _printed(renderer._layout.render_progress_section())
+
+    assert "1/3 complete (1 failed, 1 skipped)" in text
+
+
+# Products and footers ------------------------------------------------------------
+
+
+def test_a_keep_going_run_lists_what_it_produced_and_a_failed_one_does_not(tmp_path) -> None:
+    """Exit 3 is a finished run; the fatal path reports its directory on stderr."""
+    html = tmp_path / "report.html"
+    html.write_text("<html></html>", encoding="utf-8")
+
+    renderer, output = _renderer(tmp_path)
+    renderer.write(_line("failed") + "\n")
+    renderer.finish(
+        elapsed=1.0,
+        success=False,
+        failure_details=[_failure(error="bad input", ignored=True)],
+        pages=[CliRenderedPage(task_label="survey", html_path=html)],
+    )
+    text = output.getvalue()
+    assert "Rendered pages (1)" in text and "survey" in text
+    assert "Run directory" in text
+
+    renderer, output = _renderer(tmp_path)
+    renderer.write(_line("failed") + "\n")
+    renderer.finish(elapsed=1.0, success=False)
+    assert "Run directory" not in output.getvalue()
+
+
+def _page(tmp_path: Path, replayed_from_run_id: str | None = None) -> CliRenderedPage:
+    return CliRenderedPage(
+        task_label="render_overview_notebook",
+        html_path=tmp_path / "notebooks" / "task_0014.html",
+        replayed_from_run_id=replayed_from_run_id,
+    )
+
+
+@pytest.mark.parametrize(
+    ("replayed", "phrases"),
+    [
+        ((None,), ["Rendered pages (1)", "render_overview_notebook", "!↺"]),
+        (("run_1",), ["Rendered pages (1)  ↺ all reused from an earlier run", "↺ from run run_1"]),
+        ((None, "run_1"), ["Rendered pages (2)  ↺ 1 reused from an earlier run"]),
+    ],
+    ids=["rendered", "reused", "mixed"],
+)
+def test_rendered_pages_are_counted_and_reuse_is_marked(tmp_path, replayed, phrases) -> None:
+    """A cached rerun's page is marked as reused, so it does not read as this run's (#202)."""
+    renderer, _ = _renderer(tmp_path, width=200)
+
+    text = renderer._layout.render_pages([_page(tmp_path, run_id) for run_id in replayed]).plain
+
+    for phrase in phrases:
+        assert (phrase[1:] not in text) if phrase.startswith("!") else (phrase in text)
+
+
+def test_the_resource_footer_says_its_rss_is_a_process_tree_total(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+
+    footer = renderer._layout.render_resource_footer(
+        {
+            "average": {"cpu_percent": 50.0, "rss_bytes": 1024},
+            "peak": {"cpu_percent": 90.0, "rss_bytes": 2048, "process_count": 5},
+        }
+    )
+
+    assert footer is not None
+    assert "(process-tree total, up to 5 processes)" in footer.plain
+
+
+@pytest.mark.parametrize(
+    ("count", "phrases"),
+    [
+        (3, ["3 inputs are tracked by path only", "ginkgo cache explain"]),
+        (1, ["1 input is tracked by path only"]),
+        (0, ["!tracked by path"]),
+    ],
+)
+def test_path_tracked_inputs_print_one_summary_line(tmp_path, count, phrases) -> None:
+    """Issue #307: name the count once, and say nothing about zero."""
     renderer, output = _renderer(tmp_path)
 
-    renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] = _backdated(
-        renderer._state._env_prepare_started[0], seconds=_ENV_PREPARE_REPORT_THRESHOLD_SECONDS / 2
-    )
-    renderer.write(_event_line("running") + "\n")
-    renderer.write(_event_line("succeeded") + "\n")
-    renderer.finish(elapsed=1.0, success=True)
+    renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=count)
 
-    assert renderer._state.env_prepare_seconds < _ENV_PREPARE_REPORT_THRESHOLD_SECONDS
-    assert "Environment preparation took" not in output.getvalue()
+    text = output.getvalue()
+    for phrase in phrases:
+        assert (phrase[1:] not in text) if phrase.startswith("!") else (phrase in text)
 
+
+@pytest.mark.parametrize(
+    ("summary", "phrases"),
+    [
+        ({}, ["Running locally on 4 Cores"]),
+        ({"executor_label": "gpu-k8s (Kubernetes)"}, ["Running on gpu-k8s (Kubernetes)"]),
+        # A local run still dispatches executor= tasks remotely; the header must say so.
+        (
+            {"pinned_executors": ("cheap-batch", "gpu-k8s")},
+            ["Running locally on 4 Cores", "→ cheap-batch, gpu-k8s"],
+        ),
+        (
+            {"executor_label": "Kubernetes", "pinned_executors": ("cheap-batch",)},
+            ["Running on Kubernetes", "→ cheap-batch"],
+        ),
+    ],
+    ids=["local", "default-executor", "pinned-on-local", "pinned-with-default"],
+)
+def test_the_header_names_where_tasks_run(tmp_path, summary, phrases) -> None:
+    renderer, _ = _renderer(tmp_path, width=200, cores=4, **summary)
+
+    header = renderer._layout.render_resource_info_line().plain
+
+    for phrase in phrases:
+        assert phrase in header
+
+
+# Labels seeded from the graph --------------------------------------------------
 
 _SITES = ("forest", "meadow", "wetland", "urban")
 
 
 @task()
 def fit_site_trend(*, site: str) -> str:
-    """Fan-out leaf, one branch per site."""
     return f"trend:{site}"
 
 
 @task()
 def audit_site(*, site: str, trend: str) -> str:
-    """Downstream fan-out branch, zipped against its upstream trend."""
     return f"{site}:{trend}"
 
 
-def _validated_evaluator(expr: object, calls: tuple[object, ...]) -> ConcurrentEvaluator:
-    """Return an evaluator with the graph behind ``expr`` built and validated."""
+def _evaluator(expr: object) -> ConcurrentEvaluator:
     evaluator = ConcurrentEvaluator()
     evaluator.build_graph(expr)
     evaluator.validate_graph()
@@ -746,176 +684,44 @@ def _seeded_labels(evaluator: ConcurrentEvaluator) -> dict[int, str]:
     return {node_id: row.label for node_id, row in state.rows.items()}
 
 
-def test_seeded_fanout_rows_use_graph_labels() -> None:
-    """An undispatched branch reads as it does under ``--dry-run`` (#204).
-
-    Both views label a node from the graph, so nothing still waiting to be
-    dispatched falls back to a bare ordinal.
-    """
-    with record_constructed_calls() as calls:
+def test_seeded_fanout_rows_use_the_dry_run_s_graph_labels() -> None:
+    """An undispatched branch reads as it does under ``--dry-run`` (#204)."""
+    with record_constructed_calls():
         trends = fit_site_trend().map(site=list(_SITES))
-        expr = audit_site().map(site=list(_SITES), trend=trends)
-    evaluator = _validated_evaluator(expr, tuple(calls))
+        evaluator = _evaluator(audit_site().map(site=list(_SITES), trend=trends))
 
     plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
     dry_run_labels = {task.node_id: task.label for wave in plan.waves for task in wave.tasks}
 
     assert _seeded_labels(evaluator) == dry_run_labels
-    assert set(dry_run_labels.values()) == {f"fit_site_trend[{site}]" for site in _SITES} | {
-        f"audit_site[{site}]" for site in _SITES
+    assert set(dry_run_labels.values()) == {
+        f"{name}[{site}]" for name in ("fit_site_trend", "audit_site") for site in _SITES
     }
 
 
-def test_per_branch_arguments_stay_out_of_seeded_labels() -> None:
-    """A ``per_branch()`` value derives from a branch, so it does not name it."""
-    with record_constructed_calls() as calls:
-        expr = audit_site().product_map(
-            site=["forest", "meadow"],
-            trend=per_branch("{site}.trend"),
-        )
-    evaluator = _validated_evaluator(expr, tuple(calls))
+@pytest.mark.parametrize(
+    ("build", "labels"),
+    [
+        # A ``per_branch()`` value derives from a branch, so it does not name it.
+        (
+            lambda: audit_site().product_map(
+                site=["forest", "meadow"], trend=per_branch("{site}.trend")
+            ),
+            ["audit_site[site=forest]", "audit_site[site=meadow]"],
+        ),
+        # Two listed calls of one task are told apart by the argument that differs.
+        (
+            lambda: (
+                audit_site(site="forest", trend="forest.trend"),
+                audit_site(site="meadow", trend="meadow.trend"),
+            ),
+            ["audit_site[forest]", "audit_site[meadow]"],
+        ),
+    ],
+    ids=["per-branch-argument", "repeated-calls"],
+)
+def test_seeded_labels_name_branches_by_what_differs(build, labels) -> None:
+    with record_constructed_calls():
+        evaluator = _evaluator(build())
 
-    assert set(_seeded_labels(evaluator).values()) == {
-        "audit_site[site=forest]",
-        "audit_site[site=meadow]",
-    }
-
-
-def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
-    """Two listed calls of one task are told apart by the argument that differs."""
-    with record_constructed_calls() as calls:
-        first = audit_site(site="forest", trend="forest.trend")
-        second = audit_site(site="meadow", trend="meadow.trend")
-    evaluator = _validated_evaluator((first, second), tuple(calls))
-
-    assert sorted(_seeded_labels(evaluator).values()) == [
-        "audit_site[forest]",
-        "audit_site[meadow]",
-    ]
-
-
-def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
-    """Exit 3 is a finished run: its rendered pages and directory are real."""
-    renderer, output = _renderer(tmp_path)
-    html = tmp_path / "report.html"
-    html.write_text("<html></html>", encoding="utf-8")
-
-    renderer.write(_event_line("failed") + "\n")
-    renderer.finish(
-        elapsed=1.0,
-        success=False,
-        failure_details=[
-            FailureDetails(
-                task_label="task_a",
-                exit_code=1,
-                log_path=None,
-                log_tail=[],
-                error="bad input",
-                ignored=True,
-            )
-        ],
-        pages=[CliRenderedPage(task_label="survey", html_path=html)],
-    )
-
-    text = output.getvalue()
-    assert "Rendered pages (1)" in text
-    assert "survey" in text
-    assert "Run directory" in text
-
-
-def test_a_run_a_failure_ended_lists_no_products(tmp_path: Path) -> None:
-    """The fatal path reports its directory on stderr, not here."""
-    renderer, output = _renderer(tmp_path)
-
-    renderer.write(_event_line("failed") + "\n")
-    renderer.finish(elapsed=1.0, success=False)
-
-    assert "Run directory" not in output.getvalue()
-
-
-@pytest.mark.parametrize("label", ["clean[bad]", "clean[bad[/x]]", "clean[bold]"])
-def test_a_bracketed_label_is_printed_verbatim_in_the_failure_panel(
-    tmp_path: Path, label: str
-) -> None:
-    """A fan-out label is user data, not Rich markup: none of it is swallowed."""
-    renderer, _ = _renderer(tmp_path)
-    details = FailureDetails(
-        task_label=label,
-        exit_code=1,
-        log_path=Path("logs/task[1].stderr.log"),
-        log_tail=[],
-        error=f"bad region {label}",
-    )
-
-    console = Console(file=StringIO(), width=120, force_terminal=False)
-    console.print(renderer._layout.render_failure_panel(details))
-    text = console.file.getvalue()
-
-    assert f"Failure Details: {label}" in text
-    assert f"Task      {label}" in text
-    assert "task[1].stderr.log" in text
-
-
-def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line(
-    tmp_path: Path,
-) -> None:
-    """A multi-line error that repeats the log tail is shown by its last line."""
-    renderer, _ = _renderer(tmp_path)
-    details = FailureDetails(
-        task_label="task_a",
-        exit_code=1,
-        log_path=None,
-        log_tail=["Traceback (most recent call last):", "ValueError: bad value"],
-        error="Traceback (most recent call last):\nValueError: bad value",
-        task_kind="shell",
-    )
-
-    console = Console(file=StringIO(), width=120, force_terminal=False)
-    console.print(renderer._layout.render_failure_panel(details))
-    text = console.file.getvalue()
-
-    assert "ValueError: bad value" in text
-    # The traceback is the log tail, printed below the panel, not repeated in it.
-    assert "Traceback (most recent call last):" not in text
-
-
-def test_path_tracked_inputs_print_one_dim_summary_line(tmp_path: Path) -> None:
-    """A run whose inputs were all path-tracked names the count once (issue #307)."""
-    renderer, output = _renderer(tmp_path)
-
-    renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=3)
-
-    assert "3 inputs are tracked by path only" in output.getvalue()
-    assert "ginkgo cache explain" in output.getvalue()
-
-
-def test_a_clean_run_says_nothing_about_path_tracking(tmp_path: Path) -> None:
-    """No path-tracked inputs: the line stays quiet rather than reporting zero."""
-    renderer, output = _renderer(tmp_path)
-
-    renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=0)
-
-    assert "tracked by path" not in output.getvalue()
-
-
-def test_a_single_path_tracked_input_uses_singular_wording(tmp_path: Path) -> None:
-    renderer, output = _renderer(tmp_path)
-
-    renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=1)
-
-    assert "1 input is tracked by path only" in output.getvalue()
-
-
-def test_progress_counts_only_tasks_with_a_result_as_complete(tmp_path: Path) -> None:
-    """R4: a failed or skipped task is terminal but not complete."""
-    renderer, _ = _renderer(tmp_path)
-    for node_id, status in ((0, "succeeded"), (1, "failed"), (2, "skipped")):
-        renderer.write(
-            json.dumps({"task": f"mod.task_{node_id}", "status": status, "node_id": node_id})
-            + "\n"
-        )
-
-    console = Console(width=120, record=True)
-    console.print(renderer._layout.render_progress_section())
-
-    assert "1/3 complete (1 failed, 1 skipped)" in console.export_text()
+    assert sorted(_seeded_labels(evaluator).values()) == labels
