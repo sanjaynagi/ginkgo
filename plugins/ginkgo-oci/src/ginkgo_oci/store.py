@@ -15,7 +15,7 @@ from ginkgo.remote.resolve import config_string, config_table, first_defined, re
 # How a store signs its requests, by the name ginkgo's config uses, with the
 # ``iam_type`` ocifs takes for it.
 AUTH_IAM_TYPES = {
-    "api_key": "api_key",
+    "api_key": "api_key",  # pragma: allowlist secret
     "oke_workload_identity": "oke_principal",
     "instance_principal": "instance_principal",
     "resource_principal": "resource_principal",
