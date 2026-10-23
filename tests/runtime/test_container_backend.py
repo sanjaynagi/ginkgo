@@ -1,16 +1,18 @@
-"""Tests for the container execution backend and composite routing."""
+"""Tests for the container execution backend and composite routing.
+
+The runtime is a real executable on ``PATH`` (the ``fake_runtime`` fixture)
+that logs each call and answers as each test tells it, so these tests cross
+the same process boundary the backend does in production.
+"""
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
-from typing import Any
-from unittest.mock import patch
 
 import pytest
 
-from ginkgo import shell, task
+import ginkgo.envs.container as container_module
+from ginkgo import evaluate, shell, task
 from ginkgo.envs.container import (
     ContainerBackend,
     ContainerDaemonUnreachableError,
@@ -18,7 +20,6 @@ from ginkgo.envs.container import (
     ContainerPrepareError,
     ContainerRef,
     ContainerRuntimeNotFoundError,
-    container_backend_from_config,
     is_container_env,
     parse_container_uri,
 )
@@ -27,7 +28,22 @@ from ginkgo.plugins.api import EnvironmentContext, EnvironmentType, Plugin
 from ginkgo.plugins.builtin import BUILTIN
 from ginkgo.plugins.registry import PluginNotFoundError, PluginRegistry, use_plugin_registry
 from ginkgo.runtime.backend import EnvironmentRouter
-from tests.conftest import ShellEnvironment
+from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from tests.conftest import Ledger, ShellEnvironment
+
+
+@pytest.fixture
+def short_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the runtime's bounded probes give up after a fraction of a second."""
+    monkeypatch.setattr(container_module, "_DAEMON_PROBE_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(container_module, "_MANIFEST_INSPECT_TIMEOUT_SECONDS", 0.3)
+
+
+def _subcommands(fake_runtime) -> list[str]:
+    """Each call as ``"<runtime> <subcommand>"``."""
+    return [" ".join(call.split()[:2]) for call in fake_runtime.calls]
 
 
 # ------------------------------------------------------------------
@@ -35,733 +51,354 @@ from tests.conftest import ShellEnvironment
 # ------------------------------------------------------------------
 
 
-class TestParseContainerUri:
-    def test_docker_scheme(self):
-        ref = parse_container_uri("docker://myorg/image:tag")
-        assert ref == ContainerRef(scheme="docker", image="myorg/image:tag")
-
-    def test_oci_scheme(self):
-        ref = parse_container_uri("oci://registry.io/image@sha256:abc123")
-        assert ref == ContainerRef(scheme="oci", image="registry.io/image@sha256:abc123")
-
-    def test_no_scheme_raises(self):
-        with pytest.raises(ValueError, match="Not a container URI"):
-            parse_container_uri("myenv")
-
-    def test_empty_image_raises(self):
-        with pytest.raises(ValueError, match="no image reference"):
-            parse_container_uri("docker://")
-
-    def test_path_is_not_container(self):
-        with pytest.raises(ValueError, match="Not a container URI"):
-            parse_container_uri("./envs/foo/pixi.toml")
+@pytest.mark.parametrize(
+    ("uri", "ref"),
+    [
+        ("docker://myorg/image:tag", ContainerRef(scheme="docker", image="myorg/image:tag")),
+        (
+            "oci://registry.io/image@sha256:abc",
+            ContainerRef(scheme="oci", image="registry.io/image@sha256:abc"),
+        ),
+    ],
+)
+def test_container_uris_parse(uri: str, ref: ContainerRef) -> None:
+    assert parse_container_uri(uri) == ref
+    assert is_container_env(uri)
 
 
-class TestIsContainerEnv:
-    def test_docker_uri(self):
-        assert is_container_env("docker://image:tag") is True
+@pytest.mark.parametrize(
+    ("uri", "match"),
+    [
+        ("myenv", "Not a container URI"),
+        ("./envs/foo/pixi.toml", "Not a container URI"),
+        ("docker://", "no image reference"),
+    ],
+)
+def test_non_container_uris_are_refused(uri: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        parse_container_uri(uri)
 
-    def test_oci_uri(self):
-        assert is_container_env("oci://image:tag") is True
 
-    def test_plain_name(self):
-        assert is_container_env("my_env") is False
-
-    def test_path(self):
-        assert is_container_env("./envs/foo/pixi.toml") is False
+def test_plain_names_and_paths_are_not_container_envs() -> None:
+    assert not is_container_env("my_env")
+    assert not is_container_env("./envs/foo/pixi.toml")
 
 
 # ------------------------------------------------------------------
-# ContainerBackend
+# exec_argv
 # ------------------------------------------------------------------
 
 
-class TestContainerBackendExecArgv:
-    def test_builds_correct_command(self, tmp_path: Path):
-        backend = ContainerBackend(
-            runtime="docker",
-            project_root=tmp_path,
-            user="root",
-        )
-        argv = backend.exec_argv(
-            env="docker://myorg/image:3.11",
-            cmd="echo hello > output.txt",
+def _volumes(argv: list[str]) -> list[str]:
+    return [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+
+
+class TestExecArgv:
+    def test_builds_the_run_command(self, tmp_path: Path):
+        argv = ContainerBackend(runtime="docker", project_root=tmp_path, user="root").exec_argv(
+            env="docker://myorg/image:3.11", cmd="echo hello > output.txt"
         )
         assert argv == [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{tmp_path}:{tmp_path}",
-            "-w",
-            str(tmp_path),
-            "myorg/image:3.11",
-            "bash",
-            "-eo",
-            "pipefail",
-            "-c",
-            "echo hello > output.txt",
-        ]
+            "docker", "run", "--rm", "-v", f"{tmp_path}:{tmp_path}", "-w", str(tmp_path),
+            "myorg/image:3.11", "bash", "-eo", "pipefail", "-c", "echo hello > output.txt",
+        ]  # fmt: skip
 
-    def test_uses_podman_runtime(self, tmp_path: Path):
-        backend = ContainerBackend(runtime="podman", project_root=tmp_path)
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+    def test_runtime_and_shell_are_configurable(self, tmp_path: Path):
+        argv = ContainerBackend(project_root=tmp_path, runtime="podman", shell="sh").exec_argv(
+            env="docker://img:1", cmd="ls"
+        )
         assert argv[0] == "podman"
-
-    def test_runs_as_invoking_user_by_default(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert "-u" in argv
-        assert argv[argv.index("-u") + 1] == f"{os.getuid()}:{os.getgid()}"
-
-    def test_explicit_user_is_passed_through(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, user="1000:1000")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert argv[argv.index("-u") + 1] == "1000:1000"
-
-    def test_invalid_user_raises(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, user="nobody")
-        with pytest.raises(ValueError, match="Invalid \\[container\\] user"):
-            backend.exec_argv(env="docker://img:1", cmd="ls")
-
-    def test_configurable_shell(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, shell="sh")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
         assert argv[-5:] == ["sh", "-eo", "pipefail", "-c", "ls"]
 
-    def test_mounts_declared_input_outside_project(self, tmp_path: Path):
+    def test_declared_inputs_outside_the_project_are_mounted_read_only(self, tmp_path: Path):
         project = tmp_path / "project"
         project.mkdir()
-        reads = tmp_path / "data" / "reads.fastq"
-        reads.parent.mkdir()
-        reads.write_text("@r\n")
+        outside = tmp_path / "data" / "reads.fastq"
+        outside.parent.mkdir()
+        outside.write_text("@r\n")
+        inside = project / "reads.fastq"
+        inside.write_text("@r\n")
+        link = project / "linked.fastq"
+        link.symlink_to(outside)
 
         backend = ContainerBackend(project_root=project, user="root")
         argv = backend.exec_argv(
-            env="docker://img:1",
-            cmd=f"cat {reads}",
-            mounts=[mount(reads)],
+            env="docker://img:1", cmd="ls", mounts=[mount(outside), mount(inside), mount(link)]
         )
-        assert f"{reads}:{reads}:ro" in argv
+        # The project mount covers what is inside it; a symlink mounts its
+        # real path at the path the command names.
+        assert _volumes(argv) == [
+            f"{project}:{project}",
+            f"{outside}:{outside}:ro",
+            f"{outside}:{link}:ro",
+        ]
 
-    def test_input_inside_project_is_not_remounted(self, tmp_path: Path):
-        reads = tmp_path / "data" / "reads.fastq"
-        reads.parent.mkdir()
-        reads.write_text("@r\n")
-
-        backend = ContainerBackend(project_root=tmp_path, user="root")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
-        # The project mount is present and covers it; a second mount for the
-        # same path is what must be absent.
-        volumes = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
-        assert volumes == [f"{tmp_path}:{tmp_path}"]
-
-    def test_symlinked_input_mounts_real_path_at_declared_path(self, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
-        real = tmp_path / "store" / "reads.fastq"
-        real.parent.mkdir()
-        real.write_text("@r\n")
-        link = project / "reads.fastq"
-        link.symlink_to(real)
-
-        backend = ContainerBackend(project_root=project, user="root")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(link)])
-        assert f"{real}:{link}:ro" in argv
-
-    def test_auto_mount_off_ignores_declared_inputs(self, tmp_path: Path):
+    def test_auto_mount_off_ignores_declared_inputs_but_not_extra_mounts(self, tmp_path: Path):
         reads = tmp_path / "reads.fastq"
         reads.write_text("@r\n")
-
-        project = tmp_path / "project"
-        project.mkdir()
-        backend = ContainerBackend(
-            project_root=project,
-            user="root",
-            auto_mount=False,
-        )
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
-        volumes = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
-        assert volumes == [f"{project}:{project}"]
-
-    def test_extra_mounts_are_always_applied(self, tmp_path: Path):
         scratch = tmp_path / "scratch"
         scratch.mkdir()
-
         project = tmp_path / "project"
         project.mkdir()
+
         backend = ContainerBackend(
-            project_root=project,
-            user="root",
-            auto_mount=False,
-            extra_mounts=(f"{scratch}:rw",),
+            project_root=project, user="root", auto_mount=False, extra_mounts=(f"{scratch}:rw",)
         )
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert f"{scratch}:{scratch}:rw" in argv
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
+        assert _volumes(argv) == [f"{project}:{project}", f"{scratch}:{scratch}:rw"]
 
 
-class TestContainerBackendValidateEnvs:
-    def test_valid_uris_with_runtime(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
-        ):
-            backend.validate_envs(env_names={"docker://img:1", "oci://img:2"})
-
-    def test_invalid_uri_raises(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        with pytest.raises(ValueError, match="Not a container URI"):
-            backend.validate_envs(env_names={"not_a_container"})
-
-    def test_missing_runtime_raises(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        with patch("ginkgo.envs.container.shutil.which", return_value=None):
-            with pytest.raises(ContainerRuntimeNotFoundError, match="docker"):
-                backend.validate_envs(env_names={"docker://img:1"})
+# ------------------------------------------------------------------
+# validate_envs: runtime, image and registry checks
+# ------------------------------------------------------------------
 
 
-class TestContainerBackendValidateImageAvailability:
-    """Pre-flight image checks (issue #288): a bogus image should be caught
-    by ``validate_envs`` rather than discovered mid-run."""
+class TestValidateEnvs:
+    """Pre-flight checks (issue #288): a bogus image is caught before the run."""
 
-    def test_image_present_locally_passes(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=True) as local,
-            patch.object(ContainerBackend, "_registry_reports_missing") as remote,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        local.assert_called_once()
-        remote.assert_not_called()
-
-    def test_missing_locally_and_pull_policy_never_raises(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            pytest.raises(ContainerImageNotFoundError, match="pull_policy") as excinfo,
-        ):
-            backend.validate_envs(env_names={"docker://nope-does-not-exist:99.99"})
-        assert "nope-does-not-exist:99.99" in str(excinfo.value)
-        assert "not present locally" in str(excinfo.value)
-
-    def test_missing_locally_registry_confirms_missing_raises(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
-        )
-        completed = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="manifest unknown: manifest not found"
-        )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_require_daemon_reachable"),
-            patch("ginkgo.envs.container.subprocess.run", return_value=completed) as mock_run,
-            pytest.raises(ContainerImageNotFoundError, match="not found in its registry"),
-        ):
-            backend.validate_envs(env_names={"docker://nope-does-not-exist:99.99"})
-        assert mock_run.call_args[0][0][:3] == ["docker", "manifest", "inspect"]
-
-    def test_registry_timeout_does_not_block_run(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
-        )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_require_daemon_reachable"),
-            patch(
-                "ginkgo.envs.container.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=15),
-            ),
-        ):
-            # Must not raise: a slow/unreachable registry is never treated as
-            # proof the image is missing.
-            backend.validate_envs(env_names={"docker://img:1"})
-
-    def test_registry_unrecognised_error_does_not_block_run(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
-        )
-        completed = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="some transient network hiccup"
-        )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_require_daemon_reachable"),
-            patch("ginkgo.envs.container.subprocess.run", return_value=completed),
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-
-    def test_unsupported_runtime_skips_registry_probe(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path,
-            runtime="custom-runtime",
-            pull_policy="if-not-present",
-            probe_registry=True,
-        )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/custom-runtime"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_require_daemon_reachable"),
-            patch("ginkgo.envs.container.subprocess.run") as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        mock_run.assert_not_called()
-
-    def test_probe_is_cached_across_validate_envs_calls(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
-        )
-        completed = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="some transient network hiccup"
-        )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_require_daemon_reachable"),
-            patch("ginkgo.envs.container.subprocess.run", return_value=completed) as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-            backend.validate_envs(env_names={"docker://img:1"})
-            # Two envs resolving to the same image only probe it once too.
-            backend.validate_envs(env_names={"docker://img:1", "oci://img:1"})
-        mock_run.assert_called_once()
-
-    def test_real_run_does_not_ask_the_registry(self, tmp_path: Path):
-        # A real run leaves probe_registry off: its own pull reports a missing
-        # image, so an extra registry round trip would only delay it.
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch("ginkgo.envs.container.subprocess.run") as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        mock_run.assert_not_called()
-
-
-def _completed(*, returncode: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
-
-
-class TestContainerBackendDaemonProbe:
-    """Issue #343: under ``doctor`` and ``--dry-run`` (``probe_registry``), a
-    runtime installed with its daemon down is reported as such, not as a
-    missing image or a failed pull mid-run."""
-
-    def test_real_run_does_not_probe_the_daemon(self, tmp_path: Path):
-        """A real run may never dispatch a container task (all cached), so a
-        stopped daemon must not fail it up front."""
-        backend = ContainerBackend(project_root=tmp_path)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch(
-                "ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=1)
-            ) as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        mock_run.assert_not_called()
-
-    def test_permission_denied_suggests_the_docker_group(self, tmp_path: Path):
+    def test_present_images_pass_without_probing_daemon_or_registry(self, tmp_path, fake_runtime):
         backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
-        denied = _completed(
-            returncode=1,
-            stderr=(
-                "permission denied while trying to connect to the Docker daemon socket "
-                "at unix:///var/run/docker.sock"
-            ),
+        assert backend.validate_envs(env_names={"docker://img:1", "oci://img:2"}) == []
+        # A successful local lookup already proves the daemon is up.
+        assert fake_runtime.calls == ["docker image inspect img:1", "docker image inspect img:2"]
+
+    def test_an_invalid_uri_raises(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="Not a container URI"):
+            ContainerBackend(project_root=tmp_path).validate_envs(env_names={"not_a_container"})
+
+    def test_a_missing_runtime_raises(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("PATH", str(tmp_path))
+        with pytest.raises(ContainerRuntimeNotFoundError, match="docker"):
+            ContainerBackend(project_root=tmp_path).validate_envs(env_names={"docker://img:1"})
+
+    @pytest.mark.parametrize("probe_registry", [False, True])
+    def test_an_image_absent_with_pull_policy_never_raises(
+        self, tmp_path, fake_runtime, probe_registry: bool
+    ):
+        fake_runtime.respond("image", rc=1)
+        backend = ContainerBackend(
+            project_root=tmp_path, pull_policy="never", probe_registry=probe_registry
         )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch("ginkgo.envs.container.subprocess.run", return_value=denied),
-        ):
-            [warning] = backend.validate_envs(env_names={"docker://img:1"})
-        assert isinstance(warning, ContainerDaemonUnreachableError)
-        message = str(warning)
-        assert "denied access to the docker daemon" in message
-        assert "docker group" in message
-        assert "systemctl start" not in message
+        with pytest.raises(ContainerImageNotFoundError, match="pull_policy") as excinfo:
+            backend.validate_envs(env_names={"docker://nope:99.99"})
+        assert "'nope:99.99' is not present locally" in str(excinfo.value)
+
+    def test_a_real_run_asks_neither_daemon_nor_registry(self, tmp_path, fake_runtime):
+        """A real run's own pull reports a missing image; and a run whose
+        container tasks are all cached must not fail on a stopped daemon."""
+        fake_runtime.respond("image", rc=1)
+        fake_runtime.respond("info", rc=1)
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
+        assert backend.validate_envs(env_names={"docker://img:1"}) == []
+        assert _subcommands(fake_runtime) == ["docker image"]
+
+    def test_a_registry_that_confirms_the_image_missing_raises(self, tmp_path, fake_runtime):
+        fake_runtime.respond("image", rc=1)
+        fake_runtime.respond("manifest", rc=1, err="manifest unknown: manifest not found")
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
+        with pytest.raises(ContainerImageNotFoundError, match="not found in its registry"):
+            backend.validate_envs(env_names={"docker://nope:99.99"})
+        assert "docker manifest inspect nope:99.99" in fake_runtime.calls
 
     @pytest.mark.parametrize(
-        ("platform", "hint"),
-        [("darwin", "open -a Docker"), ("linux", "sudo systemctl start docker")],
+        "response",
+        [{"sleep": 5}, {"rc": 1, "err": "some transient network hiccup"}],
+        ids=["timeout", "unrecognised-error"],
     )
-    def test_a_stopped_daemon_gets_the_platform_s_start_hint(
-        self, tmp_path: Path, platform: str, hint: str
-    ):
-        """NC-5: no Linux systemctl advice on macOS."""
+    @pytest.mark.usefixtures("short_timeouts")
+    def test_an_inconclusive_registry_never_blocks_the_run(self, tmp_path, fake_runtime, response):
+        fake_runtime.respond("image", rc=1)
+        fake_runtime.respond("manifest", **response)
         backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
-        down = _completed(returncode=1, stderr="Cannot connect to the Docker daemon")
-        with (
-            patch("ginkgo.envs.container.sys.platform", platform),
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch("ginkgo.envs.container.subprocess.run", return_value=down),
-        ):
-            [warning] = backend.validate_envs(env_names={"docker://img:1"})
-        assert hint in str(warning)
-        assert ("systemctl" in str(warning)) == (platform == "linux")
 
-    def test_local_lookup_timeout_reads_as_cannot_tell(self, tmp_path: Path):
-        """A hung daemon must not stall validation, nor get the image blamed."""
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch(
-                "ginkgo.envs.container.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=10),
-            ) as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        assert mock_run.call_args[0][0] == ["docker", "image", "inspect", "img:1"]
-        assert mock_run.call_args.kwargs["timeout"] > 0
+        assert backend.validate_envs(env_names={"docker://img:1"}) == []
+        backend.validate_envs(env_names={"docker://img:1"})
+        # Two envs resolving to the same image only probe it once too.
+        backend.validate_envs(env_names={"docker://img:1", "oci://img:1"})
+        manifest_calls = _subcommands(fake_runtime).count("docker manifest")
+        # A probe killed by its timeout may not get as far as logging itself.
+        assert manifest_calls == 1 or ("sleep" in response and manifest_calls == 0)
 
-    def test_unreachable_daemon_is_returned_as_a_warning(self, tmp_path: Path):
-        """A run whose container tasks are all cached never needs the daemon,
-        so validation reports it instead of raising."""
-        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
-        refused = _completed(
-            returncode=1, stderr="failed to connect to the docker API at unix:///x/docker.sock"
-        )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch("ginkgo.envs.container.subprocess.run", return_value=refused) as mock_run,
-        ):
-            [warning] = backend.validate_envs(env_names={"docker://img:1", "docker://img:2"})
-        assert isinstance(warning, ContainerDaemonUnreachableError)
-        message = str(warning)
-        assert "docker daemon is not reachable" in message
-        assert "failed to connect to the docker API" in message
-        assert "pull" not in message.lower()
-        assert mock_run.call_args[0][0] == ["docker", "info"]
-        assert mock_run.call_args.kwargs["timeout"] > 0
-
-    def test_unreachable_daemon_is_not_reported_as_a_missing_image(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="never", probe_registry=True)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch("ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=1)),
-        ):
-            [warning] = backend.validate_envs(env_names={"docker://img:1"})
-        assert isinstance(warning, ContainerDaemonUnreachableError)
-
-    def test_reachable_daemon_goes_on_to_check_the_image(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="never", probe_registry=True)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch("ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=0)),
-            pytest.raises(ContainerImageNotFoundError, match="not present locally"),
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-
-    def test_local_image_needs_no_probe(self, tmp_path: Path):
-        """A successful local lookup already proves the daemon is up."""
-        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
-            patch("ginkgo.envs.container.subprocess.run") as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        mock_run.assert_not_called()
-
-    def test_probe_timeout_does_not_block_run(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch(
-                "ginkgo.envs.container.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=10),
-            ),
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-
-    def test_daemon_is_probed_once_per_backend(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_registry_reports_missing", return_value=False),
-            patch(
-                "ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=0)
-            ) as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1", "docker://img:2"})
-            backend.validate_envs(env_names={"docker://img:3"})
-        mock_run.assert_called_once()
-
-    def test_podman_is_probed_with_its_own_info(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, runtime="podman", probe_registry=True)
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/podman"),
-            patch("ginkgo.envs.container.sys.platform", "darwin"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch(
-                "ginkgo.envs.container.subprocess.run",
-                return_value=_completed(returncode=125, stderr="Cannot connect to Podman"),
-            ) as mock_run,
-        ):
-            [warning] = backend.validate_envs(env_names={"docker://img:1"})
-        assert "podman machine start" in str(warning)
-        assert mock_run.call_args[0][0] == ["podman", "info"]
-
-    def test_unknown_runtime_is_not_probed(self, tmp_path: Path):
+    def test_an_unknown_runtime_is_not_probed(self, tmp_path, fake_runtime):
+        fake_runtime.respond("image", rc=1)
         backend = ContainerBackend(
             project_root=tmp_path, runtime="custom-runtime", probe_registry=True
         )
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/custom-runtime"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch("ginkgo.envs.container.subprocess.run") as mock_run,
-        ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        mock_run.assert_not_called()
+        assert backend.validate_envs(env_names={"docker://img:1"}) == []
+        assert _subcommands(fake_runtime) == ["custom-runtime image"]
 
 
-class TestContainerBackendPrepare:
-    def test_pulls_image_on_always(self, tmp_path: Path):
+class TestDaemonProbe:
+    """Issue #343: under ``doctor`` and ``--dry-run`` (``probe_registry``), a
+    stopped daemon is reported as such, not as a missing image."""
+
+    @pytest.fixture(autouse=True)
+    def _image_absent(self, fake_runtime) -> None:
+        fake_runtime.respond("image", rc=1)
+
+    @pytest.mark.parametrize("pull_policy", ["if-not-present", "never"])
+    def test_an_unreachable_daemon_is_one_warning_not_a_missing_image(
+        self, tmp_path, fake_runtime, pull_policy: str
+    ):
+        fake_runtime.respond("info", rc=1, err="failed to connect to the docker API at unix:///x")
         backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="always",
+            project_root=tmp_path, pull_policy=pull_policy, probe_registry=True
         )
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
-                backend.prepare(env="docker://myimg:latest")
 
-            # The daemon is checked before the pull.
-            assert [call[0][0] for call in mock_run.call_args_list] == [
-                ["docker", "info"],
-                ["docker", "pull", "myimg:latest"],
-            ]
+        [warning] = backend.validate_envs(env_names={"docker://img:1", "docker://img:2"})
 
-    def test_skips_pull_when_present(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="if-not-present",
+        assert isinstance(warning, ContainerDaemonUnreachableError)
+        assert "docker daemon is not reachable" in str(warning)
+        assert "failed to connect to the docker API" in str(warning)
+        assert "pull" not in str(warning).lower()
+        assert _subcommands(fake_runtime) == ["docker image", "docker info"]
+
+    def test_permission_denied_suggests_the_docker_group(self, tmp_path, fake_runtime):
+        fake_runtime.respond(
+            "info", rc=1, err="permission denied while trying to connect to the Docker daemon"
         )
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            # Image inspect succeeds — image is present.
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            backend.prepare(env="docker://myimg:latest")
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
+        [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert "denied access to the docker daemon" in str(warning)
+        assert "docker group" in str(warning)
+        assert "systemctl start" not in str(warning)
 
-            # Only the inspect call, no pull.
-            mock_run.assert_called_once()
-            call_args = mock_run.call_args[0][0]
-            assert call_args == ["docker", "image", "inspect", "myimg:latest"]
+    @pytest.mark.parametrize(
+        ("runtime", "platform", "hint"),
+        [
+            ("docker", "darwin", "open -a Docker"),
+            ("docker", "linux", "sudo systemctl start docker"),
+            ("podman", "darwin", "podman machine start"),
+        ],
+    )
+    def test_a_stopped_daemon_gets_the_platform_s_start_hint(
+        self, tmp_path, fake_runtime, monkeypatch, runtime, platform, hint
+    ):
+        """NC-5: no Linux systemctl advice on macOS."""
+        monkeypatch.setattr(container_module.sys, "platform", platform)
+        fake_runtime.respond("info", rc=125, err="Cannot connect to the daemon")
+        backend = ContainerBackend(project_root=tmp_path, runtime=runtime, probe_registry=True)
+        [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert hint in str(warning)
+        assert ("systemctl" in str(warning)) == (platform == "linux")
+        assert f"{runtime} info" in fake_runtime.calls
 
-    def test_pulls_when_not_present(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="if-not-present",
-        )
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                # inspect fails — image not present
-                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""),
-                # the daemon answers
-                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
-                # pull succeeds
-                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
-            ]
-            with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
-                backend.prepare(env="docker://myimg:latest")
+    def test_a_reachable_daemon_is_probed_once_per_backend(self, tmp_path, fake_runtime):
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
+        backend.validate_envs(env_names={"docker://img:1", "docker://img:2"})
+        backend.validate_envs(env_names={"docker://img:3"})
+        assert _subcommands(fake_runtime).count("docker info") == 1
 
-            assert mock_run.call_count == 3
-            assert mock_run.call_args_list[2][0][0] == ["docker", "pull", "myimg:latest"]
+    @pytest.mark.usefixtures("short_timeouts")
+    def test_a_hung_daemon_neither_stalls_validation_nor_blames_the_image(
+        self, tmp_path, fake_runtime
+    ):
+        fake_runtime.respond("info", sleep=5)
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
+        assert backend.validate_envs(env_names={"docker://img:1"}) == []
 
-    def test_a_daemon_that_does_not_answer_fails_before_the_pull(self, tmp_path: Path):
+        # A hung local lookup reads as "cannot tell", not as a missing image.
+        fake_runtime.respond("image", sleep=5)
+        never = ContainerBackend(project_root=tmp_path, pull_policy="never")
+        assert never.validate_envs(env_names={"docker://img:2"}) == []
+
+
+# ------------------------------------------------------------------
+# prepare, identity and digest
+# ------------------------------------------------------------------
+
+
+class TestPrepare:
+    @pytest.mark.parametrize(
+        ("pull_policy", "image_rc", "calls"),
+        [
+            # The daemon is checked before a pull, which could otherwise hang.
+            ("always", 0, ["docker info", "docker pull myimg:latest"]),
+            ("if-not-present", 0, ["docker image inspect myimg:latest"]),
+            (
+                "if-not-present",
+                1,
+                ["docker image inspect myimg:latest", "docker info", "docker pull myimg:latest"],
+            ),
+            ("never", 1, []),
+        ],
+    )
+    def test_the_pull_policy_decides_the_pull(
+        self, tmp_path, fake_runtime, pull_policy, image_rc, calls
+    ):
+        fake_runtime.respond("image", rc=image_rc)
+        backend = ContainerBackend(project_root=tmp_path, pull_policy=pull_policy)
+        backend.prepare(env="docker://myimg:latest")
+        backend.prepare(env="docker://myimg:latest")  # idempotent within a session
+        assert fake_runtime.calls == calls
+
+    @pytest.mark.usefixtures("short_timeouts")
+    def test_a_daemon_that_does_not_answer_fails_before_the_pull(self, tmp_path, fake_runtime):
+        fake_runtime.respond("info", sleep=5)
         backend = ContainerBackend(project_root=tmp_path, pull_policy="always")
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd=["docker", "info"], timeout=10)
-            with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
-                with pytest.raises(ContainerDaemonUnreachableError, match="did not answer"):
-                    backend.prepare(env="docker://myimg:latest")
-
-        assert mock_run.call_count == 1
-
-    @pytest.mark.parametrize(("key", "value"), [("pull_policy", "nevr"), ("runtime", "dockr")])
-    def test_an_unknown_setting_value_is_rejected(self, tmp_path: Path, key: str, value: str):
-        with pytest.raises(ValueError, match=f"\\[container\\] {key} must be one of"):
-            container_backend_from_config(
-                project_root=tmp_path, config={"container": {key: value}}
-            )
-
-    def test_never_policy_skips_pull(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="never",
-        )
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
+        with pytest.raises(ContainerDaemonUnreachableError, match="did not answer"):
             backend.prepare(env="docker://myimg:latest")
-            mock_run.assert_not_called()
+        assert "docker pull" not in _subcommands(fake_runtime)
 
-    def test_pull_failure_raises(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="always",
-        )
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
-                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="not found"),
-            ]
-            with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
-                with pytest.raises(ContainerPrepareError, match="myimg:latest"):
-                    backend.prepare(env="docker://myimg:latest")
-
-    def test_idempotent_within_session(self, tmp_path: Path):
-        backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="always",
-        )
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
-                backend.prepare(env="docker://myimg:latest")
-                backend.prepare(env="docker://myimg:latest")
-
-            # Only probed and pulled once.
-            assert mock_run.call_count == 2
+    def test_a_failed_pull_raises_naming_the_image(self, tmp_path, fake_runtime):
+        fake_runtime.respond("pull", rc=1, err="not found")
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="always")
+        with pytest.raises(ContainerPrepareError, match="myimg:latest"):
+            backend.prepare(env="docker://myimg:latest")
 
 
-class TestContainerBackendEnvIdentity:
-    def test_returns_the_declared_image_reference(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        assert backend.env_identity(env="docker://myimg:latest") == "myimg:latest"
+def test_identity_is_the_declared_image_whatever_the_local_store(tmp_path, fake_runtime):
+    """Regression for #194: pulling the image must not move the identity.
 
-    def test_identity_does_not_consult_the_runtime(self, tmp_path: Path):
-        """Identity is needed before the image is pulled, so it cannot shell out."""
-        backend = ContainerBackend(project_root=tmp_path)
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            backend.env_identity(env="docker://myimg:latest")
-
-        mock_run.assert_not_called()
-
-    def test_identity_is_stable_across_the_absent_to_present_transition(self, tmp_path: Path):
-        """Regression for #194: pulling the image must not move the identity.
-
-        The image is pulled by ``prepare``, which runs after the cache key is
-        built. An identity taken from the local image store therefore read as
-        unknown on the run that pulled the image and as a digest on the next
-        one, re-running every container task once.
-        """
-        backend = ContainerBackend(project_root=tmp_path)
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="No such image"
-            )
-            before = backend.env_identity(env="docker://myimg:latest")
-
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="sha256:abc123def456\n", stderr=""
-            )
-            after = backend.env_identity(env="docker://myimg:latest")
-
-        assert before == after
+    The image is pulled by ``prepare``, after the cache key is built, so an
+    identity read from the local store changed on the run that pulled it.
+    """
+    backend = ContainerBackend(project_root=tmp_path)
+    assert backend.env_identity(env="docker://myimg:latest") == "myimg:latest"
+    assert backend.env_lock_path(env="docker://myimg:latest") is None
+    assert fake_runtime.calls == []
 
 
-class TestContainerBackendMaterializedDigest:
-    def test_returns_digest(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="sha256:abc123def456\n", stderr=""
-            )
-            digest = backend.materialized_digest(env="docker://myimg:latest")
+def test_the_materialized_digest_is_read_once_it_exists(tmp_path, fake_runtime):
+    backend = ContainerBackend(project_root=tmp_path)
+    fake_runtime.respond("image", rc=1, err="No such image")
+    # An absent image is not remembered: prepare pulls it, and a later ask sees it.
+    assert backend.materialized_digest(env="docker://myimg:latest") is None
 
-        assert digest == "sha256:abc123def456"
-
-    def test_returns_none_on_failure(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="not found"
-            )
-            digest = backend.materialized_digest(env="docker://myimg:latest")
-
-        assert digest is None
-
-    def test_caches_result(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="sha256:abc\n", stderr=""
-            )
-            backend.materialized_digest(env="docker://myimg:latest")
-            backend.materialized_digest(env="docker://myimg:latest")
-
-        mock_run.assert_called_once()
-
-
-class TestContainerBackendEnvLockPath:
-    def test_returns_none(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        assert backend.env_lock_path(env="docker://img:1") is None
+    fake_runtime.respond("image", out="sha256:abc123def456\n")
+    assert backend.materialized_digest(env="docker://myimg:latest") == "sha256:abc123def456"
+    assert backend.materialized_digest(env="docker://myimg:latest") == "sha256:abc123def456"
+    assert len(fake_runtime.calls) == 2
 
 
 # ------------------------------------------------------------------
-# EnvironmentRouter
+# Kind restriction and routing
 # ------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------
-# Evaluator validation
-# ------------------------------------------------------------------
+@task(kind="shell", env="docker://myimg:latest")
+def _container_shell_task(output_path: str) -> str:
+    return shell(cmd=f"echo ok > {output_path}", output=output_path)
 
 
-class TestContainerKindRestriction:
-    def test_python_task_with_container_env_raises_at_validation(self):
-        from ginkgo import evaluate, task
-
-        @task(env="docker://myimg:latest")
-        def python_in_container(x: int) -> int:
-            return x + 1
-
-        with pytest.raises(TypeError, match="cannot run in a foreign environment"):
-            evaluate(python_in_container(x=1))
-
-    def test_shell_task_with_container_env_passes_validation(self, tmp_path: Path) -> None:
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
-
-        @task(kind="shell", env="docker://myimg:latest")
-        def shell_in_container(output_path: str) -> str:
-            return shell(cmd=f"echo ok > {output_path}", output=output_path)
-
-        output = str(tmp_path / "out.txt")
-
-        backend = ContainerBackend(project_root=tmp_path)
-        evaluator = ConcurrentEvaluator(backend=backend)
-        evaluator.build_graph(shell_in_container(output_path=output))
-
-        # A shell task with a container env is valid: it must pass the kind
-        # restriction (no TypeError) and env validation once a runtime is found.
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
-        ):
-            evaluator._validator.validate_declared_envs(nodes=evaluator.graph.nodes.values())
+@task(kind="shell", env="docker://myimg:other")
+def _other_image_task(output_path: str) -> str:
+    return shell(cmd=f"echo ok > {output_path}", output=output_path)
 
 
-# ------------------------------------------------------------------
-# EnvironmentRouter
-# ------------------------------------------------------------------
+def test_a_python_task_cannot_run_in_a_container():
+    @task(env="docker://myimg:latest")
+    def python_in_container(x: int) -> int:
+        return x + 1
+
+    with pytest.raises(TypeError, match="cannot run in a foreign environment"):
+        evaluate(python_in_container(x=1))
+
+
+def test_a_shell_task_with_a_container_env_passes_validation(tmp_path, fake_runtime):
+    evaluator = ConcurrentEvaluator(backend=ContainerBackend(project_root=tmp_path))
+    evaluator.build_graph(_container_shell_task(output_path=str(tmp_path / "out.txt")))
+    evaluator._validator.validate_declared_envs(nodes=evaluator.graph.nodes.values())
 
 
 def _composite(tmp_path: Path, *, pull_policy: str | None = None) -> EnvironmentRouter:
@@ -773,16 +410,18 @@ def _composite(tmp_path: Path, *, pull_policy: str | None = None) -> Environment
 
 
 class TestEnvironmentRouter:
-    def _make_composite(self, tmp_path: Path) -> EnvironmentRouter:
-        return _composite(tmp_path)
+    def test_container_envs_share_one_container_backend(self, tmp_path, fake_runtime):
+        composite = _composite(tmp_path)
+        fake_runtime.respond("image", out="sha256:abc\n")
 
-    def test_routes_container_env_to_container_backend(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-        argv = composite.exec_argv(env="docker://img:1", cmd="echo hi")
-        assert argv[0] == "docker"
-        assert "run" in argv
+        assert composite.exec_argv(env="docker://img:1", cmd="echo hi")[:2] == ["docker", "run"]
+        assert composite.env_identity(env="oci://img:1") == "img:1"
+        assert composite.env_lock_path(env="docker://img:1") is None
+        assert composite.materialized_digest(env="docker://img:1") == "sha256:abc"
+        composite.validate_envs(env_names={"docker://img:1"})
+        assert len(composite._built) == 1
 
-    def test_routes_a_bare_name_to_the_bare_name_environment(self, tmp_path: Path):
+    def test_a_bare_name_routes_to_the_bare_name_environment(self, tmp_path: Path):
         bare = Plugin(
             name="bare",
             contributions=(
@@ -792,171 +431,61 @@ class TestEnvironmentRouter:
             ),
         )
         with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, bare))):
-            argv = self._make_composite(tmp_path).exec_argv(env="myenv", cmd="echo hi")
+            argv = _composite(tmp_path).exec_argv(env="myenv", cmd="echo hi")
         assert argv == ["bash", "-eo", "pipefail", "-c", "echo hi"]
 
-    def test_a_bare_name_without_ginkgo_pixi_names_the_plugin(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-        with pytest.raises(PluginNotFoundError, match="Install ginkgo-pixi to add it"):
-            composite.exec_argv(env="myenv", cmd="echo hi")
-
-    def test_validate_envs_partitions(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-
-        # Container validation passes (runtime mock), Pixi env not found.
-        with (
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
-        ):
-            # Only container envs — should pass.
-            composite.validate_envs(env_names={"docker://img:1"})
-
-    def test_a_scheme_no_plugin_serves_is_refused(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-        with pytest.raises(PluginNotFoundError, match="environment for scheme 'singularity'"):
-            composite.exec_argv(env="singularity://img:1", cmd="ls")
-
-    def test_docker_and_oci_share_one_container_backend(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-        composite.env_identity(env="docker://img:1")
-        composite.env_identity(env="oci://img:1")
-        assert len(composite._built) == 1
-
-    def test_env_lock_path_delegates(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-        assert composite.env_lock_path(env="docker://img:1") is None
-
-    def test_env_identity_delegates(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-        assert composite.env_identity(env="docker://img:1") == "img:1"
-
-    def test_materialized_digest_delegates(self, tmp_path: Path):
-        composite = self._make_composite(tmp_path)
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="sha256:abc\n", stderr=""
-            )
-            digest = composite.materialized_digest(env="docker://img:1")
-        assert digest == "sha256:abc"
+    @pytest.mark.parametrize(
+        ("env", "match"),
+        [
+            ("myenv", "Install ginkgo-pixi to add it"),
+            ("singularity://img:1", "environment for scheme 'singularity'"),
+        ],
+    )
+    def test_an_env_no_plugin_serves_is_refused(self, tmp_path: Path, env: str, match: str):
+        with pytest.raises(PluginNotFoundError, match=match):
+            _composite(tmp_path).exec_argv(env=env, cmd="ls")
 
 
 # ------------------------------------------------------------------
-# End-to-end evaluator tests with mocked container execution
+# End to end through the evaluator
 # ------------------------------------------------------------------
 
 
-@task(kind="shell", env="docker://myimg:latest")
-def _container_shell_task(output_path: str) -> str:
-    return shell(cmd=f"echo ok > {output_path}", output=output_path)
+def test_a_container_shell_task_runs_and_records_its_image(tmp_path, fake_runtime):
+    """evaluator -> EnvironmentRouter -> ``docker run``, with provenance."""
+    fake_runtime.respond("image", out="sha256:deadbeef1234\n")
+    output = tmp_path / "result.txt"
+    ledger = Ledger.start(root=tmp_path)
+
+    result = evaluate(
+        _container_shell_task(output_path=str(output)),
+        backend=_composite(tmp_path, pull_policy="never"),
+        run_dir=ledger.run_dir,
+        event_bus=ledger.bus,
+    )
+
+    assert str(result) == str(output)
+    assert output.read_text() == "ok\n"
+    [run] = [call for call in fake_runtime.calls if call.startswith("docker run")]
+    assert "myimg:latest" in run.split()
+    [task_entry] = ledger.tasks().values()
+    ledger.close()
+    assert task_entry["backend"] == "container"
+    assert task_entry["container_image_digest"] == "sha256:deadbeef1234"
 
 
-class TestContainerShellE2E:
-    """Verify the full evaluator → EnvironmentRouter → subprocess path."""
+def test_the_cache_key_follows_the_declared_image_not_the_local_store(tmp_path, fake_runtime):
+    """A key built from the pulled image's ID moved on the first pull (#194)."""
+    store = CacheStore(index=CacheIndex.in_memory(), backend=_composite(tmp_path))
+    resolved_args = {"output_path": str(tmp_path / "out.txt")}
 
-    def test_shell_task_executes_through_container_backend(self, tmp_path: Path):
-        """A shell task with a container env runs via ``docker run``."""
-        from ginkgo import evaluate
-        from ginkgo.runtime.task_runners.shell import ShellRunner
+    def key_for(task_def, *, image_present: bool) -> str:
+        if image_present:
+            fake_runtime.respond("image", out="sha256:abc123\n")
+        else:
+            fake_runtime.respond("image", rc=1)
+        return store.build_cache_key(task_def=task_def, resolved_args=resolved_args)[0]
 
-        output_file = tmp_path / "result.txt"
-        captured_argv: list[Any] = []
-
-        def mock_run_subprocess(self_runner, *, argv, on_stdout=None, on_stderr=None, **kwargs):
-            captured_argv.append(argv)
-            output_file.write_text("ok\n")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-
-        with (
-            patch.object(ShellRunner, "run_subprocess", mock_run_subprocess),
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
-        ):
-            result = evaluate(
-                _container_shell_task(output_path=str(output_file)),
-                backend=_composite(tmp_path, pull_policy="never"),
-            )
-
-        assert str(result) == str(output_file)
-        assert len(captured_argv) == 1
-        argv = captured_argv[0]
-        assert argv[0] == "docker"
-        assert "run" in argv
-        assert "myimg:latest" in argv
-
-    def test_provenance_records_container_metadata(self, tmp_path: Path):
-        """Provenance manifest includes backend type and image digest."""
-        from ginkgo import evaluate
-        from tests.conftest import Ledger
-
-        output_file = tmp_path / "result.txt"
-        ledger = Ledger.start(root=tmp_path)
-
-        from ginkgo.runtime.task_runners.shell import ShellRunner
-
-        def mock_run_subprocess(self_runner, *, argv, on_stdout=None, on_stderr=None, **kwargs):
-            output_file.write_text("ok\n")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-
-        with (
-            patch.object(ShellRunner, "run_subprocess", mock_run_subprocess),
-            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
-            patch("ginkgo.envs.container.subprocess.run") as mock_container_run,
-        ):
-            mock_container_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="sha256:deadbeef1234\n", stderr=""
-            )
-
-            evaluate(
-                _container_shell_task(output_path=str(output_file)),
-                backend=_composite(tmp_path, pull_policy="never"),
-                run_dir=ledger.run_dir,
-                event_bus=ledger.bus,
-            )
-
-        tasks = ledger.tasks()
-        ledger.close()
-        assert len(tasks) == 1
-        task_entry = next(iter(tasks.values()))
-        assert task_entry["backend"] == "container"
-        assert task_entry["container_image_digest"] == "sha256:deadbeef1234"
-
-    def test_container_cache_uses_the_declared_image_reference(self, tmp_path: Path) -> None:
-        """The cache key follows the declared image, not the local image store.
-
-        A key built from the pulled image's ID moved the first time the image
-        was pulled, because the key is built before ``prepare`` pulls it
-        (issue #194).
-        """
-        from ginkgo.runtime.caching.cache import CacheStore
-        from ginkgo.runtime.caching.index import CacheIndex
-
-        @task(kind="shell", env="docker://myimg:latest")
-        def shell_task(output_path: str) -> str:
-            return shell(cmd=f"echo ok > {output_path}", output=output_path)
-
-        @task(kind="shell", env="docker://myimg:other")
-        def other_image_task(output_path: str) -> str:
-            return shell(cmd=f"echo ok > {output_path}", output=output_path)
-
-        store = CacheStore(
-            index=CacheIndex.in_memory(),
-            backend=_composite(tmp_path, pull_policy="never"),
-        )
-        resolved_args = {"output_path": str(tmp_path / "out.txt")}
-
-        def key_for(task_def: Any, *, image_present: bool) -> str:
-            with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[],
-                    returncode=0 if image_present else 1,
-                    stdout="sha256:abc123\n" if image_present else "",
-                    stderr="",
-                )
-                key, _ = store.build_cache_key(task_def=task_def, resolved_args=resolved_args)
-            return key
-
-        # A different image invalidates the key; pulling the same image does not.
-        assert key_for(shell_task, image_present=False) != key_for(
-            other_image_task, image_present=False
-        )
-        assert key_for(shell_task, image_present=False) == key_for(shell_task, image_present=True)
+    absent = key_for(_container_shell_task, image_present=False)
+    assert absent == key_for(_container_shell_task, image_present=True)
+    assert absent != key_for(_other_image_task, image_present=False)

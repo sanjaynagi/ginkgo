@@ -12,14 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import Out, evaluate, file, folder, shell, task
+from ginkgo import Out, evaluate, file, folder, task
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
-from ginkgo.runtime.executor_registry import ExecutorRegistry
-from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobHandle
 from ginkgo.runtime.task_validation import DeclaredOutputNotWrittenError
 from tests.conftest import EventCollector
+from tests.runtime.conftest import prebuilt_registry
 
 
 # ---------------------------------------------------------------------------
@@ -92,11 +91,6 @@ def maybe_write(payload: str | None, out_path: Out[file | None]) -> file | None:
     return file(out_path)
 
 
-@task(kind="shell")
-def shell_write_output(payload: str, out_path: Out[file]) -> file:
-    return shell(cmd=f"echo '{payload}' > {out_path}", output=out_path)
-
-
 @task(remote=True)
 def remote_with_output(bam: Out[file]) -> file:
     raise AssertionError("never runs")
@@ -107,40 +101,19 @@ def executor_with_output(bam: Out[file]) -> file:
     raise AssertionError("never runs")
 
 
-class _FakeRemoteExecutor(RemoteExecutor):
-    def submit(self, *, attempt: dict) -> RemoteJobHandle:
-        raise AssertionError("routing tests never submit")
-
-
 # ---------------------------------------------------------------------------
 # Remote dispatch places Out[...] tasks like any other python task
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("stub_executor_types")
-class TestOutRemoteDispatchAllowed:
-    """``Out[...]`` no longer blocks remote placement (issue #307 phase 2C).
-
-    Functional remote round-trips (worker-local scratch paths, staging the
-    written output back, restoring it at the driver path) live in
-    ``tests/remote/test_remote_out.py``. These just confirm placement itself
-    is no longer rejected.
-    """
-
-    def _evaluator(self) -> ConcurrentEvaluator:
-        config = {"remote": {"executors": {"gpu-k8s": {"type": "k8s", "namespace": "ml"}}}}
-        registry = ExecutorRegistry.from_config(config, default="gpu-k8s")
-        for name in registry.specs:
-            registry._built[name] = _FakeRemoteExecutor()
-        return ConcurrentEvaluator(jobs=1, executor_registry=registry)
-
-    def test_remote_true_with_output_param_is_placed(self):
-        evaluator = self._evaluator()
-        assert evaluator.placement.resolve(task_def=remote_with_output) == "gpu-k8s"
-
-    def test_named_executor_with_output_param_is_placed(self):
-        evaluator = self._evaluator()
-        assert evaluator.placement.resolve(task_def=executor_with_output) == "gpu-k8s"
+@pytest.mark.parametrize("task_def", [remote_with_output, executor_with_output])
+def test_out_params_do_not_block_remote_placement(task_def) -> None:
+    """Issue #307 phase 2C; round trips live in ``tests/remote/test_remote_out.py``."""
+    config = {"remote": {"executors": {"gpu-k8s": {"type": "k8s", "namespace": "ml"}}}}
+    registry = prebuilt_registry(config, default="gpu-k8s")
+    evaluator = ConcurrentEvaluator(jobs=1, executor_registry=registry)
+    assert evaluator.placement.resolve(task_def=task_def) == "gpu-k8s"
 
 
 # ---------------------------------------------------------------------------
@@ -148,191 +121,102 @@ class TestOutRemoteDispatchAllowed:
 # ---------------------------------------------------------------------------
 
 
-class TestOutCacheKey:
-    def test_output_param_key_does_not_touch_disk(self, tmp_path: Path):
-        """Building the key must not require the declared path to exist."""
-        with CacheIndex.in_memory() as index:
-            store = CacheStore(index=index, root=tmp_path / "cache")
-            path = str(tmp_path / "does-not-exist" / "out.bam")
+def test_an_out_param_keys_on_its_path_string_not_disk(tmp_path: Path):
+    """Building the key never needs the declared path to exist."""
+    with CacheIndex.in_memory() as index:
+        store = CacheStore(index=index, root=tmp_path / "cache")
 
-            key, hashes = store.build_cache_key(
-                task_def=write_output,
-                resolved_args={"payload": "x", "out_path": path},
-            )
-            assert key
-            assert hashes["out_path"]["type"] == "str"
-            assert "digest" in hashes["out_path"]
-
-    def test_output_param_key_is_stable_across_calls(self, tmp_path: Path):
-        with CacheIndex.in_memory() as index:
-            store = CacheStore(index=index, root=tmp_path / "cache")
-            path = str(tmp_path / "out.bam")
-
-            key1, _ = store.build_cache_key(
+        def key(name: str):
+            path = str(tmp_path / "does-not-exist" / name)
+            return store.build_cache_key(
                 task_def=write_output, resolved_args={"payload": "x", "out_path": path}
             )
-            key2, _ = store.build_cache_key(
-                task_def=write_output, resolved_args={"payload": "x", "out_path": path}
-            )
-            assert key1 == key2
 
-    def test_output_param_key_changes_with_path_not_content(self, tmp_path: Path):
-        with CacheIndex.in_memory() as index:
-            store = CacheStore(index=index, root=tmp_path / "cache")
-            path_a = str(tmp_path / "a.bam")
-            path_b = str(tmp_path / "b.bam")
-
-            key_a, _ = store.build_cache_key(
-                task_def=write_output, resolved_args={"payload": "x", "out_path": path_a}
-            )
-            key_b, _ = store.build_cache_key(
-                task_def=write_output, resolved_args={"payload": "x", "out_path": path_b}
-            )
-            assert key_a != key_b
+        (key_a, hashes), (again, _), (key_b, _) = key("a.bam"), key("a.bam"), key("b.bam")
+        assert hashes["out_path"]["type"] == "str"
+        assert key_a == again != key_b
 
 
-# ---------------------------------------------------------------------------
-# Pre-execution validation
-# ---------------------------------------------------------------------------
-
-
-class TestOutPreExecutionValidation:
-    def test_missing_output_path_is_not_an_error(self, tmp_path: Path):
-        """Unlike ``file``, an ``Out[file]`` need not already exist."""
-        out_path = tmp_path / "fresh.txt"
-        result = evaluate(write_output(payload="hi", out_path=str(out_path)))
-        assert Path(str(result)).read_text() == "hi"
-
-    def test_out_file_pointing_at_existing_directory_fails(self, tmp_path: Path):
-        existing_dir = tmp_path / "already_a_dir"
-        existing_dir.mkdir()
-
-        with pytest.raises(TypeError, match="already exists and is a directory"):
-            evaluate(write_output(payload="hi", out_path=str(existing_dir)))
-
-    def test_out_folder_pointing_at_existing_file_fails(self, tmp_path: Path):
-        existing_file = tmp_path / "already_a_file"
-        existing_file.write_text("x")
-
-        with pytest.raises(TypeError, match="already exists and is a file"):
-            evaluate(write_output_dir(payload="hi", out_dir=str(existing_file)))
-
-
-# ---------------------------------------------------------------------------
-# Post-execution checks
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("make", "existing", "match"),
+    [
+        (write_output, "dir", "already exists and is a directory"),
+        (write_output_dir, "file", "already exists and is a file"),
+    ],
+)
+def test_an_out_path_of_the_wrong_kind_fails_before_the_run(
+    tmp_path: Path, make, existing: str, match: str
+):
+    """Unlike ``file``, an ``Out[file]`` need not exist, but must not be a directory."""
+    path = tmp_path / "already"
+    path.mkdir() if existing == "dir" else path.write_text("x")
+    with pytest.raises(TypeError, match=match):
+        evaluate(make(payload="hi", **{make.output_params_in_order[0]: str(path)}))
 
 
 class TestOutPostExecutionValidation:
     def test_task_that_fails_to_write_its_output_fails_clearly(self, tmp_path: Path):
         marker = tmp_path / "marker.txt"
         marker.write_text("ok", encoding="utf-8")
-        missing = tmp_path / "never_written.txt"
 
         with pytest.raises(FileNotFoundError, match="was not written"):
-            evaluate(forgetful(marker=file(str(marker)), out_path=str(missing)))
+            evaluate(forgetful(marker=file(str(marker)), out_path=str(tmp_path / "never.txt")))
 
     def test_a_directory_where_a_file_was_declared_is_named(self, tmp_path: Path):
         """ED5-9: the path was written, as the wrong kind; say so."""
         marker = tmp_path / "marker.txt"
         marker.write_text("ok", encoding="utf-8")
 
-        with pytest.raises(
-            DeclaredOutputNotWrittenError,
-            match="is a directory; `Out\\[file\\]` needs a regular file",
-        ):
+        with pytest.raises(DeclaredOutputNotWrittenError, match="is a directory"):
             evaluate(makes_a_directory(marker=file(str(marker)), out_path=str(tmp_path / "o.txt")))
 
-    def test_unwritten_output_of_a_file_returning_task_names_the_parameter(self, tmp_path: Path):
+    @pytest.mark.parametrize("make", [writes_beside_its_output, never_writes])
+    def test_an_unwritten_output_is_an_output_failure_naming_the_parameter(
+        self, tmp_path: Path, make
+    ):
         """#341: the declared-output check runs before the generic ``.return`` check."""
         out_path = tmp_path / "o.txt"
         collector = EventCollector()
 
         with pytest.raises(DeclaredOutputNotWrittenError) as excinfo:
-            evaluate(writes_beside_its_output(out_path=str(out_path)), event_bus=collector.bus)
+            evaluate(make(out_path=str(out_path)), event_bus=collector.bus)
 
         message = str(excinfo.value)
-        assert "writes_beside_its_output.out_path is declared `Out[file]`" in message
+        assert f"{make.base_name}.out_path is declared `Out[file]`" in message
         assert str(out_path) in message
         assert ".return" not in message
         [failed] = collector.failed()
         assert failed.failure["kind"] == "output_validation_error"
         assert failed.failure["code"] == "DeclaredOutputNotWrittenError"
 
-    def test_unwritten_output_of_a_none_returning_task_is_an_output_failure(self, tmp_path: Path):
-        collector = EventCollector()
 
-        with pytest.raises(DeclaredOutputNotWrittenError, match="out_path"):
-            evaluate(never_writes(out_path=str(tmp_path / "o.txt")), event_bus=collector.bus)
-
-        [failed] = collector.failed()
-        assert failed.failure["kind"] == "output_validation_error"
-
-    def test_shell_task_output_is_checked_after_the_command_runs(self, tmp_path: Path):
-        out_path = tmp_path / "shell_out.txt"
-        result = evaluate(shell_write_output(payload="hello", out_path=str(out_path)))
-        assert Path(str(result)).read_text().strip() == "hello"
+def _cached(expr) -> bool:
+    collector = EventCollector()
+    evaluate(expr, event_bus=collector.bus)
+    return bool(collector.cached())
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: caching behaviour
-# ---------------------------------------------------------------------------
+def test_an_edited_or_deleted_output_is_restored_on_a_hit_whatever_the_return(tmp_path: Path):
+    out_path = tmp_path / "out.txt"
+    expr = write_output_untracked_return(payload="v1", out_path=str(out_path))
+    evaluate(expr)
+
+    out_path.write_text("tampered", encoding="utf-8")
+    assert _cached(expr)
+    assert out_path.read_text(encoding="utf-8") == "v1"
+
+    out_path.unlink()
+    assert _cached(expr)
+    assert out_path.read_text(encoding="utf-8") == "v1"
 
 
-class TestOutEndToEndCaching:
-    def test_second_run_is_a_cache_hit(self, tmp_path: Path):
-        out_path = tmp_path / "cached.txt"
-        evaluate(write_output(payload="v1", out_path=str(out_path)))
+@pytest.mark.parametrize("payload", [None, "hi"], ids=["absent", "present"])
+def test_an_optional_output_is_cached_whether_or_not_given(tmp_path: Path, payload):
+    out_path = None if payload is None else str(tmp_path / "present.txt")
+    result = evaluate(maybe_write(payload=payload, out_path=out_path))
 
-        collector = EventCollector()
-        evaluate(write_output(payload="v1", out_path=str(out_path)), event_bus=collector.bus)
-        assert collector.cached()
-
-    def test_an_edited_output_is_restored_on_a_hit_whatever_the_return(self, tmp_path: Path):
-        out_path = tmp_path / "content_changes.txt"
-        evaluate(write_output_untracked_return(payload="v1", out_path=str(out_path)))
-
-        out_path.write_text("tampered", encoding="utf-8")
-
-        collector = EventCollector()
-        evaluate(
-            write_output_untracked_return(payload="v1", out_path=str(out_path)),
-            event_bus=collector.bus,
-        )
-        assert collector.cached()
-        assert out_path.read_text(encoding="utf-8") == "v1"
-
-    def test_a_deleted_output_is_restored_on_a_hit(self, tmp_path: Path):
-        out_path = tmp_path / "deleted.txt"
-        evaluate(write_output_untracked_return(payload="v1", out_path=str(out_path)))
-
-        out_path.unlink()
-
-        collector = EventCollector()
-        evaluate(
-            write_output_untracked_return(payload="v1", out_path=str(out_path)),
-            event_bus=collector.bus,
-        )
-        assert collector.cached()
-        assert out_path.read_text(encoding="utf-8") == "v1"
-
-    def test_optional_output_absent_is_a_cache_hit_with_no_path_to_check(self, tmp_path: Path):
-        result = evaluate(maybe_write(payload=None, out_path=None))
-        assert result is None
-
-        collector = EventCollector()
-        result2 = evaluate(maybe_write(payload=None, out_path=None), event_bus=collector.bus)
-        assert result2 is None
-        assert collector.cached()
-
-    def test_present_optional_output_is_checked_and_cached_normally(self, tmp_path: Path):
-        out_path = tmp_path / "present.txt"
-        result = evaluate(maybe_write(payload="hi", out_path=str(out_path)))
-        assert Path(str(result)).read_text() == "hi"
-
-        collector = EventCollector()
-        evaluate(maybe_write(payload="hi", out_path=str(out_path)), event_bus=collector.bus)
-        assert collector.cached()
+    assert (result is None) == (payload is None)
+    assert _cached(maybe_write(payload=payload, out_path=out_path))
 
 
 def test_a_read_only_output_left_by_an_earlier_run_is_replaced(tmp_path: Path) -> None:

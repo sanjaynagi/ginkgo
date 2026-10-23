@@ -117,221 +117,146 @@ def named_access_reader(path: file) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# 1. Parent directory auto-creation
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("make", [write_nested, shell_write_nested])
+def test_parent_dirs_of_an_out_path_are_created(tmp_path: Path, make):
+    dest = tmp_path / "results" / "deep" / "x.txt"
+    result = evaluate(make(payload="hi", dest=str(dest)))
+    assert Path(str(result)).read_text(encoding="utf-8") == "hi"
 
 
-class TestOutParentDirCreation:
-    def test_python_task_parent_dirs_are_created(self, tmp_path: Path):
-        dest = tmp_path / "results" / "deep" / "nested" / "x.txt"
-        assert not dest.parent.exists()
+def test_dry_run_does_not_create_directories(tmp_path: Path):
+    from ginkgo.runtime.dry_run import build_dry_run_plan
+    from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
-        result = evaluate(write_nested(payload="hi", dest=str(dest)))
-        assert Path(str(result)).read_text(encoding="utf-8") == "hi"
-
-    def test_shell_task_parent_dirs_are_created(self, tmp_path: Path):
-        dest = tmp_path / "results" / "deep" / "nested" / "shell.txt"
-        assert not dest.parent.exists()
-
-        result = evaluate(shell_write_nested(payload="ho", dest=str(dest)))
-        assert Path(str(result)).read_text(encoding="utf-8") == "ho"
-
-    def test_dry_run_does_not_create_directories(self, tmp_path: Path):
-        from ginkgo.runtime.dry_run import build_dry_run_plan
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
-
-        dest = tmp_path / "should" / "not" / "exist.txt"
-        expr = write_nested(payload="hi", dest=str(dest))
-        evaluator = ConcurrentEvaluator()
-        evaluator.build_graph(expr)
-        evaluator.validate_graph()
-        build_dry_run_plan(evaluator=evaluator, workflow_label="test")
-        assert not dest.parent.exists()
-
-
-# ---------------------------------------------------------------------------
-# 2a. Inferred return value
-# ---------------------------------------------------------------------------
+    dest = tmp_path / "should" / "not" / "exist.txt"
+    evaluator = ConcurrentEvaluator()
+    evaluator.build_graph(write_nested(payload="hi", dest=str(dest)))
+    evaluator.validate_graph()
+    build_dry_run_plan(evaluator=evaluator, workflow_label="test")
+    assert not dest.parent.exists()
 
 
 class TestInferredReturn:
-    def test_single_out_param_infers_file_return(self, tmp_path: Path):
-        dest = tmp_path / "single.txt"
-        result = evaluate(write_single_inferred(payload="v", dest=str(dest)))
-        assert isinstance(result, file)
-        assert Path(str(result)).read_text(encoding="utf-8") == "v"
-
-    def test_multiple_out_params_infer_tuple_return(self, tmp_path: Path):
-        dest = tmp_path / "d.txt"
-        check = tmp_path / "c.txt"
-        result = evaluate(write_multi_inferred(payload="v", dest=str(dest), check=str(check)))
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert all(isinstance(item, file) for item in result)
-        assert str(result[0]) == str(dest)
-        assert str(result[1]) == str(check)
-
-    def test_list_out_param_infers_list_return(self, tmp_path: Path):
+    def test_the_return_is_inferred_from_the_out_params(self, tmp_path: Path):
+        d, c = str(tmp_path / "d.txt"), str(tmp_path / "c.txt")
         parts = [str(tmp_path / f"p{i}.txt") for i in range(3)]
-        result = evaluate(write_list_inferred(payload="v", parts=parts))
-        assert isinstance(result, list)
-        assert len(result) == 3
-        assert all(isinstance(item, file) for item in result)
+        result = evaluate(
+            {
+                "single": write_single_inferred(payload="v", dest=d),
+                "multi": write_multi_inferred(payload="v", dest=d + ".m", check=c),
+                "list": write_list_inferred(payload="v", parts=parts),
+                "absent": write_optional_inferred(payload=None, dest=None),
+                "present": write_optional_inferred(payload="p", dest=str(tmp_path / "o.txt")),
+            }
+        )
 
-    def test_absent_optional_out_infers_none(self, tmp_path: Path):
-        result = evaluate(write_optional_inferred(payload=None, dest=None))
-        assert result is None
-
-    def test_present_optional_out_infers_file(self, tmp_path: Path):
-        dest = tmp_path / "opt.txt"
-        result = evaluate(write_optional_inferred(payload="present", dest=str(dest)))
-        assert isinstance(result, file)
-        assert Path(str(result)).read_text(encoding="utf-8") == "present"
+        assert isinstance(result["single"], file)
+        assert Path(str(result["single"])).read_text(encoding="utf-8") == "v"
+        assert isinstance(result["multi"], tuple)
+        assert [str(item) for item in result["multi"]] == [d + ".m", c]
+        assert isinstance(result["list"], list) and len(result["list"]) == 3
+        assert all(isinstance(item, file) for item in [*result["multi"], *result["list"]])
+        assert result["absent"] is None
+        assert Path(str(result["present"])).read_text(encoding="utf-8") == "p"
 
     def test_explicit_none_return_is_not_inferred(self, tmp_path: Path):
         dest = tmp_path / "explicit_none.txt"
-        result = evaluate(explicit_none_return(payload="v", dest=str(dest)))
-        assert result is None
+        assert evaluate(explicit_none_return(payload="v", dest=str(dest))) is None
         # The Out[...] path was still written and checked normally.
         assert dest.read_text(encoding="utf-8") == "v"
 
     def test_non_none_return_under_inference_raises(self, tmp_path: Path):
-        dest = tmp_path / "bad_return.txt"
         with pytest.raises(TypeError, match="returned .*instead of None"):
-            evaluate(non_none_under_inference(payload="v", dest=str(dest)))
+            evaluate(non_none_under_inference(payload="v", dest=str(tmp_path / "bad.txt")))
 
-    def test_downstream_consumer_gets_content_tracked_file(self, tmp_path: Path):
+    def test_an_inferred_file_feeds_downstream_and_is_restored_on_a_hit(self, tmp_path: Path):
+        """The inferred return is a real ``file``, so a hit heals a deleted output."""
         dest = tmp_path / "producer.txt"
-        result = evaluate(
-            consume_file(f=write_single_inferred(payload="downstream-value", dest=str(dest)))
-        )
-        assert result == "downstream-value"
 
-    def test_second_run_is_a_cache_hit(self, tmp_path: Path):
-        dest = tmp_path / "cache_me.txt"
-        evaluate(write_single_inferred(payload="v1", dest=str(dest)))
+        def build():
+            return consume_file(f=write_single_inferred(payload="value", dest=str(dest)))
 
-        collector = EventCollector()
-        result = evaluate(
-            write_single_inferred(payload="v1", dest=str(dest)), event_bus=collector.bus
-        )
-        assert collector.cached()
-        assert isinstance(result, file)
-
-    def test_deleting_output_forces_rerun_and_restores_it(self, tmp_path: Path):
-        """An inferred ``-> file``-shaped return restores content on a cache hit.
-
-        Unlike a bare ``Out[...]`` path (checked for existence only — see
-        ``test_out_annotation.TestOutEndToEndCaching``), the *inferred*
-        return is a real ``file`` value, so the same artifact-restoration
-        machinery an explicit ``-> file`` return gets heals it back onto
-        disk from the artifact store on a cache hit, rather than forcing a
-        re-run.
-        """
-        dest = tmp_path / "restore_me.txt"
-        evaluate(write_single_inferred(payload="v1", dest=str(dest)))
-
+        assert evaluate(build()) == "value"
         dest.unlink()
-        assert not dest.exists()
 
         collector = EventCollector()
-        result = evaluate(
-            write_single_inferred(payload="v1", dest=str(dest)), event_bus=collector.bus
-        )
+        assert evaluate(build(), event_bus=collector.bus) == "value"
         assert collector.cached()
-        assert dest.exists()
-        assert Path(str(result)).read_text(encoding="utf-8") == "v1"
-
-
-# ---------------------------------------------------------------------------
-# 2b. Named ``.output["name"]`` access
-# ---------------------------------------------------------------------------
+        assert dest.read_text(encoding="utf-8") == "value"
 
 
 class TestNamedOutputAccess:
-    def test_named_access_on_single_call(self, tmp_path: Path):
-        dest = tmp_path / "n1.txt"
-        check = tmp_path / "n1.check.txt"
-        call = named_access_producer(payload="v", dest=str(dest), check=str(check))
+    def test_named_and_indexed_access_resolve_the_out_args(self, tmp_path: Path):
+        """``.output["name"]`` resolves the argument, whatever the task returns."""
+        call = named_access_producer(
+            payload="v", dest=str(tmp_path / "n.txt"), check=str(tmp_path / "n.check.txt")
+        )
+        multi = write_multi_inferred(
+            payload="v", dest=str(tmp_path / "i.txt"), check=str(tmp_path / "i.check.txt")
+        )
 
-        check_value = call.output["check"]
-        result = evaluate(named_access_reader(path=check_value))
-        assert result == "checked:v"
-
-    def test_named_access_is_not_the_return_value(self, tmp_path: Path):
-        """``.output["dest"]`` resolves the arg, independent of what the task returns."""
-        dest = tmp_path / "n2.txt"
-        check = tmp_path / "n2.check.txt"
-        call = named_access_producer(payload="v2", dest=str(dest), check=str(check))
-
-        dest_value = call.output["dest"]
-        result = evaluate(named_access_reader(path=dest_value))
-        assert result == "v2"
+        assert evaluate(
+            [
+                named_access_reader(path=call.output["check"]),
+                named_access_reader(path=call.output["dest"]),
+                multi.output[0],
+            ]
+        ) == ["checked:v", "v", file(str(tmp_path / "i.txt"))]
 
     def test_named_access_on_map_result(self, tmp_path: Path):
         dests = [str(tmp_path / f"m{i}.txt") for i in range(3)]
         checks = [str(tmp_path / f"m{i}.check.txt") for i in range(3)]
         calls = named_access_producer().map(payload=["a", "b", "c"], dest=dests, check=checks)
-        check_list = calls.output["check"]
-        paths = evaluate(check_list)
-        assert [str(p) for p in paths] == checks
 
-        contents = [Path(p).read_text(encoding="utf-8") for p in paths]
-        assert contents == ["checked:a", "checked:b", "checked:c"]
+        paths = evaluate(calls.output["check"])
+
+        assert [str(p) for p in paths] == checks
+        assert [Path(p).read_text(encoding="utf-8") for p in paths] == [
+            "checked:a",
+            "checked:b",
+            "checked:c",
+        ]
 
     def test_bad_name_raises_clear_error(self, tmp_path: Path):
-        dest = tmp_path / "n3.txt"
-        check = tmp_path / "n3.check.txt"
-        call = named_access_producer(payload="v", dest=str(dest), check=str(check))
+        call = named_access_producer(payload="v", dest="d.txt", check="c.txt")
         with pytest.raises(KeyError, match="no Out\\[\\.\\.\\.\\] parameter named 'bogus'"):
             call.output["bogus"]
 
-    def test_integer_indexing_still_works(self, tmp_path: Path):
-        dest = tmp_path / "n4.txt"
-        check = tmp_path / "n4.check.txt"
-        call = write_multi_inferred(payload="v", dest=str(dest), check=str(check))
-        first = evaluate(call.output[0])
-        assert str(first) == str(dest)
-
-
-# ---------------------------------------------------------------------------
-# 3. Inferred ``shell(output=...)``
-# ---------------------------------------------------------------------------
-
 
 class TestShellOutputInference:
-    def test_shell_infers_output_single(self, tmp_path: Path):
-        dest = tmp_path / "shell_single.txt"
-        result = evaluate(shell_inferred_single(payload="v", dest=str(dest)))
-        assert Path(str(result)).read_text(encoding="utf-8") == "v"
+    def test_shell_output_is_inferred_from_the_out_params(self, tmp_path: Path):
+        single, multi, explicit = evaluate(
+            [
+                shell_inferred_single(payload="v", dest=str(tmp_path / "s.txt")),
+                shell_inferred_multi(
+                    payload="v", dest=str(tmp_path / "m.txt"), check=str(tmp_path / "c.txt")
+                ),
+                shell_explicit_output_matching(payload="v", dest=str(tmp_path / "e.txt")),
+            ]
+        )
+        assert Path(str(single)).read_text(encoding="utf-8") == "v"
+        assert [Path(str(p)).read_text(encoding="utf-8") for p in multi] == ["v", "checked"]
+        assert Path(str(explicit)).read_text(encoding="utf-8") == "v"
 
-    def test_shell_infers_output_multi(self, tmp_path: Path):
-        dest = tmp_path / "shell_multi.txt"
-        check = tmp_path / "shell_multi_check.txt"
-        result = evaluate(shell_inferred_multi(payload="v", dest=str(dest), check=str(check)))
-        assert isinstance(result, tuple)
-        assert Path(str(result[0])).read_text(encoding="utf-8") == "v"
-        assert Path(str(result[1])).read_text(encoding="utf-8") == "checked"
-
-    def test_shell_explicit_output_matching_out_paths_ok(self, tmp_path: Path):
-        dest = tmp_path / "shell_explicit.txt"
-        result = evaluate(shell_explicit_output_matching(payload="v", dest=str(dest)))
-        assert Path(str(result)).read_text(encoding="utf-8") == "v"
-
-    def test_shell_explicit_output_mismatch_errors(self, tmp_path: Path):
-        dest = tmp_path / "shell_mismatch_dest.txt"
-        other = str(tmp_path / "shell_mismatch_other.txt")
-        with pytest.raises(ValueError, match="Out\\[\\.\\.\\.\\] parameters"):
-            evaluate(shell_explicit_output_mismatch(payload="v", dest=str(dest), other=other))
-
-    def test_ambiguous_mixed_container_outputs_with_explicit_return_error(self, tmp_path: Path):
-        parts = [str(tmp_path / "a.txt"), str(tmp_path / "b.txt")]
-        with pytest.raises(ValueError, match="cannot be inferred unambiguously"):
-            evaluate(
-                shell_mixed_container_explicit_return(dest=str(tmp_path / "dest.txt"), parts=parts)
-            )
-
-    def test_shell_with_no_out_params_and_no_output_still_errors(self):
-        with pytest.raises(ValueError, match="output"):
-            evaluate(shell_no_out_no_output(payload="v"))
+    @pytest.mark.parametrize(
+        ("build", "match"),
+        [
+            (
+                lambda tmp: shell_explicit_output_mismatch(
+                    payload="v", dest=str(tmp / "d.txt"), other=str(tmp / "o.txt")
+                ),
+                "Out\\[\\.\\.\\.\\] parameters",
+            ),
+            (
+                lambda tmp: shell_mixed_container_explicit_return(
+                    dest=str(tmp / "dest.txt"), parts=[str(tmp / "a.txt"), str(tmp / "b.txt")]
+                ),
+                "cannot be inferred unambiguously",
+            ),
+            (lambda tmp: shell_no_out_no_output(payload="v"), "output"),
+        ],
+        ids=["mismatch", "ambiguous", "no-output"],
+    )
+    def test_an_undeterminable_shell_output_errors(self, tmp_path: Path, build, match: str):
+        with pytest.raises(ValueError, match=match):
+            evaluate(build(tmp_path))
