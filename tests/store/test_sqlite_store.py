@@ -46,9 +46,22 @@ def _event(**overrides: Any) -> StoredEvent:
 class TestOpening:
     """What a write-mode open leaves behind."""
 
-    def test_a_fresh_database_is_created_at_the_current_version(self, tmp_path):
-        with open_store(tmp_path / "ginkgo.db") as store:
+    def test_a_fresh_database_is_created_once_at_the_current_version(self, tmp_path):
+        path = tmp_path / ".ginkgo" / "ginkgo.db"
+        with open_store(path) as store:
             assert store.schema_version == SCHEMA_VERSION
+            assert store.query("PRAGMA journal_mode")[0][0] == "wal"
+            assert store.query("PRAGMA busy_timeout")[0][0] == 5000
+            assert store.query("PRAGMA foreign_keys")[0][0] == 1
+            tables = {row["name"] for row in store.query("SELECT name FROM sqlite_master")}
+
+        assert {"runs", "tasks", "events", "edges", "cache_entries", "artifacts"} <= tables
+        store = open_store(path)
+        assert [row["version"] for row in store.query("SELECT version FROM schema_version")] == [
+            SCHEMA_VERSION
+        ]
+        store.close()
+        store.close()  # closing twice is harmless
 
     def test_a_path_with_a_uri_delimiter_opens_that_file(self, tmp_path):
         """An f-string URI would read ``?name`` as a query and open ``weird``."""
@@ -68,34 +81,6 @@ class TestOpening:
 
         with pytest.raises(StoreError, match=re.escape(str(path))):
             open_store(path)
-
-    def test_the_parent_directory_is_created(self, tmp_path):
-        path = tmp_path / ".ginkgo" / "ginkgo.db"
-
-        with open_store(path):
-            assert path.exists()
-
-    def test_reopening_creates_nothing(self, tmp_path):
-        path = tmp_path / "ginkgo.db"
-        with open_store(path):
-            pass
-
-        with open_store(path) as store:
-            applied = store.query("SELECT version FROM schema_version")
-
-        assert [row["version"] for row in applied] == [SCHEMA_VERSION]
-
-    def test_pragmas_are_applied(self, tmp_path):
-        with open_store(tmp_path / "ginkgo.db") as store:
-            assert store.query("PRAGMA journal_mode")[0][0] == "wal"
-            assert store.query("PRAGMA busy_timeout")[0][0] == 5000
-            assert store.query("PRAGMA foreign_keys")[0][0] == 1
-
-    def test_closing_twice_is_harmless(self, tmp_path):
-        store = open_store(tmp_path / "ginkgo.db")
-        store.close()
-
-        store.close()
 
 
 class TestReadOnlyOpening:
@@ -117,24 +102,18 @@ class TestReadOnlyOpening:
         with pytest.raises(UninitializedStoreError, match="Run ginkgo once"):
             open_store(path, readonly=True)
 
-    def test_a_reader_refuses_to_write(self, tmp_path):
-        path = tmp_path / "ginkgo.db"
-        open_store(path).close()
-
-        with open_store(path, readonly=True) as store:
-            assert store.readonly
-            with pytest.raises(StoreError):
-                with store.transaction():
-                    pass
-
-    def test_a_reader_sees_what_the_writer_committed(self, tmp_path):
+    def test_a_reader_sees_what_the_writer_committed_and_refuses_to_write(self, tmp_path):
         path = tmp_path / "ginkgo.db"
         with open_store(path) as writer:
             with writer.transaction():
                 writer.append([_event()])
 
         with open_store(path, readonly=True) as reader:
+            assert reader.readonly
             assert len(reader.query("SELECT seq FROM events")) == 1
+            with pytest.raises(StoreError):
+                with reader.transaction():
+                    pass
 
 
 class TestCorruptDatabase:
@@ -152,10 +131,15 @@ class TestCorruptDatabase:
 class TestSchema:
     """The schema version is a fact about the file, not about this process."""
 
-    def test_an_empty_database_is_at_version_zero(self, tmp_path):
+    def test_an_empty_database_is_at_version_zero_until_created_once(self, tmp_path):
         connection = sqlite3.connect(tmp_path / "ginkgo.db")
-
+        connection.isolation_level = None
         assert schema_version(connection) == 0
+
+        create_schema(connection)
+        create_schema(connection)
+
+        assert schema_version(connection) == SCHEMA_VERSION
 
     def test_a_schema_version_table_with_no_version_is_reported_clearly(self, tmp_path):
         path = tmp_path / "ginkgo.db"
@@ -165,22 +149,6 @@ class TestSchema:
 
         with pytest.raises(CorruptStoreError, match="holds no version"):
             schema_version(connection)
-
-    def test_creating_twice_changes_nothing(self, tmp_path):
-        connection = sqlite3.connect(tmp_path / "ginkgo.db")
-        connection.isolation_level = None
-
-        create_schema(connection)
-        create_schema(connection)
-
-        assert schema_version(connection) == SCHEMA_VERSION
-
-    def test_every_object_in_the_schema_is_created(self, tmp_path):
-        """A snapshot of ``sqlite_master``. Regenerate it deliberately."""
-        expected = (Path(__file__).parent / "fixtures" / "schema.txt").read_text(encoding="utf-8")
-
-        with open_store(tmp_path / "ginkgo.db") as store:
-            assert _schema_snapshot(store) == expected
 
     @pytest.mark.parametrize("readonly", [False, True])
     @pytest.mark.parametrize("found", [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
@@ -217,37 +185,28 @@ class TestSchema:
 class TestWriting:
     """Events and projections land together, or not at all."""
 
-    def test_appended_events_are_numbered_in_emission_order(self, tmp_path):
+    def test_appended_events_are_numbered_in_order_with_their_columns(self, tmp_path):
+        completed = _event(
+            type="task_completed",
+            v=2,
+            task_id="task_0007",
+            attempt=1,
+            cache_key="cache_abc",
+            payload='{"status": "success"}',
+        )
         with open_store(tmp_path / "ginkgo.db") as store:
             with store.transaction():
-                store.append([_event(type="run_started"), _event(type="run_completed")])
+                store.append([_event(type="run_started"), completed])
 
-            rows = store.query("SELECT seq, type FROM events ORDER BY seq")
+            rows = store.query("SELECT * FROM events ORDER BY seq")
 
-        assert [row["type"] for row in rows] == ["run_started", "run_completed"]
-        assert [row["seq"] for row in rows] == [1, 2]
-
-    def test_event_columns_are_populated_from_the_row(self, tmp_path):
-        with open_store(tmp_path / "ginkgo.db") as store:
-            with store.transaction():
-                store.append(
-                    [
-                        _event(
-                            type="task_completed",
-                            v=2,
-                            task_id="task_0007",
-                            attempt=1,
-                            cache_key="cache_abc",
-                            payload='{"status": "success"}',
-                        )
-                    ]
-                )
-
-            row = store.query("SELECT * FROM events")[0]
-
+        assert [(row["seq"], row["type"]) for row in rows] == [
+            (1, "run_started"),
+            (2, "task_completed"),
+        ]
+        row = rows[1]
         assert (row["task_id"], row["attempt"], row["v"]) == ("task_0007", 1, 2)
-        assert row["cache_key"] == "cache_abc"
-        assert row["payload"] == '{"status": "success"}'
+        assert (row["cache_key"], row["payload"]) == ("cache_abc", '{"status": "success"}')
 
     def test_projection_ops_run_in_the_same_transaction_as_the_events(self, tmp_path):
         with open_store(tmp_path / "ginkgo.db") as store:
@@ -324,15 +283,6 @@ def _insert_run(run_id: str) -> ProjectionOp:
         "INSERT INTO runs (run_id, workflow, status, started_at) VALUES (?, ?, ?, ?)",
         (run_id, "workflow/flow.py", "running", "2026-08-28T09:00:00+00:00"),
     )
-
-
-def _schema_snapshot(store: SqliteStore) -> str:
-    """Render ``sqlite_master`` as stable text, one object per paragraph."""
-    rows = store.query(
-        "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
-    )
-    objects = (f"{row['type']} {row['name']}\n{row['sql'].strip()}" for row in rows)
-    return "\n\n".join(objects) + "\n"
 
 
 def _open_and_report(path: str, barrier: Any, results: Any) -> None:

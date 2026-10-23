@@ -8,6 +8,8 @@ import pytest
 
 import ginkgo.query as query
 from ginkgo.store.errors import StoreError
+from ginkgo.store.protocol import ProjectionOp
+from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -19,33 +21,27 @@ def reader(ledger, tmp_path: Path):
         yield opened
 
 
+@pytest.fixture
+def empty(tmp_path: Path):
+    """Yield a ``Query`` over a workspace nothing has run in yet."""
+    with query.open(WorkspaceLayout(root=tmp_path / "empty" / ".ginkgo"), missing_ok=True) as q:
+        yield q
+
+
 def test_a_select_returns_columns_and_rows(reader) -> None:
-    result = reader.sql("SELECT run_id, status FROM runs")
+    run_id = reader.runs()[0].run_id
+
+    result = reader.sql("SELECT run_id, status FROM runs WHERE run_id = ?", (run_id,))
 
     assert result.columns == ("run_id", "status")
-    assert [row["status"] for row in result.rows] == ["succeeded"]
-    assert result.truncated is False
     assert result.to_payload() == {
         "columns": ["run_id", "status"],
-        "rows": [{"run_id": reader.runs()[0].run_id, "status": "succeeded"}],
+        "rows": [{"run_id": run_id, "status": "succeeded"}],
         "truncated": False,
         "limit": 1000,
     }
-
-
-def test_placeholders_carry_values(reader) -> None:
-    run_id = reader.runs()[0].run_id
-
-    result = reader.sql("SELECT status FROM runs WHERE run_id = ?", (run_id,))
-
-    assert [row["status"] for row in result.rows] == ["succeeded"]
-
-
-def test_an_empty_result_still_names_its_columns(reader) -> None:
-    result = reader.sql("SELECT run_id, workflow FROM runs WHERE run_id = 'absent'")
-
-    assert result.rows == []
-    assert result.columns == ("run_id", "workflow")
+    absent = reader.sql("SELECT run_id, workflow FROM runs WHERE run_id = 'absent'")
+    assert (absent.rows, absent.columns) == ([], ("run_id", "workflow"))
 
 
 WRITES = [
@@ -65,28 +61,19 @@ WRITES = [
 ]
 
 
+@pytest.mark.parametrize("workspace", ["reader", "empty"])
 @pytest.mark.parametrize("statement", WRITES)
-def test_a_statement_that_is_not_a_read_is_refused(reader, statement: str) -> None:
+def test_a_statement_that_is_not_a_read_is_refused(request, workspace, statement: str) -> None:
+    """The in-memory ledger of an empty workspace answers like a real one."""
     with pytest.raises(StoreError, match="is not a read"):
-        reader.sql(statement)
+        request.getfixturevalue(workspace).sql(statement)
 
 
-@pytest.mark.parametrize("statement", WRITES)
-def test_an_empty_workspace_refuses_the_same_writes(tmp_path: Path, statement: str) -> None:
-    """The in-memory ledger is closed to writes, so it answers like a real one."""
-    layout = WorkspaceLayout(root=tmp_path / "empty" / ".ginkgo")
-
-    with query.open(layout, missing_ok=True) as reader:
-        with pytest.raises(StoreError, match="is not a read"):
-            reader.sql(statement)
-
-
-def test_an_empty_workspace_refuses_a_write_in_the_engine_too(tmp_path: Path) -> None:
-    layout = WorkspaceLayout(root=tmp_path / "empty" / ".ginkgo")
-
-    with query.open(layout, missing_ok=True) as reader:
-        with pytest.raises(Exception, match="readonly database"):
-            reader.store.query("DELETE FROM runs")
+@pytest.mark.parametrize("workspace", ["reader", "empty"])
+def test_the_engine_refuses_a_write_too(request, workspace) -> None:
+    """The keyword check is not the only guard: ``query_only`` is the other."""
+    with pytest.raises(Exception, match="readonly database"):
+        request.getfixturevalue(workspace).store.query("DELETE FROM runs")
 
 
 @pytest.mark.parametrize(
@@ -99,77 +86,54 @@ def test_an_empty_workspace_refuses_a_write_in_the_engine_too(tmp_path: Path) ->
         "/* a leading comment */ SELECT 1 AS n",
         # 'delete' is a value here, not a verb.
         "SELECT 1 AS n WHERE 'delete' = 'delete'",
+        # A trailing semicolon is not a second statement.
+        "SELECT 1 AS n;",
     ],
 )
 def test_a_read_is_run_however_it_is_spelled(reader, statement: str) -> None:
     assert reader.sql(statement).rows
 
 
-def test_a_second_statement_is_refused(reader) -> None:
-    with pytest.raises(StoreError, match="more than one statement"):
-        reader.sql("SELECT 1; DELETE FROM runs")
-
-
-def test_a_trailing_semicolon_is_not_a_second_statement(reader) -> None:
-    assert reader.sql("SELECT 1 AS n;").rows[0]["n"] == 1
-
-
-def test_an_unknown_column_is_reported_readably(reader) -> None:
-    with pytest.raises(StoreError, match="no such column: nope"):
-        reader.sql("SELECT nope FROM runs")
+@pytest.mark.parametrize(
+    ("statement", "message"),
+    [("SELECT 1; DELETE FROM runs", "more than one statement"), ("   ", "No SQL to run")],
+)
+def test_malformed_sql_is_refused(reader, statement: str, message: str) -> None:
+    with pytest.raises(StoreError, match=message):
+        reader.sql(statement)
 
 
 def test_an_unknown_column_is_answered_with_the_table_s_columns(reader) -> None:
     """The answer comes to the terminal the user is standing at."""
-    with pytest.raises(StoreError) as raised:
+    with pytest.raises(StoreError, match="no such column: task_name") as raised:
         reader.sql("SELECT task_name FROM tasks")
 
     message = str(raised.value)
     assert "tasks has run_id, task_id" in message
     assert "display_label" in message
     assert "`ginkgo query --schema`" in message
-    # Never again at documentation the user cannot open from here.
     assert "documentation" not in message
 
 
 def test_an_unknown_table_is_answered_with_the_tables_there_are(reader) -> None:
-    with pytest.raises(StoreError) as raised:
+    """``task_runs`` is not a mention of ``tasks``, so the table list is the answer."""
+    with pytest.raises(StoreError, match="no such table: task_runs") as raised:
         reader.sql("SELECT name FROM task_runs")
 
     message = str(raised.value)
-    assert "no such table: task_runs" in message
-    assert "The tables are" in message
-    assert "tasks" in message
+    assert "The tables are" in message and "tasks" in message
+    assert "tasks has run_id" not in message
     assert "documentation" not in message
 
 
-def test_a_table_named_in_the_statement_is_matched_whole(reader) -> None:
-    """``task_runs`` is not a mention of ``tasks``, so the table list is the answer."""
-    with pytest.raises(StoreError) as raised:
-        reader.sql("SELECT name FROM task_runs")
-
-    assert "tasks has run_id" not in str(raised.value)
-
-
-def test_schema_names_every_table_and_its_columns(reader) -> None:
+def test_schema_names_every_table_and_its_columns_even_when_empty(reader, empty) -> None:
     schema = reader.schema()
 
     assert schema["runs"][:3] == ("run_id", "workflow", "status")
     assert "name" in schema["tasks"]
     assert {"events", "cache_entries", "artifacts", "edges"} <= set(schema)
     assert not [table for table in schema if table.startswith("sqlite_")]
-
-
-def test_an_empty_workspace_has_the_same_schema(tmp_path: Path, reader) -> None:
-    layout = WorkspaceLayout(root=tmp_path / "empty" / ".ginkgo")
-
-    with query.open(layout, missing_ok=True) as empty:
-        assert empty.schema() == reader.schema()
-
-
-def test_empty_sql_is_refused(reader) -> None:
-    with pytest.raises(StoreError, match="No SQL to run"):
-        reader.sql("   ")
+    assert empty.schema() == schema
 
 
 def test_duplicate_column_names_are_suffixed_in_the_payload(reader) -> None:
@@ -182,45 +146,19 @@ def test_duplicate_column_names_are_suffixed_in_the_payload(reader) -> None:
     assert result.columns == ("run_id", "run_id")
 
 
-def test_the_payload_carries_the_truncation_signal(reader) -> None:
-    payload = reader.sql("SELECT seq FROM events ORDER BY seq", limit=1).to_payload()
-
-    assert payload["truncated"] is True
-    assert payload["limit"] == 1
-    assert len(payload["rows"]) == 1
-
-
-def test_the_row_limit_is_honoured(reader) -> None:
+def test_the_row_limit_truncates_and_says_so(reader) -> None:
     many = "SELECT seq FROM events ORDER BY seq"
     assert len(reader.sql(many).rows) == 2
 
-    limited = reader.sql(many, limit=1)
-
-    assert len(limited.rows) == 1
-    assert limited.truncated is True
-
-
-def test_a_result_inside_the_limit_is_not_truncated(reader) -> None:
-    result = reader.sql("SELECT run_id FROM runs", limit=2)
-
-    assert len(result.rows) == 1
-    assert result.truncated is False
+    payload = reader.sql(many, limit=1).to_payload()
+    assert (len(payload["rows"]), payload["truncated"], payload["limit"]) == (1, True, 1)
+    assert reader.sql("SELECT run_id FROM runs", limit=2).truncated is False
 
 
-def test_a_read_connection_refuses_writes_in_the_engine(reader) -> None:
-    """The keyword check is not the only guard: ``query_only`` is the other."""
-    with pytest.raises(Exception, match="readonly database"):
-        reader.store.query("DELETE FROM runs")
-
-
-def test_a_like_wildcard_in_a_task_name_matches_literally(reader) -> None:
+def test_like_wildcards_in_filters_match_literally(reader) -> None:
     """`history "%"` asks for a task called `%`, not for every task there is."""
     assert reader.task_history("%") == []
     assert reader.task_history("_") == []
-    assert len(reader.task_history("run")) >= 0
-
-
-def test_a_like_wildcard_in_a_workflow_filter_matches_literally(reader) -> None:
     assert reader.runs(workflow="%") == []
     assert reader.runs(workflow="flow.py")
 
@@ -232,22 +170,15 @@ def test_since_must_be_a_timestamp(reader) -> None:
     assert reader.runs(since="2000-01-01")
 
 
-def test_an_empty_workspace_answers_rather_than_failing(tmp_path: Path) -> None:
-    layout = WorkspaceLayout(root=tmp_path / "empty" / ".ginkgo")
+def test_an_empty_workspace_answers_without_creating_a_database(tmp_path: Path, empty) -> None:
+    result = empty.sql("SELECT run_id FROM runs")
 
-    with query.open(layout, missing_ok=True) as reader:
-        result = reader.sql("SELECT run_id FROM runs")
-
-    assert result.rows == []
-    assert result.columns == ("run_id",)
-    assert not Path(layout.db).exists()
+    assert (result.rows, result.columns) == ([], ("run_id",))
+    assert not (tmp_path / "empty" / ".ginkgo" / "ginkgo.db").exists()
 
 
 def test_task_history_limits_runs_not_rows(tmp_path: Path) -> None:
     """A fan-out puts several rows in one run; ``limit`` never splits a run."""
-    from ginkgo.store.protocol import ProjectionOp
-    from ginkgo.store.sqlite import open_store
-
     layout = WorkspaceLayout(root=tmp_path / ".ginkgo")
     with open_store(layout.db) as store, store.transaction():
         for run_id, started_at in (("run-1", "2026-08-01"), ("run-2", "2026-08-02")):

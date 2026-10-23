@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -13,47 +13,58 @@ from ginkgo.formatting import format_bytes, now_iso
 from ginkgo.remote.staging import StagingCache, StagingEntry
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.store import sqlite as sqlite_module
 from ginkgo.store.maintenance import large_ledger_warning, on_disk_bytes
 from ginkgo.store.protocol import ProjectionOp
 from ginkgo.store.schema import SCHEMA_VERSION
-from ginkgo.store import sqlite as sqlite_module
 from ginkgo.store.sqlite import open_store
+from tests.conftest import run_cli
+
+WS = Path(".ginkgo")
+DB = WS / "ginkgo.db"
 
 
-def _run_row(tmp_path, run_id: str, *, finished_at: str | None = None, events: int = 0) -> None:
+@pytest.fixture(autouse=True)
+def _in_tmp_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
+def _db(capsys, *argv: str) -> tuple[int, str]:
+    """Run ``ginkgo db *argv`` in-process; return its exit code and stdout."""
+    code = main(["db", *argv])
+    return code, capsys.readouterr().out
+
+
+def _apply(*ops: ProjectionOp) -> None:
+    with open_store(DB) as store, store.transaction():
+        store.apply(list(ops))
+
+
+def _run_row(run_id: str, *, finished_at: str | None = None, events: int = 0) -> None:
     """Record one run row, and optionally some events belonging to it."""
-    with open_store(tmp_path / ".ginkgo" / "ginkgo.db") as store, store.transaction():
-        store.apply(
-            [
-                ProjectionOp(
-                    sql="INSERT INTO runs (run_id, workflow, status, started_at, finished_at) "
-                    "VALUES (?, 'flow.py', 'succeeded', '2020-01-01T00:00:00+00:00', ?)",
-                    params=(run_id, finished_at),
-                ),
-                *(
-                    ProjectionOp(
-                        sql="INSERT INTO events (run_id, ts, type, v, payload) "
-                        "VALUES (?, '2020-01-01T00:00:00+00:00', 'task_started', 1, '{}')",
-                        params=(run_id,),
-                    )
-                    for _ in range(events)
-                ),
-            ]
-        )
+    _apply(
+        ProjectionOp(
+            sql="INSERT INTO runs (run_id, workflow, status, started_at, finished_at) "
+            "VALUES (?, 'flow.py', 'succeeded', '2020-01-01T00:00:00+00:00', ?)",
+            params=(run_id, finished_at),
+        ),
+        *(
+            ProjectionOp(
+                sql="INSERT INTO events (run_id, ts, type, v, payload) "
+                "VALUES (?, '2020-01-01T00:00:00+00:00', 'task_started', 1, '{}')",
+                params=(run_id,),
+            )
+            for _ in range(events)
+        ),
+    )
 
 
-def _create_db(tmp_path) -> None:
-    """Create the workspace's database with nothing in it, as a first run would."""
-    open_store(tmp_path / ".ginkgo" / "ginkgo.db").close()
-
-
-def _entry(tmp_path, cache_key: str, *, with_bytes: bool = True) -> None:
-    """Record one cache entry, optionally without the bytes it names."""
-    if with_bytes:
-        entry_dir = tmp_path / ".ginkgo" / "cache" / cache_key
-        entry_dir.mkdir(parents=True)
-        (entry_dir / "output.json").write_text("{}", encoding="utf-8")
-    with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
+def _entry(cache_key: str, *, output: str | None = "{}") -> None:
+    """Record one cache entry, with ``output`` as its bytes (``None``: no bytes)."""
+    if output is not None:
+        (WS / "cache" / cache_key).mkdir(parents=True)
+        (WS / "cache" / cache_key / "output.json").write_text(output, encoding="utf-8")
+    with CacheIndex.open(path=DB) as index:
         index.record_entry(
             cache_key=cache_key,
             meta={"function": "pkg.produce", "created_at": "2026-08-28T10:00:00+00:00"},
@@ -63,546 +74,389 @@ def _entry(tmp_path, cache_key: str, *, with_bytes: bool = True) -> None:
         )
 
 
-class TestDbCheckCache:
-    """``db check`` reports every way the index and the bytes disagree."""
-
-    def test_a_row_without_its_output_is_reported(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _entry(tmp_path, "key-1", with_bytes=False)
-
-        assert main(["db", "check"]) == 1
-        assert "cache entry key-1 has a row but no output.json" in capsys.readouterr().out
-
-    def test_a_directory_without_a_row_is_reported_as_an_orphan(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        monkeypatch.chdir(tmp_path)
-        _entry(tmp_path, "key-1")
-        orphan = tmp_path / ".ginkgo" / "cache" / "orphan-1"
-        orphan.mkdir(parents=True)
-        (orphan / "output.json").write_text("{}", encoding="utf-8")
-
-        assert main(["db", "check"]) == 1
-        assert (
-            "cache directory orphan-1 is not referenced by the ledger" in capsys.readouterr().out
-        )
-
-    def test_a_cache_artifact_missing_from_the_store_is_reported(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        monkeypatch.chdir(tmp_path)
-        _entry(tmp_path, "key-1")
-        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
-            index.record_artifact(
-                ArtifactRecord(
-                    artifact_id="artifact-1",
-                    kind="blob",
-                    digest_algorithm="blake3",
-                    digest_hex="artifact-1",
-                    extension=".txt",
-                    size=4,
-                    created_at="2026-08-28T10:00:00+00:00",
-                    storage_backend="local",
-                )
-            )
-        with open_store(tmp_path / ".ginkgo" / "ginkgo.db") as store:
-            with store.transaction():
-                store.apply(
-                    [
-                        ProjectionOp(
-                            sql="INSERT INTO cache_artifacts (cache_key, path, artifact_id) "
-                            "VALUES ('key-1', '/out/a.txt', 'artifact-1')",
-                        )
-                    ]
-                )
-
-        assert main(["db", "check"]) == 1
-        assert "cache artifact artifact-1 is missing" in capsys.readouterr().out
-
-    def test_a_consistent_cache_passes(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _entry(tmp_path, "key-1")
-
-        assert main(["db", "check"]) == 0
-        assert "integrity check passed" in capsys.readouterr().out
-
-    def test_a_truncated_output_is_reported_and_the_check_goes_on(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """A check reports; it never raises. Everything after it still runs."""
-        monkeypatch.chdir(tmp_path)
-        _entry(tmp_path, "key-1")
-        (tmp_path / ".ginkgo" / "cache" / "key-1" / "output.json").write_text(
-            '{"__ginkgo_type__": "asse', encoding="utf-8"
-        )
-        _run_row(tmp_path, "run-1")  # a later check, which must still be reached
-
-        assert main(["db", "check"]) == 1
-
-        output = capsys.readouterr().out
-        assert "cache entry key-1 has an unreadable output.json" in output
-        assert "run run-1 has a row but no run directory" in output
-
-    def test_an_output_written_by_a_retired_codec_is_reported(self, tmp_path, monkeypatch, capsys):
-        """An entry written by a ginkgo whose encoding has since moved on."""
-        monkeypatch.chdir(tmp_path)
-        _entry(tmp_path, "key-1")
-        (tmp_path / ".ginkgo" / "cache" / "key-1" / "output.json").write_text(
-            json.dumps({"__ginkgo_type__": "asset_ref", "value": {"kind": "table"}}),
-            encoding="utf-8",
-        )
-
-        assert main(["db", "check"]) == 1
-        assert "cache entry key-1 has an unreadable output.json" in capsys.readouterr().out
-
-    def test_a_save_in_flight_is_not_an_orphan(self, tmp_path, monkeypatch, capsys):
-        """A concurrent save's temporary directory is about to be renamed."""
-        monkeypatch.chdir(tmp_path)
-        _entry(tmp_path, "key-1")
-        in_flight = tmp_path / ".ginkgo" / "cache" / "key-2.tmp-abc123"
-        in_flight.mkdir(parents=True)
-        (in_flight / "output.json").write_text("{}", encoding="utf-8")
-
-        assert main(["db", "check"]) == 0
-        assert "orphan" not in capsys.readouterr().out
-
-
-class TestDbCommands:
-    """Each subcommand, run against a workspace that starts out empty."""
-
-    def test_check_reports_the_version_and_the_integrity_result(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        monkeypatch.chdir(tmp_path)
-        _create_db(tmp_path)
-        capsys.readouterr()
-
-        assert main(["db", "check"]) == 0
-
-        output = capsys.readouterr().out
-        assert f"Schema version: {SCHEMA_VERSION}" in output
-        assert "integrity check passed" in output
-
-    def test_check_on_an_empty_workspace_creates_nothing(self, tmp_path, monkeypatch, capsys):
-        """Creating the database is a run's job. Not a check's."""
-        monkeypatch.chdir(tmp_path)
-
-        assert main(["db", "check"]) == 0
-
-        assert "nothing has run in this workspace" in capsys.readouterr().out
-        assert not (tmp_path / ".ginkgo").exists()
-
-    def test_check_on_a_workspace_that_has_not_run_yet_stays_reassuring(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """An initialized workspace with no runs in it is not a fault."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / ".ginkgo" / "runs").mkdir(parents=True)
-
-        assert main(["db", "check"]) == 0
-        assert "nothing has run in this workspace" in capsys.readouterr().out
-
-    def test_check_warns_when_run_directories_outlived_the_database(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """A ledger gone from under real runs is a warning, not an empty workspace."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / ".ginkgo" / "runs" / "20260101_000000_000000_deadbeef").mkdir(parents=True)
-
-        assert main(["db", "check"]) == 0
-
-        output = capsys.readouterr().out
-        assert "1 run directory under .ginkgo/runs but no database" in output
-        assert "nothing has run in this workspace" not in output
-        assert not (tmp_path / ".ginkgo" / "ginkgo.db").exists()
-
-    def test_check_counts_every_orphaned_run_directory(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        for run_id in ("run-1", "run-2"):
-            (tmp_path / ".ginkgo" / "runs" / run_id).mkdir(parents=True)
-
-        assert main(["db", "check"]) == 0
-        assert "2 run directories under .ginkgo/runs" in capsys.readouterr().out
-
-    def test_check_never_opens_a_write_connection(self, tmp_path, monkeypatch):
-        """A read path must not be able to change a database out from under a run."""
-        monkeypatch.chdir(tmp_path)
-        _create_db(tmp_path)
-        opened: list[bool] = []
-        real_open = sqlite_module.SqliteStore.open
-
-        def _record(cls, path, *, readonly=False, thread_shared=False):
-            opened.append(readonly)
-            return real_open(path, readonly=readonly, thread_shared=thread_shared)
-
-        monkeypatch.setattr(sqlite_module.SqliteStore, "open", classmethod(_record))
-
-        assert main(["db", "check"]) == 0
-        assert opened and all(opened)
-
-    def test_path_prints_where_the_database_lives(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-
-        assert main(["db", "path"]) == 0
-
-        assert capsys.readouterr().out.strip() == ".ginkgo/ginkgo.db"
-        assert not (tmp_path / ".ginkgo").exists()
-
-    def test_the_database_environment_override_is_honoured(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        elsewhere = tmp_path / "local" / "ledger.db"
-        monkeypatch.setenv("GINKGO_DB", str(elsewhere))
-
-        assert main(["db", "vacuum"]) == 0
-
-        assert elsewhere.exists()
-        assert not (tmp_path / ".ginkgo").exists()
-
-
-class TestDbCheckFix:
-    """EV5-11/ED5-7: ``db check --fix`` clears what nothing can use any more."""
-
-    def test_fix_removes_stranded_directories_and_rows_without_bytes(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1")
-        (tmp_path / ".ginkgo" / "runs" / "run-1").mkdir(parents=True)
-        stranded = tmp_path / ".ginkgo" / "runs" / "run-gone"
-        (stranded / "logs").mkdir(parents=True)
-        _entry(tmp_path, "kept")
-        _entry(tmp_path, "no-bytes", with_bytes=False)
-        orphan = tmp_path / ".ginkgo" / "cache" / "orphan"
-        orphan.mkdir(parents=True)
-
-        assert main(["db", "check", "--fix"]) == 0
-
-        output = capsys.readouterr().out
-        assert "removed 1 run directory the ledger has no row for" in output
-        assert "removed 1 cache entry whose bytes are missing or unreadable" in output
-        assert "removed 1 cache directory the ledger has no row for" in output
-        assert not stranded.exists() and not orphan.exists()
-        assert (tmp_path / ".ginkgo" / "runs" / "run-1").is_dir()
-        assert (tmp_path / ".ginkgo" / "cache" / "kept" / "output.json").is_file()
-        assert main(["db", "check"]) == 0
-
-    def test_fix_after_a_ledger_was_moved_aside(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        workspace = tmp_path / ".ginkgo"
-        (workspace / "runs" / "run-1").mkdir(parents=True)
-        (workspace / "ginkgo.db-wal").write_bytes(b"stale")
-        (workspace / "ginkgo.db-shm").write_bytes(b"stale")
-
-        assert main(["db", "check", "--fix"]) == 0
-
-        output = capsys.readouterr().out
-        assert "removed ginkgo.db-wal, ginkgo.db-shm, left behind without ginkgo.db" in output
-        assert "removed 1 run directory the ledger has no row for" in output
-        assert list(workspace.iterdir()) == [workspace / "runs"]
-        assert not (workspace / "ginkgo.db").exists()
-
-    def test_check_without_fix_points_at_it(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _create_db(tmp_path)
-        (tmp_path / ".ginkgo" / "runs" / "run-2").mkdir(parents=True)
-
-        assert main(["db", "check"]) == 1
-        assert "db check --fix" in capsys.readouterr().out
-
-
-class TestDbCheckWorkspace:
-    """``db check`` looks at every index and the bytes beside it."""
-
-    def test_a_run_without_its_directory_is_reported(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1")
-
-        assert main(["db", "check"]) == 1
-        assert "run run-1 has a row but no run directory" in capsys.readouterr().out
-
-    def test_a_run_directory_without_a_row_is_reported(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _create_db(tmp_path)
-        (tmp_path / ".ginkgo" / "runs" / "run-2").mkdir(parents=True)
-
-        assert main(["db", "check"]) == 1
-        assert "run directory run-2 is not referenced by the ledger" in capsys.readouterr().out
-
-    def test_a_run_with_its_directory_passes(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1")
-        (tmp_path / ".ginkgo" / "runs" / "run-1").mkdir(parents=True)
-
-        assert main(["db", "check"]) == 0
-        assert "integrity check passed" in capsys.readouterr().out
-
-    def test_a_staged_uri_without_its_bytes_is_reported(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        cache = StagingCache(root=tmp_path / ".ginkgo" / "staging")
-        cache.index.record(
-            StagingEntry(
-                uri="s3://bucket/key",
-                digest="deadbeef",
-                etag=None,
-                version_id=None,
-                size=4,
-                staged_at="2026-08-28T10:00:00+00:00",
-                blob_path="blobs/deadbeef",
+def _artifact(artifact_id: str, size: int = 4) -> None:
+    with CacheIndex.open(path=DB) as index:
+        index.record_artifact(
+            ArtifactRecord(
+                artifact_id=artifact_id,
+                kind="blob",
+                digest_algorithm="blake3",
+                digest_hex=artifact_id,
+                extension="",
+                size=size,
+                created_at=now_iso(),
+                storage_backend="local",
             )
         )
-        cache.close()
 
-        assert main(["db", "check"]) == 1
-        assert "staged s3://bucket/key has a row but no bytes" in capsys.readouterr().out
 
-    def test_an_orphan_blob_is_reported(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _create_db(tmp_path)
-        blobs = tmp_path / ".ginkgo" / "artifacts" / "blobs"
-        blobs.mkdir(parents=True)
-        (blobs / "abc123").write_bytes(b"orphaned")
+def _staged(root: Path | None = None, *, db_path: Path | None = None) -> None:
+    cache = StagingCache(root=root) if root is not None else StagingCache(db_path=db_path)
+    cache.index.record(
+        StagingEntry(
+            uri="s3://bucket/key",
+            digest="deadbeef",
+            etag=None,
+            version_id=None,
+            size=5,
+            staged_at="2026-08-28T10:00:00+00:00",
+            blob_path="blobs/deadbeef",
+        )
+    )
+    cache.close()
 
-        assert main(["db", "check"]) == 1
-        out = capsys.readouterr().out
-        assert "artifact file blobs/abc123 is not referenced by the ledger" in out
-        assert "(the ledger may have been reset)" in out
 
-    def test_verify_reports_a_blob_corrupted_in_place(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _create_db(tmp_path)
-        blobs = tmp_path / ".ginkgo" / "artifacts" / "blobs"
-        blobs.mkdir(parents=True)
-        (blobs / "abc123").write_bytes(b"not the bytes abc123 names")
-        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
-            index.record_artifact(
-                ArtifactRecord(
-                    artifact_id="abc123",
-                    kind="blob",
-                    digest_algorithm="blake3",
-                    digest_hex="abc123",
-                    extension="",
-                    size=26,
-                    created_at=now_iso(),
-                    storage_backend="local",
-                )
-            )
+def _mkdir(*parts: str) -> Path:
+    path = WS.joinpath(*parts)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-        assert main(["db", "check"]) == 0
-        assert main(["db", "check", "--verify"]) == 1
-        assert "artifact abc123: bytes do not match its digest" in capsys.readouterr().out
 
-    def test_an_environment_that_materialized_two_ways_is_reported(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        monkeypatch.chdir(tmp_path)
-        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
-            index.record_env_materialization(
-                env_hash="env-1", host="alpha", materialized_digest="digest-a"
-            )
-            index.record_env_materialization(
-                env_hash="env-1", host="beta", materialized_digest="digest-b"
-            )
+def _orphan_cache_dir() -> None:
+    _entry("key-1")
+    (_mkdir("cache", "orphan-1") / "output.json").write_text("{}", encoding="utf-8")
 
-        assert main(["db", "check"]) == 1
-        assert "environment env-1 materialized 2 different ways" in capsys.readouterr().out
 
-    def test_one_host_reinstalling_is_not_drift_between_hosts(self, tmp_path, monkeypatch, capsys):
-        """One row per host: the latest observation replaces the previous one."""
-        monkeypatch.chdir(tmp_path)
-        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
-            for digest in ("digest-a", "digest-b"):
+def _missing_cache_artifact() -> None:
+    _entry("key-1")
+    _artifact("artifact-1")
+    _apply(
+        ProjectionOp(
+            sql="INSERT INTO cache_artifacts (cache_key, path, artifact_id) "
+            "VALUES ('key-1', '/out/a.txt', 'artifact-1')"
+        )
+    )
+
+
+def _truncated_output_then_a_later_problem() -> None:
+    _entry("key-1", output='{"__ginkgo_type__": "asse')
+    _run_row("run-1")  # a later check, which must still be reached
+
+
+def _orphan_blob() -> None:
+    open_store(DB).close()
+    (_mkdir("artifacts", "blobs") / "abc123").write_bytes(b"orphaned")
+
+
+def _env_drift(hosts: tuple[str, str]) -> Callable[[], None]:
+    def record() -> None:
+        with CacheIndex.open(path=DB) as index:
+            for host, digest in zip(hosts, ("digest-a", "digest-b")):
                 index.record_env_materialization(
-                    env_hash="env-1", host="alpha", materialized_digest=digest
+                    env_hash="env-1", host=host, materialized_digest=digest
                 )
-            assert [row["materialized_digest"] for row in index.env_materializations()] == [
-                "digest-b"
-            ]
 
-        assert main(["db", "check"]) == 0
-        assert "integrity check passed" in capsys.readouterr().out
+    return record
 
 
-class TestDbPrune:
-    """``db prune`` deletes history the projections do not need."""
+def _run_with_its_directory() -> None:
+    _run_row("run-1")
+    _mkdir("runs", "run-1")
 
-    def test_events_of_a_finished_run_are_deleted(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1", finished_at="2020-01-01T00:00:00+00:00", events=3)
 
-        assert main(["db", "prune", "--events-older-than", "1d"]) == 0
-        assert "deleted 3 event rows" in capsys.readouterr().out
+def _orphan_run_directory() -> None:
+    open_store(DB).close()
+    _mkdir("runs", "run-2")
 
-        with open_store(tmp_path / ".ginkgo" / "ginkgo.db") as store:
-            assert store.query("SELECT count(*) AS n FROM events")[0]["n"] == 0
-            # The projection the events fed is untouched.
-            assert store.query("SELECT count(*) AS n FROM runs")[0]["n"] == 1
 
-    def test_an_unfinished_run_keeps_its_events(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1", finished_at=None, events=2)
+def _save_in_flight() -> None:
+    """A concurrent save's temporary directory is about to be renamed."""
+    _entry("key-1")
+    (_mkdir("cache", "key-2.tmp-abc123") / "output.json").write_text("{}", encoding="utf-8")
 
-        assert main(["db", "prune", "--events-older-than", "1d"]) == 0
-        assert "deleted 0 event rows" in capsys.readouterr().out
 
-    def test_a_recent_run_keeps_its_events(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1", finished_at=now_iso(), events=2)
+def _relocated_staging_root(monkeypatch) -> None:
+    elsewhere = Path("scratch") / "staging"
+    monkeypatch.setenv("GINKGO_STAGING_ROOT", str(elsewhere.resolve()))
+    (elsewhere / "blobs").mkdir(parents=True)
+    (elsewhere / "blobs" / "deadbeef").write_bytes(b"bytes")
+    _staged(db_path=DB.resolve())
 
-        assert main(["db", "prune", "--events-older-than", "30d"]) == 0
-        assert "deleted 0 event rows" in capsys.readouterr().out
 
-    def test_a_dry_run_counts_without_deleting(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1", finished_at="2020-01-01T00:00:00+00:00", events=3)
+@pytest.mark.parametrize(
+    ("setup", "code", "phrases"),
+    [
+        (
+            lambda: _entry("key-1", output=None),
+            1,
+            ["cache entry key-1 has a row but no output.json"],
+        ),
+        (_orphan_cache_dir, 1, ["cache directory orphan-1 is not referenced by the ledger"]),
+        (_missing_cache_artifact, 1, ["cache artifact artifact-1 is missing"]),
+        (
+            _truncated_output_then_a_later_problem,
+            1,
+            [
+                "cache entry key-1 has an unreadable output.json",
+                "run run-1 has a row but no run directory",
+            ],
+        ),
+        (
+            lambda: _entry("key-1", output=json.dumps({"__ginkgo_type__": "asset_ref"})),
+            1,
+            ["cache entry key-1 has an unreadable output.json"],
+        ),
+        (_orphan_run_directory, 1, ["run directory run-2 is not referenced", "db check --fix"]),
+        (lambda: _staged(WS / "staging"), 1, ["staged s3://bucket/key has a row but no bytes"]),
+        (
+            _orphan_blob,
+            1,
+            [
+                "artifact file blobs/abc123 is not referenced by the ledger",
+                "(the ledger may have been reset)",
+            ],
+        ),
+        (_env_drift(("alpha", "beta")), 1, ["environment env-1 materialized 2 different ways"]),
+        # One row per host: the latest observation replaces the previous one.
+        (_env_drift(("alpha", "alpha")), 0, ["integrity check passed"]),
+        (lambda: _entry("key-1"), 0, ["integrity check passed"]),
+        (_run_with_its_directory, 0, ["integrity check passed"]),
+        (_save_in_flight, 0, ["integrity check passed", "!orphan"]),
+        (
+            lambda: open_store(DB).close(),
+            0,
+            [f"Schema version: {SCHEMA_VERSION}", "integrity check passed"],
+        ),
+        (
+            lambda: _mkdir("runs", "20260101_000000_000000_deadbeef"),
+            0,
+            [
+                "1 run directory under .ginkgo/runs but no database",
+                "!nothing has run in this workspace",
+            ],
+        ),
+        (
+            lambda: (_mkdir("runs", "run-1"), _mkdir("runs", "run-2")),
+            0,
+            ["2 run directories under .ginkgo/runs"],
+        ),
+        # An initialized workspace with no runs in it is not a fault.
+        (lambda: _mkdir("runs"), 0, ["nothing has run in this workspace"]),
+    ],
+    ids=[
+        "row-without-output",
+        "orphan-cache-directory",
+        "missing-cache-artifact",
+        "truncated-output-then-checks-go-on",
+        "retired-codec",
+        "orphan-run-directory",
+        "staged-without-bytes",
+        "orphan-blob",
+        "env-drift-between-hosts",
+        "one-host-reinstalling",
+        "consistent-cache",
+        "run-with-directory",
+        "save-in-flight",
+        "empty-database",
+        "runs-outlived-database",
+        "every-orphaned-run-counted",
+        "initialized-workspace",
+    ],
+)
+def test_db_check_reports_how_the_ledger_and_the_bytes_disagree(capsys, setup, code, phrases):
+    setup()
 
-        assert main(["db", "prune", "--events-older-than", "1d", "--dry-run"]) == 0
-        assert "would delete 3 event rows" in capsys.readouterr().out
-        with open_store(tmp_path / ".ginkgo" / "ginkgo.db") as store:
-            assert store.query("SELECT count(*) AS n FROM events")[0]["n"] == 3
+    exit_code, output = _db(capsys, "check")
 
-    def test_the_digest_memo_is_pruned_on_last_seen(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        with open_store(tmp_path / ".ginkgo" / "ginkgo.db") as store, store.transaction():
-            store.apply(
-                [
-                    ProjectionOp(
-                        sql="INSERT INTO digest_memo (kind, fingerprint, digest, last_seen) "
-                        "VALUES (?, ?, ?, ?)",
-                        params=("file", f"fp-{n}", "d", stamp),
-                    )
-                    for n, stamp in enumerate(("2020-01-01T00:00:00+00:00", now_iso()))
-                ]
+    assert exit_code == code, output
+    for phrase in phrases:
+        if phrase.startswith("!"):
+            assert phrase[1:] not in output
+        else:
+            assert phrase in output
+
+
+def test_db_check_finds_a_relocated_staging_root(capsys, monkeypatch):
+    """`db check` must find staged bytes wherever they were configured."""
+    _relocated_staging_root(monkeypatch)
+
+    code, output = _db(capsys, "check")
+    assert code == 0 and "integrity check passed" in output
+
+
+def test_db_check_on_an_empty_workspace_creates_nothing(capsys, tmp_path):
+    """Creating the database is a run's job. Not a check's."""
+    code, output = _db(capsys, "check")
+
+    assert code == 0
+    assert "nothing has run in this workspace" in output
+    assert not (tmp_path / ".ginkgo").exists()
+
+
+def test_db_check_never_opens_a_write_connection(monkeypatch):
+    """A read path must not be able to change a database out from under a run."""
+    open_store(DB).close()
+    opened: list[bool] = []
+    real_open = sqlite_module.SqliteStore.open
+
+    def _record(cls, path, *, readonly=False, thread_shared=False):
+        opened.append(readonly)
+        return real_open(path, readonly=readonly, thread_shared=thread_shared)
+
+    monkeypatch.setattr(sqlite_module.SqliteStore, "open", classmethod(_record))
+
+    assert main(["db", "check"]) == 0
+    assert opened and all(opened)
+
+
+def test_db_check_verify_reports_a_blob_corrupted_in_place(capsys):
+    open_store(DB).close()
+    (_mkdir("artifacts", "blobs") / "abc123").write_bytes(b"not the bytes abc123 names")
+    _artifact("abc123", size=26)
+
+    assert _db(capsys, "check")[0] == 0
+    code, output = _db(capsys, "check", "--verify")
+    assert code == 1
+    assert "artifact abc123: bytes do not match its digest" in output
+
+
+def test_db_check_fix_removes_what_nothing_can_use(capsys):
+    """EV5-11/ED5-7: stranded run directories, rows without bytes, orphan cache dirs."""
+    _run_with_its_directory()
+    stranded = _mkdir("runs", "run-gone", "logs").parent
+    _entry("kept")
+    _entry("no-bytes", output=None)
+    orphan = _mkdir("cache", "orphan")
+
+    code, output = _db(capsys, "check", "--fix")
+
+    assert code == 0
+    assert "removed 1 run directory the ledger has no row for" in output
+    assert "removed 1 cache entry whose bytes are missing or unreadable" in output
+    assert "removed 1 cache directory the ledger has no row for" in output
+    assert not stranded.exists() and not orphan.exists()
+    assert (WS / "runs" / "run-1").is_dir()
+    assert (WS / "cache" / "kept" / "output.json").is_file()
+    assert _db(capsys, "check")[0] == 0
+
+
+def test_db_check_fix_after_a_ledger_was_moved_aside(capsys):
+    _mkdir("runs", "run-1")
+    (WS / "ginkgo.db-wal").write_bytes(b"stale")
+    (WS / "ginkgo.db-shm").write_bytes(b"stale")
+
+    code, output = _db(capsys, "check", "--fix")
+
+    assert code == 0
+    assert "removed ginkgo.db-wal, ginkgo.db-shm, left behind without ginkgo.db" in output
+    assert "removed 1 run directory the ledger has no row for" in output
+    assert list(WS.iterdir()) == [WS / "runs"]
+
+
+def test_db_path_and_the_database_override(capsys, monkeypatch, tmp_path):
+    assert _db(capsys, "path") == (0, ".ginkgo/ginkgo.db\n")
+
+    elsewhere = tmp_path / "local" / "ledger.db"
+    monkeypatch.setenv("GINKGO_DB", str(elsewhere))
+    assert _db(capsys, "vacuum")[0] == 0
+
+    assert elsewhere.exists()
+    assert not (tmp_path / ".ginkgo").exists()
+
+
+@pytest.mark.parametrize(
+    ("finished_at", "argv", "phrase", "remaining"),
+    [
+        ("2020-01-01T00:00:00+00:00", (), "deleted 3 event rows", 0),
+        (None, (), "deleted 0 event rows", 3),  # an unfinished run keeps its events
+        ("recent", (), "deleted 0 event rows", 3),
+        ("2020-01-01T00:00:00+00:00", ("--dry-run",), "would delete 3 event rows", 3),
+    ],
+    ids=["finished", "unfinished", "recent", "dry-run"],
+)
+def test_db_prune_deletes_the_events_of_old_finished_runs(
+    capsys, finished_at, argv, phrase, remaining
+):
+    _run_row("run-1", finished_at=now_iso() if finished_at == "recent" else finished_at, events=3)
+
+    code, output = _db(capsys, "prune", "--events-older-than", "1d", *argv)
+
+    assert code == 0 and phrase in output
+    with open_store(DB) as store:
+        assert store.query("SELECT count(*) AS n FROM events")[0]["n"] == remaining
+        # The projection the events fed is untouched.
+        assert store.query("SELECT count(*) AS n FROM runs")[0]["n"] == 1
+
+
+def test_db_prune_ages_the_digest_memo_on_last_seen(capsys):
+    _apply(
+        *(
+            ProjectionOp(
+                sql="INSERT INTO digest_memo (kind, fingerprint, digest, last_seen) "
+                "VALUES (?, ?, ?, ?)",
+                params=("file", f"fp-{n}", "d", stamp),
             )
-
-        assert main(["db", "prune", "--digest-memo-older-than", "1d"]) == 0
-        assert "deleted 1 digest memo row" in capsys.readouterr().out
-
-    def test_naming_no_cutoff_is_an_error(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-
-        assert main(["db", "prune"]) == 2
-        assert "Provide --events-older-than" in capsys.readouterr().err
-
-    def test_an_unparseable_duration_is_an_error(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-
-        with pytest.raises(SystemExit) as exited:
-            main(["db", "prune", "--events-older-than", "soon"])
-        assert exited.value.code == 2
-        assert "argument --events-older-than: Invalid duration" in capsys.readouterr().err
-
-
-class TestDbVacuum:
-    """``db vacuum`` rebuilds the file."""
-
-    def test_vacuum_reports_the_size_either_side(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1", finished_at="2020-01-01T00:00:00+00:00", events=2000)
-        main(["db", "prune", "--events-older-than", "1d"])
-        capsys.readouterr()
-
-        assert main(["db", "vacuum"]) == 0
-        assert "→" in capsys.readouterr().out
-
-    def test_vacuum_reports_the_write_ahead_log_with_the_file(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1", finished_at="2020-01-01T00:00:00+00:00", events=2000)
-        main(["db", "prune", "--events-older-than", "1d"])
-        db = tmp_path / ".ginkgo" / "ginkgo.db"
-        capsys.readouterr()
-
-        assert main(["db", "vacuum"]) == 0
-        output = capsys.readouterr().out
-        assert f"→ {format_bytes(on_disk_bytes(db))} on disk" in output
-        assert "write-ahead log included" in output
-
-    def test_a_large_ledger_is_named_with_its_size(self, tmp_path):
-        db = tmp_path / "ginkgo.db"
-        with open_store(db):
-            pass
-
-        assert large_ledger_warning(db) is None
-        warning = large_ledger_warning(db, threshold=1)
-        assert warning is not None and format_bytes(on_disk_bytes(db)) in warning
-
-    def test_vacuum_says_so_when_nothing_was_reclaimed(self, tmp_path, monkeypatch, capsys):
-        """An unchanged size is the only signal SQLite gives that it did nothing."""
-        monkeypatch.chdir(tmp_path)
-        main(["db", "vacuum"])
-        capsys.readouterr()
-
-        assert main(["db", "vacuum"]) == 0
-        assert "no space reclaimed" in capsys.readouterr().out
-
-    def test_a_relocated_staging_root_is_not_reported_as_missing_bytes(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """`db check` must find the staged bytes wherever they were configured."""
-        elsewhere = tmp_path / "scratch" / "staging"
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("GINKGO_STAGING_ROOT", str(elsewhere))
-        cache = StagingCache(db_path=tmp_path / ".ginkgo" / "ginkgo.db")
-        (elsewhere / "blobs").mkdir(parents=True, exist_ok=True)
-        (elsewhere / "blobs" / "deadbeef").write_bytes(b"bytes")
-        cache.index.record(
-            StagingEntry(
-                uri="s3://bucket/key",
-                digest="deadbeef",
-                etag=None,
-                version_id=None,
-                size=5,
-                staged_at="2026-08-28T10:00:00+00:00",
-                blob_path="blobs/deadbeef",
-            )
+            for n, stamp in enumerate(("2020-01-01T00:00:00+00:00", now_iso()))
         )
-        cache.close()
+    )
 
-        assert main(["db", "check"]) == 0
-        assert "integrity check passed" in capsys.readouterr().out
+    code, output = _db(capsys, "prune", "--digest-memo-older-than", "1d")
+    assert code == 0 and "deleted 1 digest memo row" in output
 
 
-class TestEventRetention:
+def test_db_prune_needs_a_valid_cutoff(capsys):
+    assert main(["db", "prune"]) == 2
+    assert "Provide --events-older-than" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as exited:
+        main(["db", "prune", "--events-older-than", "soon"])
+    assert exited.value.code == 2
+    assert "Invalid duration" in capsys.readouterr().err
+
+
+def test_db_vacuum_reports_the_size_either_side(capsys):
+    assert _db(capsys, "vacuum")[0] == 0
+    code, output = _db(capsys, "vacuum")
+    # An unchanged size is the only signal SQLite gives that it did nothing.
+    assert code == 0 and "no space reclaimed" in output
+
+    _run_row("run-1", finished_at="2020-01-01T00:00:00+00:00", events=2000)
+    _db(capsys, "prune", "--events-older-than", "1d")
+    code, output = _db(capsys, "vacuum")
+    assert code == 0
+    assert f"→ {format_bytes(on_disk_bytes(DB))} on disk" in output
+    assert "write-ahead log included" in output
+
+
+def test_a_large_ledger_is_named_with_its_size():
+    open_store(DB).close()
+
+    assert large_ledger_warning(DB) is None
+    warning = large_ledger_warning(DB, threshold=1)
+    assert warning is not None and format_bytes(on_disk_bytes(DB)) in warning
+
+
+_ONE_TASK = (
+    "from ginkgo import flow, task\n\n@task()\ndef one() -> int:\n    return 1\n\n"
+    "@flow\ndef main():\n    return one()\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("toml", "old_events_kept"),
+    [('[ledger]\nkeep_events_for = "30d"\n', False), ("", True)],
+    ids=["setting", "no-setting"],
+)
+def test_a_run_prunes_old_events_only_when_the_workspace_opts_in(tmp_path, toml, old_events_kept):
     """SC5-4: ``[ledger] keep_events_for`` opts a workspace into pruning."""
+    _run_row("old", finished_at="2020-01-02T00:00:00+00:00", events=3)
+    (tmp_path / "ginkgo.toml").write_text(toml, encoding="utf-8")
+    (tmp_path / "workflow.py").write_text(_ONE_TASK, encoding="utf-8")
 
-    def _run(self, tmp_path, toml: str) -> subprocess.CompletedProcess[str]:
-        (tmp_path / "ginkgo.toml").write_text(toml, encoding="utf-8")
-        (tmp_path / "workflow.py").write_text(
-            "from ginkgo import flow, task\n\n@task()\ndef one() -> int:\n    return 1\n\n"
-            "@flow\ndef main():\n    return one()\n",
-            encoding="utf-8",
-        )
-        return subprocess.run(
-            [sys.executable, "-m", "ginkgo.cli", "run", "workflow.py"],
-            cwd=tmp_path,
-            check=False,
-            text=True,
-            capture_output=True,
-        )
+    result = run_cli("run", "workflow.py")
 
-    def _event_runs(self, tmp_path) -> set[str]:
-        with open_store(tmp_path / ".ginkgo" / "ginkgo.db", readonly=True) as store:
-            return {row["run_id"] for row in store.query("SELECT DISTINCT run_id FROM events")}
+    assert result.returncode == 0, result.stderr
+    with open_store(DB, readonly=True) as store:
+        runs = {row["run_id"] for row in store.query("SELECT DISTINCT run_id FROM events")}
+    assert ("old" in runs) is old_events_kept
+    assert len(runs) == (2 if old_events_kept else 1)
 
-    def test_a_run_prunes_the_events_of_runs_older_than_the_setting(self, tmp_path):
-        _run_row(tmp_path, "old", finished_at="2020-01-02T00:00:00+00:00", events=3)
 
-        result = self._run(tmp_path, '[ledger]\nkeep_events_for = "30d"\n')
+def test_a_malformed_retention_setting_fails_before_running(tmp_path):
+    (tmp_path / "ginkgo.toml").write_text('[ledger]\nkeep_events_for = "soon"\n')
+    (tmp_path / "workflow.py").write_text(_ONE_TASK, encoding="utf-8")
 
-        assert result.returncode == 0, result.stderr
-        runs = self._event_runs(tmp_path)
-        assert "old" not in runs
-        assert len(runs) == 1
+    result = run_cli("run", "workflow.py")
 
-    def test_without_the_setting_nothing_is_pruned(self, tmp_path):
-        _run_row(tmp_path, "old", finished_at="2020-01-02T00:00:00+00:00", events=3)
-
-        result = self._run(tmp_path, "")
-
-        assert result.returncode == 0, result.stderr
-        assert "old" in self._event_runs(tmp_path)
-
-    def test_a_malformed_setting_fails_before_running(self, tmp_path):
-        result = self._run(tmp_path, '[ledger]\nkeep_events_for = "soon"\n')
-
-        assert result.returncode == 1
-        assert "[ledger] keep_events_for: Invalid duration 'soon'" in result.stderr
+    assert result.returncode == 1
+    assert "[ledger] keep_events_for: Invalid duration 'soon'" in result.stderr

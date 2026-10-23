@@ -68,18 +68,13 @@ def _record(index: CacheIndex, cache_key: str, **overrides) -> None:
 class TestOpening:
     """Which database an index touches is always the caller's decision."""
 
-    def test_constructing_a_cache_creates_no_database(self, tmp_path: Path) -> None:
+    def test_constructing_or_reading_creates_no_database(self, tmp_path: Path) -> None:
         """A read path must not create a database by being constructed."""
         from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-        from ginkgo.runtime.caching.cache import CacheStore
 
         with CacheIndex.in_memory() as index:
             CacheStore(index=index, root=tmp_path / ".ginkgo" / "cache")
             LocalArtifactStore(root=tmp_path / ".ginkgo" / "artifacts", index=index)
-
-        assert not list(tmp_path.glob("**/ginkgo.db*"))
-
-    def test_reading_a_workspace_with_no_database_reads_nothing(self, tmp_path: Path) -> None:
         with CacheIndex.for_reading(tmp_path / "ginkgo.db") as index:
             assert index.cache_keys() == []
             assert index.entry("key-1") is None
@@ -101,7 +96,7 @@ class TestOpening:
 
 class TestEntries:
     def test_an_entry_round_trips(self, index: CacheIndex, db_path: Path) -> None:
-        _record(index, "key-1")
+        _record(index, "key-1", extra={"notebook_extras": {"html": "a.html"}})
 
         entry = index.entry("key-1")
         assert entry is not None
@@ -109,33 +104,22 @@ class TestEntries:
         assert entry.env_materialized_digest == "sha-1"
         assert entry.artifact_ids == {"/out/a.txt": "artifact-1"}
         assert entry["input_hashes"] == {"n": {"digest": "h", "type": "int"}}
+        assert entry.extra == {"notebook_extras": {"html": "a.html"}}
         assert _components(db_path, "key-1")["source_hash"] == "src-1"
-
-    def test_a_missing_entry_is_none(self, index: CacheIndex, db_path: Path) -> None:
+        assert index.referenced_artifact_ids() == {"artifact-1"}
         assert index.entry("nothing") is None
         assert _components(db_path, "nothing") == {}
 
-    def test_extra_metadata_is_returned_when_recorded(self, index: CacheIndex) -> None:
-        _record(index, "key-1", extra={"notebook_extras": {"html": "a.html"}})
-        entry = index.entry("key-1")
-        assert entry is not None
-        assert entry.extra == {"notebook_extras": {"html": "a.html"}}
-
-    def test_a_second_save_of_the_same_key_keeps_the_first(self, index: CacheIndex) -> None:
-        """Entries are content-addressed, so the write is idempotent."""
+    def test_saving_a_key_again_keeps_the_first_even_from_many_threads(
+        self, index: CacheIndex
+    ) -> None:
+        """Entries are content-addressed: INSERT OR IGNORE is what concurrent runs rely on."""
         _record(index, "key-1")
-        _record(index, "key-1", source_hash="src-2")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda _: _record(index, "key-1", source_hash="src-2"), range(8)))
 
         entry = index.entry("key-1")
-        assert entry is not None
-        assert entry["source_hash"] == "src-1"
-
-    def test_two_threads_saving_one_key_both_succeed(self, index: CacheIndex) -> None:
-        """The contract two concurrent runs rely on: INSERT OR IGNORE."""
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            list(pool.map(lambda _: _record(index, "key-1"), range(8)))
-
-        assert index.entry("key-1") is not None
+        assert entry is not None and entry["source_hash"] == "src-1"
         assert index.cache_keys() == ["key-1"]
 
     def test_forgetting_an_entry_removes_its_rows(self, index: CacheIndex, db_path: Path) -> None:
@@ -163,23 +147,16 @@ class TestArtifacts:
             storage_backend="local",
         )
 
-    def test_a_record_round_trips(self, index: CacheIndex) -> None:
+    def test_a_record_round_trips_and_publishing_fills_in_its_uri(self, index: CacheIndex) -> None:
         record = self._artifact()
         index.record_artifact(record)
-
         assert index.artifact("artifact-1") == record
         assert index.artifact_ids() == ["artifact-1"]
 
-    def test_publishing_fills_in_the_remote_uri(self, index: CacheIndex) -> None:
-        record = self._artifact()
-        index.record_artifact(record)
-
-        published = replace(record, remote_uri="gs://b/a")
-        index.record_artifact(published)
+        index.record_artifact(replace(record, remote_uri="gs://b/a"))
 
         stored = index.artifact("artifact-1")
-        assert stored is not None
-        assert stored.remote_uri == "gs://b/a"
+        assert stored is not None and stored.remote_uri == "gs://b/a"
 
     def test_forgetting_an_artifact_drops_its_materializations(
         self, index: CacheIndex, tmp_path: Path
@@ -194,24 +171,15 @@ class TestArtifacts:
         assert index.artifact("artifact-1") is None
         assert index.materialization_matches(path=path, artifact_id="artifact-1") is False
 
-    def test_referenced_ids_are_the_cache_entries_artifacts(self, index: CacheIndex) -> None:
-        _record(index, "key-1", artifact_ids={"/out/a.txt": "artifact-1"})
 
-        assert index.referenced_artifact_ids() == {"artifact-1"}
-
-
-class TestStatIndex:
-    def test_a_fingerprint_maps_to_the_content_key(self, index: CacheIndex) -> None:
+class TestFingerprints:
+    def test_a_stat_fingerprint_maps_to_the_latest_content_key(self, index: CacheIndex) -> None:
         assert index.stat_index_lookup("stat-1") is None
 
         index.record_stat_index(stat_key="stat-1", cache_key="content-1")
-        assert index.stat_index_lookup("stat-1") == "content-1"
-
         index.record_stat_index(stat_key="stat-1", cache_key="content-2")
         assert index.stat_index_lookup("stat-1") == "content-2"
 
-
-class TestDigestMemo:
     def test_a_digest_is_remembered_by_fingerprint(self, index: CacheIndex) -> None:
         assert index.digest(kind="file", fingerprint="1:2:3:4") is None
 
