@@ -3,33 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from ginkgo.core.hashing import hash_bytes
 from ginkgo.core.remote import remote_file, remote_folder
-from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.remote.staging import StagingCache, StagingEntry, StagingIndex
 from ginkgo.store.sqlite import MEMORY
-from tests.conftest import make_download_backend
+from tests.remote_fakes import FakeObjectStore
 
 OLD = "2099-01-01T00:00:00+00:00"  # a cutoff after everything staged in a test
 
 
-def _folder_backend() -> MagicMock:
-    """A backend listing ``prefix/a.txt`` and ``prefix/sub/b.txt``; each downloads as its name."""
-    backend = MagicMock()
-    backend.list_prefix.return_value = [
-        RemoteObjectMeta(uri="s3://bkt/prefix/a.txt", size=5),
-        RemoteObjectMeta(uri="s3://bkt/prefix/sub/b.txt", size=5),
-    ]
-
-    def _download(*, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_text(key.split("/")[-1])
-        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=5)
-
-    backend.download.side_effect = _download
-    return backend
+def _store(tmp_path: Path, objects: dict[str, bytes]) -> FakeObjectStore:
+    """Return a fake store holding *objects* (key: bytes) in ``s3://bucket``."""
+    store = FakeObjectStore(root=tmp_path / "object-store")
+    for key, data in objects.items():
+        store.put(bucket="bucket", key=key, data=data)
+    return store
 
 
 def _entry(uri: str, digest: str, **fields) -> StagingEntry:
@@ -47,46 +36,48 @@ def _entry(uri: str, digest: str, **fields) -> StagingEntry:
 class TestStageFile:
     def test_a_file_is_downloaded_once_and_recorded(self, tmp_path: Path) -> None:
         cache = StagingCache(root=tmp_path / "staging")
-        backend = make_download_backend()
+        store = FakeObjectStore(root=tmp_path / "object-store")
+        store.put(bucket="bucket", key="data/file.txt", data=b"hello world", etag="etag1")
         ref = remote_file("s3://bucket/data/file.txt")
 
-        path = cache.stage_file(ref=ref, backend=backend)
+        path = cache.stage_file(ref=ref, backend=store)
 
         assert path.read_bytes() == b"hello world"
-        assert cache.stage_file(ref=ref, backend=backend) == path
-        assert backend.download.call_count == 1
+        assert cache.stage_file(ref=ref, backend=store) == path
+        assert store.downloads == 1
         entry = cache.lookup(uri=ref.uri)
         assert (entry.etag, entry.digest) == ("etag1", hash_bytes(b"hello world"))
         assert cache.lookup(uri="s3://bucket/never-staged.txt") is None
 
     def test_a_changed_etag_is_downloaded_again(self, tmp_path: Path) -> None:
         cache = StagingCache(root=tmp_path / "staging")
+        store = _store(tmp_path, {"data/file.txt": b"v1"})
         ref = remote_file("s3://bucket/data/file.txt")
-        cache.stage_file(ref=ref, backend=make_download_backend(content=b"v1", etag="etag-v1"))
+        cache.stage_file(ref=ref, backend=store)
 
-        path = cache.stage_file(
-            ref=ref, backend=make_download_backend(content=b"v2", etag="etag-v2")
-        )
+        store.put(bucket="bucket", key="data/file.txt", data=b"v2")
+        path = cache.stage_file(ref=ref, backend=store)
 
         assert path.read_bytes() == b"v2"
+        assert store.downloads == 2
 
     def test_a_pinned_version_is_reused_without_a_freshness_check(self, tmp_path: Path) -> None:
         cache = StagingCache(root=tmp_path / "staging")
-        backend = make_download_backend()
+        store = _store(tmp_path, {"key.txt": b"hello world"})
         ref = remote_file("s3://bucket/key.txt", version_id="v42")
 
-        cache.stage_file(ref=ref, backend=backend)
-        cache.stage_file(ref=ref, backend=backend)
+        cache.stage_file(ref=ref, backend=store)
+        cache.stage_file(ref=ref, backend=store)
 
-        backend.head.assert_not_called()
-        assert backend.download.call_count == 1
+        assert store.heads == 0
+        assert store.downloads == 1
 
     def test_identical_content_under_two_uris_shares_one_blob(self, tmp_path: Path) -> None:
         cache = StagingCache(root=tmp_path / "staging")
-        backend = make_download_backend(content=b"shared")
+        store = _store(tmp_path, {"a.txt": b"shared", "b.txt": b"shared"})
 
-        path_a = cache.stage_file(ref=remote_file("s3://bucket/a.txt"), backend=backend)
-        path_b = cache.stage_file(ref=remote_file("s3://bucket/b.txt"), backend=backend)
+        path_a = cache.stage_file(ref=remote_file("s3://bucket/a.txt"), backend=store)
+        path_b = cache.stage_file(ref=remote_file("s3://bucket/b.txt"), backend=store)
 
         assert path_a == path_b
         assert len(list((tmp_path / "staging" / "blobs").iterdir())) == 1
@@ -95,14 +86,14 @@ class TestStageFile:
         self, tmp_path: Path
     ) -> None:
         cache = StagingCache(root=tmp_path / "staging")
+        store = _store(tmp_path, {"data/file.txt": b"first"})
         v1 = cache.stage_file(
-            ref=remote_file("s3://bucket/data/file.txt", version_id="v1"),
-            backend=make_download_backend(content=b"first", etag="e1"),
+            ref=remote_file("s3://bucket/data/file.txt", version_id="v1"), backend=store
         )
         # A second version of the same URI replaces the index row.
+        store.put(bucket="bucket", key="data/file.txt", data=b"second")
         cache.stage_file(
-            ref=remote_file("s3://bucket/data/file.txt", version_id="v2"),
-            backend=make_download_backend(content=b"second", etag="e2"),
+            ref=remote_file("s3://bucket/data/file.txt", version_id="v2"), backend=store
         )
 
         assert StagingCache.digest_of(v1) == hash_bytes(b"first")
@@ -110,23 +101,23 @@ class TestStageFile:
 
     def test_a_worker_s_in_memory_index_writes_no_database(self, tmp_path: Path) -> None:
         cache = StagingCache(root=tmp_path / "staging", db_path=MEMORY)
+        store = _store(tmp_path, {"worker.txt": b"hello world"})
         ref = remote_file("s3://bucket/worker.txt")
 
-        assert cache.stage_file(ref=ref, backend=make_download_backend()).exists()
+        assert cache.stage_file(ref=ref, backend=store).exists()
         assert cache.lookup(uri=ref.uri) is not None
         assert not list(tmp_path.rglob("*.db"))
 
 
 def test_a_folder_is_staged_and_recorded(tmp_path: Path) -> None:
     cache = StagingCache(root=tmp_path / "staging")
+    store = _store(tmp_path, {"prefix/a.txt": b"a.txt", "prefix/sub/b.txt": b"b.txt"})
 
-    folder_path = cache.stage_folder(
-        ref=remote_folder("s3://bkt/prefix/"), backend=_folder_backend()
-    )
+    folder_path = cache.stage_folder(ref=remote_folder("s3://bucket/prefix/"), backend=store)
 
     assert (folder_path / "a.txt").read_text() == "a.txt"
     assert (folder_path / "sub" / "b.txt").read_text() == "b.txt"
-    entry = cache.lookup(uri="s3://bkt/prefix/")
+    entry = cache.lookup(uri="s3://bucket/prefix/")
     assert (entry.blob_path, entry.size) == (f"folders/{folder_path.name}", 10)
 
 
@@ -146,7 +137,8 @@ class TestPrune:
 
     def test_an_unused_entry_and_its_bytes_go_unless_dry_run(self, tmp_path: Path) -> None:
         cache = StagingCache(root=tmp_path / "staging")
-        cache.stage_file(ref=remote_file("s3://bucket/old.txt"), backend=make_download_backend())
+        store = _store(tmp_path, {"old.txt": b"hello world"})
+        cache.stage_file(ref=remote_file("s3://bucket/old.txt"), backend=store)
         entry = cache.lookup(uri="s3://bucket/old.txt")
 
         assert cache.prune(before="2000-01-01T00:00:00+00:00") == (0, 0)  # recently used
@@ -158,7 +150,8 @@ class TestPrune:
 
     def test_bytes_shared_with_a_surviving_entry_are_kept(self, tmp_path: Path) -> None:
         cache = StagingCache(root=tmp_path / "staging")
-        cache.stage_file(ref=remote_file("s3://bucket/a.txt"), backend=make_download_backend())
+        store = _store(tmp_path, {"a.txt": b"hello world"})
+        cache.stage_file(ref=remote_file("s3://bucket/a.txt"), backend=store)
         entry = cache.lookup(uri="s3://bucket/a.txt")
         # A second URI on the same blob, used later than the cutoff.
         cache.index.record(

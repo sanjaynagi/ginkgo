@@ -7,12 +7,12 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.remote_executor import RemoteJobResult, RemoteJobState
+from tests.remote_fakes import use_stand_in_artifact_store
 
 
 @dataclass
@@ -60,7 +60,6 @@ def recording_executors(monkeypatch: pytest.MonkeyPatch) -> dict[str, RecordingE
     a stand-in: these payloads carry no file arguments.
     """
     import ginkgo.runtime.executor_registry as registry_module
-    import ginkgo.runtime.remote_dispatch as dispatch_module
 
     built: dict[str, RecordingExecutor] = {}
     monkeypatch.setattr(
@@ -68,12 +67,7 @@ def recording_executors(monkeypatch: pytest.MonkeyPatch) -> dict[str, RecordingE
         "_build_executor",
         lambda spec: built.setdefault(spec.name, RecordingExecutor(spec.name)),
     )
-    # A stand-in store: a remote task needs one, and these executors never use it.
-    monkeypatch.setattr(
-        dispatch_module.RemoteDispatchManager,
-        "_ensure_artifact_store",
-        lambda self: setattr(self, "_artifact_store", MagicMock()),
-    )
+    use_stand_in_artifact_store(monkeypatch)
     return built
 
 

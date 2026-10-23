@@ -8,6 +8,7 @@ an unchanged one is served from the cache with its outputs restored.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -106,6 +107,10 @@ def _run(*args: str, fresh: bool = False) -> dict[str, list[str]]:
     """
     argv = ("run", *args, "--agent-output")
     if fresh:
+        # An edit within the same second that keeps the file's size leaves the
+        # previous run's .pyc looking current, and Python would run old code.
+        for cache_dir in Path.cwd().rglob("__pycache__"):
+            shutil.rmtree(cache_dir)
         result = subprocess.run(
             [sys.executable, "-m", "ginkgo.cli", *argv], text=True, capture_output=True
         )
