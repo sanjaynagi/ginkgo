@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 from concurrent.futures import Future
 
@@ -14,13 +13,9 @@ from ginkgo.plugins.registry import PluginNotFoundError
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.remote_executor import RemoteDispatchStats, RemoteExecutor, RemoteJobHandle
+from tests.remote_fakes import NeverSubmits, use_stand_in_artifact_store
 
 pytestmark = pytest.mark.usefixtures("stub_executor_types")
-
-
-class _FakeRemoteExecutor(RemoteExecutor):
-    def submit(self, *, attempt: dict) -> RemoteJobHandle:
-        raise AssertionError("routing tests never submit")
 
 
 CONFIG = {
@@ -134,7 +129,7 @@ class TestExecutorRegistryConfig:
 
         def fake_build(spec):
             builds.append(spec.name)
-            return _FakeRemoteExecutor()
+            return NeverSubmits()
 
         monkeypatch.setattr(module, "_build_executor", fake_build)
         registry = ExecutorRegistry.from_config(CONFIG, default="gpu-k8s")
@@ -210,7 +205,7 @@ class TestExecutorRouting:
     def _evaluator(self, *, default: str | None) -> ConcurrentEvaluator:
         registry = ExecutorRegistry.from_config(CONFIG, default=default)
         for name in registry.specs:
-            registry._built[name] = _FakeRemoteExecutor()
+            registry._built[name] = NeverSubmits()
         return ConcurrentEvaluator(jobs=1, executor_registry=registry)
 
     def test_task_routes_to_the_executor_it_names(self) -> None:
@@ -349,19 +344,11 @@ class TestDispatchManagerRouting:
         from concurrent.futures import ThreadPoolExecutor
 
         import ginkgo.runtime.executor_registry as registry_module
-        import ginkgo.runtime.remote_dispatch as dispatch_module
 
         backends = {"gpu-k8s": _RecordingExecutor("gpu-k8s")}
         backends["cheap-batch"] = _RecordingExecutor("cheap-batch")
         monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backends[spec.name])
-        # The artifact store needs project config; these payloads carry no
-        # file arguments, so skip it.
-        # A stand-in store: a remote task needs one, and these fakes never use it.
-        monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager,
-            "_ensure_artifact_store",
-            lambda self: setattr(self, "_artifact_store", MagicMock()),
-        )
+        use_stand_in_artifact_store(monkeypatch)
 
         registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
         manager = self._manager(tmp_path, registry)
@@ -399,16 +386,10 @@ class TestDispatchManagerRouting:
         from concurrent.futures import ThreadPoolExecutor
 
         import ginkgo.runtime.executor_registry as registry_module
-        import ginkgo.runtime.remote_dispatch as dispatch_module
 
         backend = _RecordingExecutor("gpu-k8s")
         monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backend)
-        # A stand-in store: a remote task needs one, and these fakes never use it.
-        monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager,
-            "_ensure_artifact_store",
-            lambda self: setattr(self, "_artifact_store", MagicMock()),
-        )
+        use_stand_in_artifact_store(monkeypatch)
 
         registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
         manager = self._manager(tmp_path, registry)
@@ -522,7 +503,6 @@ class TestExecutionBackendContract:
 
     def test_remote_task_reports_the_executor_name(self, monkeypatch) -> None:
         import ginkgo.runtime.executor_registry as registry_module
-        import ginkgo.runtime.remote_dispatch as dispatch_module
         from ginkgo.runtime.events import EventBus, TaskStarted
 
         backends: dict[str, _RecordingExecutor] = {}
@@ -532,12 +512,7 @@ class TestExecutionBackendContract:
             return backends[spec.name]
 
         monkeypatch.setattr(registry_module, "_build_executor", fake_build)
-        # A stand-in store: a remote task needs one, and these fakes never use it.
-        monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager,
-            "_ensure_artifact_store",
-            lambda self: setattr(self, "_artifact_store", MagicMock()),
-        )
+        use_stand_in_artifact_store(monkeypatch)
 
         seen: list[str | None] = []
         bus = EventBus()
@@ -619,17 +594,11 @@ class _QueuedWatcher:
 class TestRemoteCancellationOnFailFast:
     def test_queued_remote_job_is_cancelled_on_its_executor(self, monkeypatch) -> None:
         import ginkgo.runtime.executor_registry as registry_module
-        import ginkgo.runtime.remote_dispatch as dispatch_module
         from ginkgo.runtime.executors import Executors
 
         backend = _CancellableExecutor()
         monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backend)
-        # A stand-in store: a remote task needs one, and these fakes never use it.
-        monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager,
-            "_ensure_artifact_store",
-            lambda self: setattr(self, "_artifact_store", MagicMock()),
-        )
+        use_stand_in_artifact_store(monkeypatch)
         # The job is submitted but its watcher never starts, so fail-fast
         # cancels the watcher future while the job is in flight.
         monkeypatch.setattr(

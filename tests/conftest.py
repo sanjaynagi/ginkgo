@@ -4,7 +4,6 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -13,7 +12,6 @@ from ginkgo.core.shell import shell_argv
 from ginkgo.plugins.api import ExecutorType, ObjectStoreType, Plugin
 from ginkgo.plugins.builtin import BUILTIN
 from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
-from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.rundir import RunDir, make_run_id
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
@@ -30,35 +28,7 @@ from ginkgo.runtime.events import (
     TaskStaging,
     TaskStarted,
 )
-
-
-def make_download_backend(*, content: bytes = b"hello world", etag: str = "etag1") -> MagicMock:
-    """Return a mock ``ObjectStore`` whose download writes fixed bytes.
-
-    ``download`` writes ``content`` to the requested ``dest_path`` and ``head``
-    reports the matching size/etag — enough to drive the staging cache and the
-    evaluator's remote-input path without touching a real object store.
-
-    Parameters
-    ----------
-    content : bytes
-        Bytes written by ``download`` and reported as the object size.
-    etag : str
-        ETag returned by both ``download`` and ``head``.
-    """
-    backend = MagicMock()
-
-    def _download(*, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(content)
-        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=len(content), etag=etag)
-
-    def _head(*, bucket: str, key: str) -> RemoteObjectMeta:
-        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=len(content), etag=etag)
-
-    backend.download.side_effect = _download
-    backend.head.side_effect = _head
-    return backend
+from tests.remote_fakes import RemoteRoundTrip, set_up_round_trip
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +83,15 @@ class EventCollector:
 
     def failed(self) -> list[TaskFailed]:
         return [e for e in self.events if isinstance(e, TaskFailed)]
+
+
+@pytest.fixture
+def remote_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RemoteRoundTrip:
+    """A driver and an in-process pod sharing only a fake object store.
+
+    See :func:`tests.remote_fakes.set_up_round_trip`.
+    """
+    return set_up_round_trip(root=tmp_path, monkeypatch=monkeypatch)
 
 
 @pytest.fixture

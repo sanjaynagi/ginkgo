@@ -8,18 +8,13 @@ from ginkgo import evaluate, task
 from ginkgo.core.resources import Resources
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
-from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobHandle
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
-
-
-class _FakeRemoteExecutor(RemoteExecutor):
-    def submit(self, *, attempt: dict) -> RemoteJobHandle:
-        raise AssertionError("placement tests never submit")
+from tests.remote_fakes import NeverSubmits
 
 
 def _registry(name: str = "remote") -> ExecutorRegistry:
     """Registry with one prebuilt executor as the run default."""
-    return ExecutorRegistry.for_executor(_FakeRemoteExecutor(), name=name)
+    return ExecutorRegistry.for_executor(NeverSubmits(), name=name)
 
 
 @task(gpu=1)
