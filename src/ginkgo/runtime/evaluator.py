@@ -38,7 +38,10 @@ from ginkgo.runtime.advisories import (
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.graph import TaskGraph, TaskNode
 from ginkgo.runtime.placement import Placement
-from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
+from ginkgo.runtime.remote_dispatch import (
+    RemoteArtifactStoreMissingError,
+    RemoteDispatchManager,
+)
 from ginkgo.runtime.remote_executor import RemoteDispatchStats
 from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
@@ -813,6 +816,15 @@ class ConcurrentEvaluator:
         node.gpu = resources.gpu
         node.custom_resources = dict(resources.custom)
         node.executor_name = self.placement.resolve(task_def=node.task_def)
+        # A remote worker passes files, folders and large values through the
+        # artifact store, so a remote task cannot run without one. Raised
+        # here, where a failure is not retried, before anything is submitted.
+        if node.executor_name is not None and self._remote_dispatch.artifact_store is None:
+            raise RemoteArtifactStoreMissingError(
+                f"Task {node.task_def.name!r} runs on executor {node.executor_name!r}, but "
+                "no artifact store is configured; set [remote.artifacts] store = "
+                '"<scheme>://<bucket>/<prefix>/" in ginkgo.toml.'
+            )
         self._apply_memory_escalation(node=node, resources=resources)
         self.check_resource_budget(
             task_name=node.task_def.base_name,
