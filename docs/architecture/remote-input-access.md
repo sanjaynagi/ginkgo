@@ -54,6 +54,15 @@ into the result envelope as `remote_input_access`; the evaluator records
 them against the task as `TaskAnnotated(fields={"remote_input_access": …})`,
 which lands in the ledger's `tasks.extra`.
 
+A remote input's cache key holds its store metadata, not its bytes, so the
+content is recorded separately. Whoever downloads an input records its digest
+(`StagingCache.digest`: BLAKE3 of a file's bytes, or a folder's listing
+digest): the driver's `RemoteStager` for inputs it stages, the worker for
+`direct` inputs and for a mount that fell back to a download. The evaluator
+merges them per task into `TaskAnnotated(fields={"remote_input_digests":
+{uri: digest}})`. A FUSE-mounted input is never downloaded whole, so it records
+none.
+
 ## Per-input policy resolution
 
 `ginkgo/remote/access/resolver.py::resolve_access` layers policies in

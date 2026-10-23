@@ -79,7 +79,8 @@ does not touch the cache, whose entries are found by key on disk.
 Notes on the fields:
 
 - `extra` holds the open-ended annotations a task collects — the execution
-  backend, a container image digest, remote input-access statistics, a rendered
+  backend, a container image digest, remote input-access statistics, the
+  digests of the remote inputs fetched for it (`remote_input_digests`), a rendered
   page (`rendered_html`, `rendered_html_run_id`), a sub-run id — merged from `TaskAnnotated` events. Facts a
   reader filters or joins on get a column instead.
 - `task_inputs.value_summary` is the JSON-encoded rendered argument. Both a

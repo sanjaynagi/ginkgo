@@ -83,6 +83,7 @@ from ginkgo.runtime.environment.secrets import (
 )
 from ginkgo.runtime.remote_input_resolver import (
     RemoteStager,
+    StagedInputs,
     count_remote_inputs,
     load_remote_publisher,
     resolve_staging_jobs,
@@ -292,6 +293,7 @@ class NodeRun:
     extra_source_hash: str | None = None
     runner_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
+    remote_input_digests: dict[str, str] = field(default_factory=dict)
     measured_resources: dict[str, Any] | None = None
     blocked_by: TaskNode | None = None
     """The failed task a skip is attributed to; set only when "skipped"."""
@@ -1073,10 +1075,11 @@ class ConcurrentEvaluator:
 
     def _on_inputs_staged(self, *, node: NodeRun, completed_value: Any) -> None:
         """Start task execution after remote inputs have been staged locally."""
-        if not isinstance(completed_value, dict):
+        if not isinstance(completed_value, StagedInputs):
             raise TypeError("Expected staged task arguments from staging phase")
 
-        node.resolved_args = completed_value
+        node.resolved_args = completed_value.args
+        self._record_input_digests(node=node, digests=completed_value.digests)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=node.resolved_args)
         self._start_task_execution(node=node)
 
@@ -1726,6 +1729,19 @@ class ConcurrentEvaluator:
             remove_declared_output(output)
             output.parent.mkdir(parents=True, exist_ok=True)
 
+    def _record_input_digests(self, *, node: NodeRun, digests: dict[str, str]) -> None:
+        """Record the digest of each remote input fetched for *node*, by URI.
+
+        The driver reports what it staged and the worker what it downloaded;
+        a task can have both, so the record accumulates.
+        """
+        if not digests:
+            return
+        node.remote_input_digests.update(digests)
+        self._annotate_task(
+            node=node, fields={"remote_input_digests": dict(node.remote_input_digests)}
+        )
+
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.
 
@@ -1733,6 +1749,8 @@ class ConcurrentEvaluator:
         and local (process-pool) workers, and surfaces a notice when a
         mount fell back to staging.
         """
+        if isinstance(payload, dict) and isinstance(payload.get("remote_input_digests"), dict):
+            self._record_input_digests(node=node, digests=payload["remote_input_digests"])
         if isinstance(payload, dict) and isinstance(payload.get("remote_input_access"), dict):
             access_stats = payload["remote_input_access"]
             self._annotate_task(node=node, fields={"remote_input_access": access_stats})

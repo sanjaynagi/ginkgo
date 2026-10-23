@@ -36,11 +36,13 @@ class StagedAccess:
     ) -> None:
         self._cache = cache if cache is not None else StagingCache()
         self._stats = AccessStats(policy=policy)
+        self._digests: dict[str, str] = {}
 
     def materialize_file(self, *, ref: RemoteFileRef) -> Path:
         """Stage a remote file and return the cached path."""
         path = self._cache.stage_file(ref=ref)
         self._record(uri=ref.uri, path=path)
+        self._digests[ref.uri] = self._cache.digest(uri=ref.uri)
         return path
 
     def materialize_folder(self, *, ref: RemoteFolderRef) -> Path:
@@ -48,7 +50,15 @@ class StagedAccess:
         path = self._cache.stage_folder(ref=ref)
         total = _tree_size(path)
         self._record(uri=ref.uri, size=total)
+        self._digests[ref.uri] = self._cache.digest(uri=ref.uri)
         return path
+
+    def digests(self) -> dict[str, str]:
+        """Return the digest of each input staged so far, by URI.
+
+        See :meth:`ginkgo.remote.staging.StagingCache.digest`.
+        """
+        return dict(self._digests)
 
     def release(self, *, paths: Iterable[Path]) -> None:  # noqa: ARG002
         """No-op: staged blobs outlive the task by design."""

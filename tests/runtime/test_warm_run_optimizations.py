@@ -365,6 +365,10 @@ class TestTrustMtimes:
         from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         class _FakeStagingCache:
+            def digest(self, *, uri: str) -> str:  # noqa: ARG002
+
+                return "digest"
+
             def __init__(self, *, root: Path, fail: bool = False) -> None:
                 self._root = root
                 self._fail = fail

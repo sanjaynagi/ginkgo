@@ -253,6 +253,7 @@ def run_task(
     }
     fn = None
     measured: dict[str, Any] | None = None
+    input_digests: dict[str, str] = {}
     try:
         with (
             _task_log_context(
@@ -275,9 +276,8 @@ def run_task(
             if mounted_access is not None:
                 from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
 
-                decoded_args, _ = hydrate_remote_inputs(
-                    args=decoded_args, mounted_access=mounted_access
-                )
+                hydration = hydrate_remote_inputs(args=decoded_args, mounted_access=mounted_access)
+                decoded_args, input_digests = hydration.args, hydration.digests
             # Measured from here, once the workflow module is imported, so
             # the body's usage is not charged with the worker's imports.
             usage_start = _rusage_snapshot()
@@ -326,6 +326,9 @@ def run_task(
         response["measured_resources"] = measured
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()
+    # A mount that fell back to a download leaves that input's digest.
+    if input_digests:
+        response["remote_input_digests"] = input_digests
     return response
 
 

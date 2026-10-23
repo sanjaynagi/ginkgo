@@ -30,7 +30,8 @@ import pytest
 from ginkgo import Out, file, folder, task
 from ginkgo.core.remote import remote_file
 from ginkgo.remote.staging import RemoteIdentityError
-from ginkgo.runtime.events import TaskStaging
+from ginkgo.core.hashing import hash_bytes
+from ginkgo.runtime.events import TaskAnnotated, TaskStaging
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
@@ -282,6 +283,13 @@ def remote_read(path: file) -> str:
     return Path(str(path)).read_text(encoding="utf-8")
 
 
+@task(remote=True)
+def remote_read_both(direct: file, staged: file) -> str:
+    return Path(str(direct)).read_text(encoding="utf-8") + Path(str(staged)).read_text(
+        encoding="utf-8"
+    )
+
+
 @task(remote=True, retries=2)
 def remote_read_with_retries(path: file) -> str:
     return Path(str(path)).read_text(encoding="utf-8")
@@ -518,3 +526,41 @@ class TestDirectRemoteInputs:
         with pytest.raises(RemoteIdentityError, match="changed after its cache key"):
             _evaluate(remote_read_with_retries(path=remote_file(uri)))
         assert submits == 1
+
+    def test_the_worker_records_the_digest_of_a_direct_input(self, tmp_path: Path) -> None:
+        uri = self._put_source(tmp_path, b"from the source")
+        collector = EventCollector()
+
+        _evaluate(remote_read(path=remote_file(uri)), event_bus=collector.bus)
+
+        assert _recorded_input_digests(collector) == {uri: hash_bytes(b"from the source")}
+
+    def test_driver_and_worker_digests_are_recorded_together(self, tmp_path: Path) -> None:
+        direct_uri = self._put_source(tmp_path, b"direct")
+        staged_source = tmp_path / "object-store" / "data-bucket" / "staged.txt"
+        staged_source.write_bytes(b"staged")
+        staged_uri = "s3://data-bucket/staged.txt"
+        collector = EventCollector()
+
+        result = _evaluate(
+            remote_read_both(
+                direct=remote_file(direct_uri), staged=remote_file(staged_uri, access="stage")
+            ),
+            event_bus=collector.bus,
+        )
+
+        assert result == "directstaged"
+        assert _recorded_input_digests(collector) == {
+            direct_uri: hash_bytes(b"direct"),
+            staged_uri: hash_bytes(b"staged"),
+        }
+
+
+def _recorded_input_digests(collector: EventCollector) -> dict[str, str]:
+    """Return the last ``remote_input_digests`` annotation the run recorded."""
+    recorded = [
+        event.fields["remote_input_digests"]
+        for event in collector.events
+        if isinstance(event, TaskAnnotated) and "remote_input_digests" in event.fields
+    ]
+    return recorded[-1]

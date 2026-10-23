@@ -223,6 +223,10 @@ class TestStagedAccess:
         src.write_text("hello world")
 
         class _FakeCache:
+            def digest(self, *, uri: str) -> str:  # noqa: ARG002
+
+                return "digest"
+
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return src
 
@@ -244,6 +248,10 @@ class TestStagedAccess:
         (staged / "b.txt").write_text("defg")
 
         class _FakeCache:
+            def digest(self, *, uri: str) -> str:  # noqa: ARG002
+
+                return "digest"
+
             def stage_folder(self, *, ref: RemoteFolderRef) -> Path:  # noqa: ARG002
                 return staged
 
@@ -372,8 +380,9 @@ class TestWorkerHydration:
             driver_factory=lambda scheme: driver,  # noqa: ARG005
         )
         args = {"fastq": marker, "threads": 4}
-        rewritten, m = hydrate_remote_inputs(args=args, mounted_access=mounted)
-        assert m is mounted
+        hydration = hydrate_remote_inputs(args=args, mounted_access=mounted)
+        rewritten = hydration.args
+        assert hydration.mounted_access is mounted
         assert isinstance(rewritten["fastq"], file)
         assert rewritten["fastq"].endswith("path/one.txt")
         assert rewritten["threads"] == 4
@@ -393,7 +402,7 @@ class TestWorkerHydration:
             driver_factory=lambda scheme: driver,  # noqa: ARG005
         )
         args = {"files": [marker_a, marker_b]}
-        rewritten, _ = hydrate_remote_inputs(args=args, mounted_access=mounted)
+        rewritten = hydrate_remote_inputs(args=args, mounted_access=mounted).args
         assert len(rewritten["files"]) == 2
         assert all("bucket" in str(p) for p in rewritten["files"])
 
@@ -424,6 +433,10 @@ class TestWorkerHydration:
         staged_path.write_text("content")
 
         class _FakeCache:
+            def digest(self, *, uri: str) -> str:  # noqa: ARG002
+
+                return "digest"
+
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return staged_path
 
@@ -433,12 +446,14 @@ class TestWorkerHydration:
         fallback = StagedStrategy(cache=_FakeCache(), policy="stage (fallback)")
         ref = remote_file("s3://bucket/one.txt", access="fuse")
         marker = encode_remote_input(ref=ref, policy="fuse")
-        rewritten, m = hydrate_remote_inputs(
+        hydration = hydrate_remote_inputs(
             args={"in": marker},
             mounted_access=mounted,
             staged_access=fallback,
         )
-        assert rewritten["in"] == file(str(staged_path))
+        assert hydration.args["in"] == file(str(staged_path))
+        # The fallback download leaves the input's digest for provenance.
+        assert hydration.digests == {ref.uri: "digest"}
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +557,7 @@ class TestLocalWorkerFuseHydration:
         access = _local_fuse_access(args={"data": marker}, base_dir=tmp_path)
 
         assert access is not None
-        rewritten, _ = hydrate_remote_inputs(args={"data": marker}, mounted_access=access)
+        rewritten = hydrate_remote_inputs(args={"data": marker}, mounted_access=access).args
         assert isinstance(rewritten["data"], file_type)
         # Mount lives under the task-local transport dir, not a shared root.
         assert str(rewritten["data"]).startswith(str(tmp_path / "fuse"))
@@ -722,6 +737,10 @@ class TestRemoteStagerFuseRouting:
         from ginkgo.remote import staging
 
         class _FakeCache:
+            def digest(self, *, uri: str) -> str:  # noqa: ARG002
+
+                return "digest"
+
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return tmp_path / "staged.bin"
 
@@ -794,6 +813,10 @@ class TestRemoteStagerFuseRouting:
         from ginkgo.remote import staging
 
         class _FakeCache:
+            def digest(self, *, uri: str) -> str:  # noqa: ARG002
+
+                return "digest"
+
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return tmp_path / "staged.bin"
 

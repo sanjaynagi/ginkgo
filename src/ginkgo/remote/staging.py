@@ -433,6 +433,22 @@ class StagingCache:
             if not (self._root / entry.blob_path).exists()
         ]
 
+    def digest(self, *, uri: str) -> str:
+        """Return the digest of what this cache staged for *uri*.
+
+        A file's is the BLAKE3 digest of its bytes; a folder's is the digest
+        of its listing (each object's URI, size, ETag and version).
+
+        Raises
+        ------
+        KeyError
+            If nothing has been staged for *uri*.
+        """
+        entry = self.index.entry(uri=uri)
+        if entry is None:
+            raise KeyError(uri)
+        return entry.digest
+
     def lookup(self, *, uri: str) -> StagingEntry | None:
         """Look up the staging entry for a URI without downloading.
 

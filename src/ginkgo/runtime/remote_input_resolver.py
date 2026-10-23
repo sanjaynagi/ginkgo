@@ -197,6 +197,23 @@ def load_remote_publisher() -> Any | None:
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class StagedInputs:
+    """A task's arguments with their remote inputs staged or marked.
+
+    Parameters
+    ----------
+    args : dict[str, Any]
+        The arguments, each remote input replaced by a local path or a marker.
+    digests : dict[str, str]
+        The digest of each input staged here, by URI (see
+        :meth:`ginkgo.remote.staging.StagingCache.digest`).
+    """
+
+    args: dict[str, Any]
+    digests: dict[str, str]
+
+
 @dataclass(kw_only=True)
 class RemoteStager:
     """Stage remote inputs into local paths with in-flight deduplication.
@@ -227,14 +244,16 @@ class RemoteStager:
 
     # Per-task entry points --------------------------------------------------
 
-    def stage_task_inputs(self, *, node: Any) -> dict[str, Any]:
+    def stage_task_inputs(self, *, node: Any) -> StagedInputs:
         """Stage remote inputs for one task in the reserved worker slot."""
         assert node.resolved_args is not None
         stage_started = time.perf_counter()
-        staged = self.stage_remote_refs(
+        digests: dict[str, str] = {}
+        args = self.stage_remote_refs(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             dispatches_remote=node.executor_name is not None,
+            digests=digests,
         )
         if self.timing_recorder is not None:
             self.timing_recorder(
@@ -242,7 +261,7 @@ class RemoteStager:
                 phase="remote_stage_seconds",
                 started=stage_started,
             )
-        return staged
+        return StagedInputs(args=args, digests=digests)
 
     def needs_identity(self, *, node: Any) -> bool:
         """Return whether any of the node's remote inputs still needs its identity."""
@@ -319,6 +338,7 @@ class RemoteStager:
         task_def: Any,
         resolved_args: dict[str, Any],
         dispatches_remote: bool,
+        digests: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Stage the remote inputs in a resolved argument map, or leave them to the worker.
 
@@ -335,6 +355,8 @@ class RemoteStager:
             Its resolved arguments.
         dispatches_remote : bool
             Whether the task runs on a remote executor rather than this host.
+        digests : dict[str, str] | None
+            When given, receives the digest of each input staged here, by URI.
 
         Returns
         -------
@@ -368,6 +390,7 @@ class RemoteStager:
                 task_policy=task_policy,
                 access_config=access_config,
                 dispatches_remote=dispatches_remote,
+                digests=digests,
             )
         return staged
 
@@ -379,6 +402,7 @@ class RemoteStager:
         task_policy: TaskAccessPolicy | None = None,
         access_config: AccessConfig | None = None,
         dispatches_remote: bool = False,
+        digests: dict[str, str] | None = None,
     ) -> Any:
         """Stage a single value, recursing into typed containers.
 
@@ -410,6 +434,8 @@ class RemoteStager:
             if is_fuse_policy(policy) or (policy == "direct" and dispatches_remote):
                 return encode_remote_input(ref=value, policy=policy)
             staged_path = str(self._stage_remote_ref(ref=value))
+            if digests is not None:
+                digests[value.uri] = self._get_staging_cache().digest(uri=value.uri)
             return file(staged_path) if isinstance(value, RemoteFileRef) else folder(staged_path)
 
         # Recurse into typed containers.
@@ -424,6 +450,7 @@ class RemoteStager:
                     task_policy=task_policy,
                     access_config=access_config,
                     dispatches_remote=dispatches_remote,
+                    digests=digests,
                 )
                 for item in value
             ]

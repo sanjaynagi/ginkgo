@@ -9,6 +9,7 @@ the payload and replaces each marker with a ``file`` / ``folder`` value: a
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,32 @@ from ginkgo.remote.staging import StagingCache
 from ginkgo.store.sqlite import MEMORY
 
 
+@dataclass(kw_only=True)
+class Hydration:
+    """What hydrating a payload's remote inputs produced.
+
+    Parameters
+    ----------
+    args : dict[str, Any]
+        The arguments, with every marker replaced by a local path.
+    mounted_access : MountedAccess | None
+        The mounts made, for the caller to read stats from and close.
+    digests : dict[str, str]
+        The digest of each input downloaded rather than mounted, by URI.
+    """
+
+    args: dict[str, Any]
+    mounted_access: MountedAccess | None
+    digests: dict[str, str]
+
+
 def hydrate_remote_inputs(
     *,
     args: dict[str, Any],
     staging_root: Path | None = None,
     mounted_access: MountedAccess | None = None,
     staged_access: StagedAccess | None = None,
-) -> tuple[dict[str, Any], MountedAccess | None]:
+) -> Hydration:
     """Replace remote-input markers in ``args`` with local paths.
 
     Parameters
@@ -45,10 +65,8 @@ def hydrate_remote_inputs(
 
     Returns
     -------
-    tuple[dict[str, Any], MountedAccess | None]
-        The rewritten args and the (possibly newly-created)
-        :class:`MountedAccess` instance so the caller can read stats and
-        later call :meth:`MountedAccess.close`.
+    Hydration
+        The rewritten args, the mounts made, and the downloads' digests.
     """
     state = _Hydrator(
         staging_root=staging_root,
@@ -56,7 +74,11 @@ def hydrate_remote_inputs(
         staged_access=staged_access,
     )
     rewritten = state.walk(args)
-    return rewritten, state.mounted_access
+    return Hydration(
+        args=rewritten,
+        mounted_access=state.mounted_access,
+        digests=state.staged_access.digests() if state.staged_access is not None else {},
+    )
 
 
 class _Hydrator:

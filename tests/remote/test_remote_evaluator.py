@@ -10,7 +10,9 @@ import pytest
 
 from ginkgo import evaluate, file, folder, task
 from ginkgo.core.remote import remote_file, remote_folder
+from ginkgo.core.hashing import hash_bytes
 from ginkgo.remote.backend import RemoteObjectMeta
+from ginkgo.runtime.events import TaskAnnotated
 from ginkgo.remote.staging import RemoteIdentityError, StagingCache
 from tests.conftest import EventCollector, make_download_backend
 
@@ -495,3 +497,28 @@ class TestRemoteInputIdentity:
         )
 
         assert result == "beta"
+
+    def test_a_staged_input_records_its_content_digest(self, tmp_path) -> None:
+        store = _CountingStore({"data/a.txt": (b"alpha", "e1")})
+        collector = EventCollector()
+
+        _evaluate_against(
+            store,
+            staging_root=tmp_path / "staging",
+            expr=read_file_content(path=remote_file("s3://bucket/data/a.txt")),
+            collector=collector,
+        )
+
+        assert _recorded_input_digests(collector) == {
+            "s3://bucket/data/a.txt": hash_bytes(b"alpha")
+        }
+
+
+def _recorded_input_digests(collector: EventCollector) -> dict[str, str]:
+    """Return the last ``remote_input_digests`` annotation the run recorded."""
+    recorded = [
+        event.fields["remote_input_digests"]
+        for event in collector.events
+        if isinstance(event, TaskAnnotated) and "remote_input_digests" in event.fields
+    ]
+    return recorded[-1]
