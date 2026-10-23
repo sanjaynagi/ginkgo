@@ -146,8 +146,9 @@ times over as you need. The examples name each executor after its type.
 
 ### Kubernetes (`type = "k8s"`)
 
-Submits tasks as `batch/v1` Jobs on any Kubernetes cluster. Works with GKE,
-EKS, OKE, or any standard K8s installation. Requires the `ginkgo-k8s` plugin.
+Submits tasks as `batch/v1` Jobs on a Kubernetes cluster. It has run on GKE
+Autopilot; nothing in it is GKE-specific beyond the defaults noted below.
+Requires the `ginkgo-k8s` plugin.
 
 ```toml
 # ginkgo.toml
@@ -164,7 +165,36 @@ tolerations = []                   # optional, list of V1Toleration dicts
 ephemeral_storage = "10Gi"         # optional, per-pod scratch disk (default shown)
 backoff_limit = 0                  # optional, K8s-level pod retries (default shown; raise on Autopilot/spot)
 unschedulable_timeout = 300.0      # optional, seconds before an unschedulable pod fails
+gpu_node_selector_key = "cloud.google.com/gke-accelerator"  # optional, node label gpu_type sets (default shown)
+env = { GINKGO_REMOTE_OCI_AUTH = "oke_workload_identity" }  # optional, every worker container
+pod_annotations = { "karpenter.sh/do-not-disrupt" = "true" } # optional, every worker pod
+pod_labels = { team = "gpas" }     # optional, every worker pod and Job
+image_pull_secrets = ["ocir-pull"] # optional, Secrets for a private worker image
+fuse_annotations = {}              # optional; empty means none (default: GKE's gcsfuse annotation)
 ```
+
+An unknown setting is an error, so a misspelt key fails at once rather than
+being ignored. A task placed on an executor needs `[remote.artifacts] store`
+set; without it the run stops before anything is submitted. When
+`GINKGO_PARENT_RUN_ID` is set in the driver's environment, every Job and pod
+carries a `ginkgo/parent-run-id` label with its value, so whatever launched the
+run can delete them by selector, for example with
+`kubectl delete jobs -l ginkgo/parent-run-id=<id>`.
+
+**OCI Object Storage auth.** The `oci://` store signs requests with an API key
+from `~/.oci/config` by default. In a pod on OKE, use Workload Identity
+instead, so no key is mounted:
+
+```toml
+[remote.oci]
+auth = "oke_workload_identity"   # or "api_key", "instance_principal", "resource_principal"
+region = "uk-london-1"
+```
+
+`GINKGO_REMOTE_OCI_AUTH` and `GINKGO_REMOTE_OCI_REGION` override these, which
+is how a worker gets them: set them in the executor's `env`. Workflow code that
+reads or writes OCI Object Storage itself can use `ginkgo_oci.filesystem()`,
+which returns an `ocifs` filesystem signed the same way.
 
 **Setup with GKE Autopilot:**
 

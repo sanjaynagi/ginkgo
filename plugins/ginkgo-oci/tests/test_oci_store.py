@@ -56,3 +56,62 @@ class TestBuildOCIStore:
         assert isinstance(backend, FsspecBackend)
         assert backend._scheme == "oci"
         assert backend._profile == "uk"
+
+
+class TestOCIAuth:
+    def _built_kwargs(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        """Return the keyword arguments the store passes to ``OCIFileSystem``."""
+        import ocifs
+
+        captured: dict = {}
+        monkeypatch.setattr(ocifs, "OCIFileSystem", lambda **kwargs: captured.update(kwargs))
+        resolve_backend("oci").filesystem()
+        return captured
+
+    def test_workload_identity_signs_without_a_config_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GINKGO_REMOTE_OCI_AUTH", "oke_workload_identity")
+        monkeypatch.setenv("GINKGO_REMOTE_OCI_REGION", "uk-london-1")
+        monkeypatch.setenv("GINKGO_REMOTE_OCI_PROFILE", "ignored")
+
+        assert self._built_kwargs(monkeypatch) == {
+            "iam_type": "oke_principal",
+            "region": "uk-london-1",
+        }
+
+    def test_api_key_is_the_default_and_reads_the_config_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GINKGO_REMOTE_OCI_CONFIG", "/etc/oci/config")
+        monkeypatch.setenv("GINKGO_REMOTE_OCI_PROFILE", "uk")
+
+        assert self._built_kwargs(monkeypatch) == {
+            "iam_type": "api_key",
+            "config": "/etc/oci/config",
+            "profile": "uk",
+        }
+
+    def test_auth_can_come_from_config(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "ginkgo.toml").write_text(
+            '[remote.oci]\nauth = "instance_principal"\n', encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert self._built_kwargs(monkeypatch)["iam_type"] == "instance_principal"
+
+    def test_an_unknown_auth_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GINKGO_REMOTE_OCI_AUTH", "password")
+
+        with pytest.raises(ValueError, match="Unknown OCI auth 'password'"):
+            resolve_backend("oci")
+
+    def test_filesystem_returns_the_configured_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import ocifs
+
+        from ginkgo_oci import filesystem
+
+        sentinel = object()
+        monkeypatch.setattr(ocifs, "OCIFileSystem", lambda **kwargs: sentinel)
+
+        assert filesystem() is sentinel

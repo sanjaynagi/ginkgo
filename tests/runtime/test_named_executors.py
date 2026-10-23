@@ -390,3 +390,19 @@ def test_fail_fast_cancels_a_queued_remote_job_on_its_executor(
         evaluator.evaluate([trains(x=1), local_fails(x=0)])
 
     assert recording_executors["gpu-k8s"].cancelled == [evaluator._nodes[0].task_def.name]
+
+
+def test_a_remote_task_without_an_artifact_store_fails_before_submitting(monkeypatch) -> None:
+    import ginkgo.runtime.executor_registry as registry_module
+    from ginkgo.runtime.remote_dispatch import RemoteArtifactStoreMissingError
+    from tests.runtime.conftest import RecordingExecutor
+
+    backend = RecordingExecutor("gpu-k8s")
+    monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backend)
+    evaluator = ConcurrentEvaluator(
+        jobs=1, executor_registry=ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
+    )
+
+    with pytest.raises(RemoteArtifactStoreMissingError, match=r"\[remote.artifacts\] store"):
+        evaluator.evaluate(trains(x=1))
+    assert backend.submitted == []

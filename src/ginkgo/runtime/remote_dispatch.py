@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ginkgo.errors import GinkgoError
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.events import TaskRunning, task_id_for_node
 from ginkgo.runtime.executor_registry import ExecutorRegistry
@@ -27,6 +28,10 @@ if TYPE_CHECKING:
 # runs elsewhere, so it writes task output to its own streams and keeps its
 # own transport directory.
 _DRIVER_LOCAL_KEYS = ("stdout_path", "stderr_path", "transport_dir")
+
+
+class RemoteArtifactStoreMissingError(GinkgoError, ValueError):
+    """Raised when a task is placed on a remote executor and no artifact store is set."""
 
 
 @dataclass(kw_only=True)

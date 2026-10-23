@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from ginkgo.plugins.api import MountDriverType, ObjectStoreType, Plugin
 from ginkgo_oci.rclone import RcloneDriver
-from ginkgo_oci.store import build_oci_store, parse_oci_uri
+from ginkgo_oci.store import build_oci_store, filesystem, parse_oci_uri
 
-__all__ = ["PLUGIN"]
+__all__ = ["PLUGIN", "filesystem"]
 
 PLUGIN = Plugin(
     name="ginkgo-oci",

@@ -268,3 +268,89 @@ class TestRefreshingApi:
             api.read_namespaced_job(name="x")
         assert getattr(exc_info.value, "status", None) == 500
         factory.assert_not_called()
+
+
+class TestExecutorSettings:
+    """Settings for clusters other than GKE: OKE with Karpenter, say."""
+
+    def _built_job(self, executor: KubernetesExecutor, attempt: dict) -> object:
+        pytest.importorskip("kubernetes")
+        executor._batch_api = MagicMock()
+        executor._core_api = MagicMock()
+        executor.submit(attempt=attempt)
+        return executor._batch_api.create_namespaced_job.call_args.kwargs["body"]
+
+    def _attempt(self, **resources: object) -> dict:
+        return {
+            "run_id": "run-1",
+            "task_id": "task_001",
+            "attempt": 1,
+            "args": {},
+            "resources": {"threads": 1, "memory_gb": 1, **resources},
+        }
+
+    def test_env_annotations_labels_and_pull_secrets_reach_the_pod(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GINKGO_PARENT_RUN_ID", raising=False)
+        executor = KubernetesExecutor(
+            image="worker:1",
+            env={"GINKGO_REMOTE_OCI_AUTH": "oke_workload_identity"},
+            pod_annotations={"karpenter.sh/do-not-disrupt": "true"},
+            pod_labels={"team": "gpas"},
+            image_pull_secrets=["ocir-pull"],
+        )
+
+        job = self._built_job(executor, self._attempt())
+
+        template = job.spec.template
+        env = {item.name: item.value for item in template.spec.containers[0].env}
+        assert env["GINKGO_REMOTE_OCI_AUTH"] == "oke_workload_identity"
+        assert "GINKGO_WORKER_PAYLOAD" in env
+        assert template.metadata.annotations == {"karpenter.sh/do-not-disrupt": "true"}
+        assert template.metadata.labels["team"] == "gpas"
+        assert job.metadata.labels["team"] == "gpas"
+        assert [secret.name for secret in template.spec.image_pull_secrets] == ["ocir-pull"]
+        assert "ginkgo/parent-run-id" not in job.metadata.labels
+
+    def test_jobs_carry_the_parent_run_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GINKGO_PARENT_RUN_ID", "dagster-run-7")
+
+        job = self._built_job(KubernetesExecutor(image="worker:1"), self._attempt())
+
+        assert job.metadata.labels["ginkgo/parent-run-id"] == "dagster-run-7"
+        assert job.spec.template.metadata.labels["ginkgo/parent-run-id"] == "dagster-run-7"
+
+    def test_the_gpu_selector_key_is_configurable(self) -> None:
+        executor = KubernetesExecutor(
+            image="worker:1", gpu_node_selector_key="nvidia.com/gpu.product"
+        )
+
+        job = self._built_job(executor, self._attempt(gpu=1, gpu_type="A10"))
+
+        assert job.spec.template.spec.node_selector == {"nvidia.com/gpu.product": "A10"}
+
+    def test_empty_fuse_annotations_mean_none(self) -> None:
+        executor = KubernetesExecutor(image="worker:1", fuse_annotations={})
+        attempt = self._attempt()
+        attempt["args"] = {
+            "data": {
+                "__ginkgo_type__": "remote_input_file",
+                "uri": "oci://b@ns/k",
+                "scheme": "oci",
+                "bucket": "b@ns",
+                "key": "k",
+                "policy": "fuse",
+            }
+        }
+
+        job = self._built_job(executor, attempt)
+
+        assert job.spec.template.metadata.annotations is None
+
+
+def test_an_unknown_setting_is_refused() -> None:
+    from ginkgo_k8s.executor import build_kubernetes_executor
+
+    with pytest.raises(ValueError, match="Unknown k8s executor setting\\(s\\): namespce"):
+        build_kubernetes_executor({"image": "worker:1", "namespce": "nf"})

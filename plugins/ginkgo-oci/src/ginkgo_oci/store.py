@@ -10,7 +10,16 @@ from ginkgo.core.remote import RemoteLocation
 from ginkgo.plugins.api import ObjectStoreContext
 from ginkgo.remote.backend import ObjectStore
 from ginkgo.remote.fsspec_backends import FsspecBackend
-from ginkgo.remote.resolve import config_string, config_table, first_defined
+from ginkgo.remote.resolve import config_string, config_table, first_defined, resolve_backend
+
+# How a store signs its requests, by the name ginkgo's config uses, with the
+# ``iam_type`` ocifs takes for it.
+AUTH_IAM_TYPES = {
+    "api_key": "api_key",  # pragma: allowlist secret
+    "oke_workload_identity": "oke_principal",
+    "instance_principal": "instance_principal",
+    "resource_principal": "resource_principal",
+}
 
 
 class OCIFileSystemBackend(FsspecBackend):
@@ -18,10 +27,13 @@ class OCIFileSystemBackend(FsspecBackend):
 
     Parameters
     ----------
+    auth : str
+        How requests are signed: a key of :data:`AUTH_IAM_TYPES`. Only
+        ``api_key`` reads a config file.
     config_path : str | None
-        Path to the OCI config file.
+        Path to the OCI config file, for ``api_key`` auth.
     profile : str | None
-        OCI config profile name.
+        OCI config profile name, for ``api_key`` auth.
     region : str | None
         OCI region override.
     """
@@ -29,14 +41,24 @@ class OCIFileSystemBackend(FsspecBackend):
     def __init__(
         self,
         *,
+        auth: str = "api_key",
         config_path: str | None = None,
         profile: str | None = None,
         region: str | None = None,
     ) -> None:
         super().__init__(scheme="oci")
+        if auth not in AUTH_IAM_TYPES:
+            raise ValueError(
+                f"Unknown OCI auth {auth!r}; expected one of {', '.join(sorted(AUTH_IAM_TYPES))}"
+            )
+        self._auth = auth
         self._config_path = config_path
         self._profile = profile
         self._region = region
+
+    def filesystem(self) -> Any:
+        """Return the ``ocifs.OCIFileSystem`` this store reads and writes through."""
+        return self._get_filesystem()
 
     def _get_filesystem(self) -> Any:
         if self._filesystem is not None:
@@ -45,11 +67,12 @@ class OCIFileSystemBackend(FsspecBackend):
         # Imported on first use: the plugin module loads on every CLI run.
         import ocifs
 
-        kwargs: dict[str, Any] = {}
-        if self._config_path is not None:
-            kwargs["config"] = os.path.expanduser(self._config_path)
-        if self._profile is not None:
-            kwargs["profile"] = self._profile
+        kwargs: dict[str, Any] = {"iam_type": AUTH_IAM_TYPES[self._auth]}
+        if self._auth == "api_key":
+            if self._config_path is not None:
+                kwargs["config"] = os.path.expanduser(self._config_path)
+            if self._profile is not None:
+                kwargs["profile"] = self._profile
         if self._region is not None:
             kwargs["region"] = self._region
 
@@ -57,11 +80,33 @@ class OCIFileSystemBackend(FsspecBackend):
         return self._filesystem
 
 
+def filesystem() -> Any:
+    """Return an ``ocifs.OCIFileSystem`` signed the way the ``oci://`` store is.
+
+    For workflow code that reads or writes OCI Object Storage itself, such as a
+    task uploading its results to a staging prefix, so it uses the auth, profile
+    and region the run is configured with.
+
+    Returns
+    -------
+    ocifs.OCIFileSystem
+        The configured filesystem.
+    """
+    backend = resolve_backend("oci")
+    assert isinstance(backend, OCIFileSystemBackend)
+    return backend.filesystem()
+
+
 def build_oci_store(context: ObjectStoreContext) -> ObjectStore:
     """Build the OCI store from ``GINKGO_REMOTE_OCI_*``/``OCI_*`` or ``[remote.oci]``."""
     remote = config_table(context.config, "remote")
     oci = config_table(remote, "oci")
     return OCIFileSystemBackend(
+        auth=first_defined(
+            os.environ.get("GINKGO_REMOTE_OCI_AUTH"),
+            config_string(oci, "auth"),
+        )
+        or "api_key",
         config_path=first_defined(
             os.environ.get("GINKGO_REMOTE_OCI_CONFIG"),
             os.environ.get("OCI_CONFIG_FILE"),

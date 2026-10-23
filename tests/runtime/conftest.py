@@ -7,6 +7,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -56,7 +57,7 @@ def recording_executors(monkeypatch: pytest.MonkeyPatch) -> dict[str, RecordingE
     """Build every configured executor as a :class:`RecordingExecutor`.
 
     Returns the executors built so far, by name. The remote artifact store is
-    skipped: these payloads carry no file arguments.
+    a stand-in: these payloads carry no file arguments.
     """
     import ginkgo.runtime.executor_registry as registry_module
     import ginkgo.runtime.remote_dispatch as dispatch_module
@@ -67,8 +68,11 @@ def recording_executors(monkeypatch: pytest.MonkeyPatch) -> dict[str, RecordingE
         "_build_executor",
         lambda spec: built.setdefault(spec.name, RecordingExecutor(spec.name)),
     )
+    # A stand-in store: a remote task needs one, and these executors never use it.
     monkeypatch.setattr(
-        dispatch_module.RemoteDispatchManager, "_ensure_artifact_store", lambda self: None
+        dispatch_module.RemoteDispatchManager,
+        "_ensure_artifact_store",
+        lambda self: setattr(self, "_artifact_store", MagicMock()),
     )
     return built
 
