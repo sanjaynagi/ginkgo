@@ -17,9 +17,9 @@ from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
-from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobHandle
 from ginkgo.runtime.task_validation import DeclaredOutputNotWrittenError
 from tests.conftest import EventCollector
+from tests.remote_fakes import NeverSubmits
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +107,6 @@ def executor_with_output(bam: Out[file]) -> file:
     raise AssertionError("never runs")
 
 
-class _FakeRemoteExecutor(RemoteExecutor):
-    def submit(self, *, attempt: dict) -> RemoteJobHandle:
-        raise AssertionError("routing tests never submit")
-
-
 # ---------------------------------------------------------------------------
 # Remote dispatch places Out[...] tasks like any other python task
 # ---------------------------------------------------------------------------
@@ -131,7 +126,7 @@ class TestOutRemoteDispatchAllowed:
         config = {"remote": {"executors": {"gpu-k8s": {"type": "k8s", "namespace": "ml"}}}}
         registry = ExecutorRegistry.from_config(config, default="gpu-k8s")
         for name in registry.specs:
-            registry._built[name] = _FakeRemoteExecutor()
+            registry._built[name] = NeverSubmits()
         return ConcurrentEvaluator(jobs=1, executor_registry=registry)
 
     def test_remote_true_with_output_param_is_placed(self):

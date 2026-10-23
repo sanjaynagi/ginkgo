@@ -237,7 +237,7 @@ class RemoteStager:
         init=False,
         repr=False,
     )
-    _identities: dict[tuple[str, str], RemoteRef] = field(
+    _identities: dict[tuple[str, str], Future[RemoteRef]] = field(
         default_factory=dict, init=False, repr=False
     )
     _identity_lock: Lock = field(default_factory=Lock, init=False, repr=False)
@@ -324,11 +324,20 @@ class RemoteStager:
         key = (type(ref).__name__, ref.uri)
         with self._identity_lock:
             resolved = self._identities.get(key)
-        if resolved is None:
-            resolved = resolve_identity(ref=ref)
-            with self._identity_lock:
-                resolved = self._identities.setdefault(key, resolved)
-        return replace(resolved, access=ref.access)
+            should_resolve = resolved is None
+            if should_resolve:
+                resolved = self._identities[key] = Future()
+
+        if should_resolve:
+            try:
+                resolved.set_result(resolve_identity(ref=ref))
+            except BaseException as exc:
+                # Forget a failed lookup, so a retry asks the store again.
+                with self._identity_lock:
+                    self._identities.pop(key, None)
+                resolved.set_exception(exc)
+                raise
+        return replace(resolved.result(), access=ref.access)
 
     # Argument-walking helpers ----------------------------------------------
 
