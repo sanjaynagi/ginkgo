@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from concurrent.futures import Future
 
 import pytest
@@ -354,8 +356,11 @@ class TestDispatchManagerRouting:
         monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backends[spec.name])
         # The artifact store needs project config; these payloads carry no
         # file arguments, so skip it.
+        # A stand-in store: a remote task needs one, and these fakes never use it.
         monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager, "_ensure_artifact_store", lambda self: None
+            dispatch_module.RemoteDispatchManager,
+            "_ensure_artifact_store",
+            lambda self: setattr(self, "_artifact_store", MagicMock()),
         )
 
         registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
@@ -398,8 +403,11 @@ class TestDispatchManagerRouting:
 
         backend = _RecordingExecutor("gpu-k8s")
         monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backend)
+        # A stand-in store: a remote task needs one, and these fakes never use it.
         monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager, "_ensure_artifact_store", lambda self: None
+            dispatch_module.RemoteDispatchManager,
+            "_ensure_artifact_store",
+            lambda self: setattr(self, "_artifact_store", MagicMock()),
         )
 
         registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
@@ -524,8 +532,11 @@ class TestExecutionBackendContract:
             return backends[spec.name]
 
         monkeypatch.setattr(registry_module, "_build_executor", fake_build)
+        # A stand-in store: a remote task needs one, and these fakes never use it.
         monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager, "_ensure_artifact_store", lambda self: None
+            dispatch_module.RemoteDispatchManager,
+            "_ensure_artifact_store",
+            lambda self: setattr(self, "_artifact_store", MagicMock()),
         )
 
         seen: list[str | None] = []
@@ -613,8 +624,11 @@ class TestRemoteCancellationOnFailFast:
 
         backend = _CancellableExecutor()
         monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backend)
+        # A stand-in store: a remote task needs one, and these fakes never use it.
         monkeypatch.setattr(
-            dispatch_module.RemoteDispatchManager, "_ensure_artifact_store", lambda self: None
+            dispatch_module.RemoteDispatchManager,
+            "_ensure_artifact_store",
+            lambda self: setattr(self, "_artifact_store", MagicMock()),
         )
         # The job is submitted but its watcher never starts, so fail-fast
         # cancels the watcher future while the job is in flight.
@@ -630,3 +644,20 @@ class TestRemoteCancellationOnFailFast:
             evaluator.evaluate([trains(x=1), local_fails(x=0)])
 
         assert backend.cancelled == [evaluator._nodes[0].task_def.name]
+
+
+class TestRemoteNeedsAnArtifactStore:
+    def test_a_remote_task_without_one_fails_before_submitting(self, monkeypatch) -> None:
+        import ginkgo.runtime.executor_registry as registry_module
+        from ginkgo.runtime.remote_dispatch import RemoteArtifactStoreMissingError
+
+        backend = _RecordingExecutor("gpu-k8s")
+        monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backend)
+        evaluator = ConcurrentEvaluator(
+            jobs=1,
+            executor_registry=ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s"),
+        )
+
+        with pytest.raises(RemoteArtifactStoreMissingError, match=r"\[remote.artifacts\] store"):
+            evaluator.evaluate(trains(x=1))
+        assert backend.submitted == []

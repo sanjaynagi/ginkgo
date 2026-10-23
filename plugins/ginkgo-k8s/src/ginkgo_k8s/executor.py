@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from ginkgo.remote.executor_support import (
@@ -73,10 +73,12 @@ class KubernetesExecutor:
     pull_policy : str
         Image pull policy (``IfNotPresent``, ``Always``, ``Never``).
     gpu_type : str | None
-        GKE accelerator type for GPU tasks (e.g. ``"nvidia-l4"``,
-        ``"nvidia-tesla-t4"``). When a task requests GPUs and this is set,
-        the pod receives a ``cloud.google.com/gke-accelerator`` node
-        selector so GKE Autopilot provisions the correct GPU node.
+        Accelerator type for GPU tasks (e.g. ``"nvidia-l4"``). When a task
+        requests GPUs and this is set, the pod gets a node selector
+        ``gpu_node_selector_key: gpu_type``.
+    gpu_node_selector_key : str
+        Node label that names the accelerator type. GKE's by default; set it
+        to your cluster's label elsewhere.
     node_selector : dict[str, str] | None
         Node selector labels for pod scheduling.
     tolerations : list[dict[str, Any]] | None
@@ -103,6 +105,16 @@ class KubernetesExecutor:
         retries would re-run deterministic task errors too. Raise it on
         clusters that preempt pods (GKE Autopilot, spot nodes), or use
         task-level ``retries``.
+    env : dict[str, str] | None
+        Environment variables for every worker container, e.g. the object
+        store's auth and region (``GINKGO_REMOTE_OCI_AUTH``).
+    pod_annotations : dict[str, str] | None
+        Annotations for every worker pod, e.g.
+        ``karpenter.sh/do-not-disrupt = "true"``.
+    pod_labels : dict[str, str] | None
+        Labels for every worker pod and Job.
+    image_pull_secrets : list[str] | None
+        Names of the Secrets used to pull a private worker image.
     """
 
     namespace: str = "default"
@@ -110,6 +122,7 @@ class KubernetesExecutor:
     service_account: str | None = None
     pull_policy: str = "IfNotPresent"
     gpu_type: str | None = None
+    gpu_node_selector_key: str = "cloud.google.com/gke-accelerator"
     node_selector: dict[str, str] | None = None
     tolerations: list[dict[str, Any]] | None = None
     ttl_seconds_after_finished: int = 3600
@@ -119,6 +132,10 @@ class KubernetesExecutor:
     fuse_image: str | None = None
     fuse_annotations: dict[str, str] | None = None
     fuse_privileged: bool = False
+    env: dict[str, str] | None = None
+    pod_annotations: dict[str, str] | None = None
+    pod_labels: dict[str, str] | None = None
+    image_pull_secrets: list[str] | None = None
     _batch_api: Any = field(default=None, init=False, repr=False)
     _core_api: Any = field(default=None, init=False, repr=False)
 
@@ -190,6 +207,10 @@ class KubernetesExecutor:
             "image_pull_policy": self.pull_policy,
             "command": ["python", "-m", "ginkgo.remote.worker"],
             "env": [
+                *(
+                    k8s_client.V1EnvVar(name=name, value=str(value))
+                    for name, value in (self.env or {}).items()
+                ),
                 k8s_client.V1EnvVar(
                     name="GINKGO_WORKER_PAYLOAD",
                     value=encode_payload(attempt),
@@ -211,12 +232,16 @@ class KubernetesExecutor:
         }
         if self.service_account is not None:
             pod_spec_kwargs["service_account_name"] = self.service_account
+        if self.image_pull_secrets:
+            pod_spec_kwargs["image_pull_secrets"] = [
+                k8s_client.V1LocalObjectReference(name=name) for name in self.image_pull_secrets
+            ]
 
         # Merge node selectors: start with user-configured selectors, then
-        # add the GKE accelerator selector for GPU tasks.
+        # add the accelerator selector for GPU tasks.
         merged_node_selector: dict[str, str] = dict(self.node_selector or {})
         if gpu > 0 and gpu_type is not None:
-            merged_node_selector["cloud.google.com/gke-accelerator"] = gpu_type
+            merged_node_selector[self.gpu_node_selector_key] = gpu_type
         if merged_node_selector:
             pod_spec_kwargs["node_selector"] = merged_node_selector
         if self.tolerations is not None:
@@ -224,14 +249,30 @@ class KubernetesExecutor:
                 k8s_client.V1Toleration(**t) for t in self.tolerations
             ]
 
-        pod_annotations: dict[str, str] = {}
+        pod_annotations: dict[str, str] = dict(self.pod_annotations or {})
         if fuse_required:
-            pod_annotations.update(self.fuse_annotations or {"gke-gcsfuse/volumes": "true"})
+            # An empty table means no annotation, for clusters that are not GKE.
+            fuse_annotations = (
+                {"gke-gcsfuse/volumes": "true"}
+                if self.fuse_annotations is None
+                else self.fuse_annotations
+            )
+            pod_annotations.update(fuse_annotations)
+
+        labels = {
+            **(self.pod_labels or {}),
+            "app": "ginkgo",
+            "ginkgo/task-id": str(attempt.get("task_id", "")),
+            "ginkgo/run-id": str(attempt.get("run_id", "")),
+        }
+        # A caller that launched this run (Forge, say) can delete its Jobs by
+        # selector, even if the driver is killed before it can.
+        parent_run_id = os.environ.get("GINKGO_PARENT_RUN_ID")
+        if parent_run_id:
+            labels["ginkgo/parent-run-id"] = parent_run_id
 
         pod_template = k8s_client.V1PodTemplateSpec(
-            metadata=k8s_client.V1ObjectMeta(annotations=pod_annotations)
-            if pod_annotations
-            else None,
+            metadata=k8s_client.V1ObjectMeta(annotations=pod_annotations or None, labels=labels),
             spec=k8s_client.V1PodSpec(**pod_spec_kwargs),
         )
 
@@ -239,11 +280,7 @@ class KubernetesExecutor:
             metadata=k8s_client.V1ObjectMeta(
                 name=job_name,
                 namespace=self.namespace,
-                labels={
-                    "app": "ginkgo",
-                    "ginkgo/task-id": str(attempt.get("task_id", "")),
-                    "ginkgo/run-id": str(attempt.get("run_id", "")),
-                },
+                labels=labels,
             ),
             spec=k8s_client.V1JobSpec(
                 backoff_limit=self.backoff_limit,
@@ -479,20 +516,19 @@ class KubernetesJobHandle:
 
 
 def build_kubernetes_executor(settings: Mapping[str, Any]) -> KubernetesExecutor:
-    """Construct a ``KubernetesExecutor`` from an executor table's settings."""
-    return KubernetesExecutor(
-        namespace=settings.get("namespace", "default"),
-        image=settings["image"],
-        service_account=settings.get("service_account"),
-        pull_policy=settings.get("pull_policy", "IfNotPresent"),
-        gpu_type=settings.get("gpu_type"),
-        node_selector=settings.get("node_selector"),
-        tolerations=settings.get("tolerations"),
-        ttl_seconds_after_finished=int(settings.get("ttl_seconds_after_finished", 3600)),
-        unschedulable_timeout=float(settings.get("unschedulable_timeout", 300.0)),
-        ephemeral_storage=settings.get("ephemeral_storage", "10Gi"),
-        backoff_limit=int(settings.get("backoff_limit", 0)),
-        fuse_image=settings.get("fuse_image"),
-        fuse_annotations=settings.get("fuse_annotations"),
-        fuse_privileged=bool(settings.get("fuse_privileged", False)),
-    )
+    """Construct a ``KubernetesExecutor`` from an executor table's settings.
+
+    Raises
+    ------
+    ValueError
+        If the table holds a setting the executor does not have, so a typo
+        fails here rather than being silently ignored.
+    """
+    known = {item.name for item in fields(KubernetesExecutor) if item.init}
+    unknown = sorted(set(settings) - known)
+    if unknown:
+        raise ValueError(
+            f"Unknown k8s executor setting(s): {', '.join(unknown)}. "
+            f"Known settings: {', '.join(sorted(known))}"
+        )
+    return KubernetesExecutor(**settings)

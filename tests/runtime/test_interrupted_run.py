@@ -79,8 +79,16 @@ import time
 
 from ginkgo import task
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from unittest.mock import MagicMock
+
 from ginkgo.runtime.executor_registry import ExecutorRegistry
+from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
 from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobResult, RemoteJobState
+
+# A stand-in artifact store: a remote task needs one, and this job never uses it.
+RemoteDispatchManager._ensure_artifact_store = lambda self: setattr(
+    self, "_artifact_store", MagicMock()
+)
 
 signalled_at = []
 cancelled_at = []
