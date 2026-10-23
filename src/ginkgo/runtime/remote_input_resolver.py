@@ -49,7 +49,7 @@ from ginkgo.remote.access.resolver import (
     load_access_config,
     resolve_access,
 )
-from ginkgo.remote.staging import resolve_identity
+from ginkgo.remote.staging import StagingCache, resolve_identity
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -207,7 +207,7 @@ class StagedInputs:
         The arguments, each remote input replaced by a local path or a marker.
     digests : dict[str, str]
         The digest of each input staged here, by URI (see
-        :meth:`ginkgo.remote.staging.StagingCache.digest`).
+        :meth:`ginkgo.remote.staging.StagingCache.digest_of`).
     """
 
     args: dict[str, Any]
@@ -433,10 +433,12 @@ class RemoteStager:
             )
             if is_fuse_policy(policy) or (policy == "direct" and dispatches_remote):
                 return encode_remote_input(ref=value, policy=policy)
-            staged_path = str(self._stage_remote_ref(ref=value))
+            staged_path = self._stage_remote_ref(ref=value)
             if digests is not None:
-                digests[value.uri] = self._get_staging_cache().digest(uri=value.uri)
-            return file(staged_path) if isinstance(value, RemoteFileRef) else folder(staged_path)
+                digests[value.uri] = StagingCache.digest_of(staged_path)
+            if isinstance(value, RemoteFileRef):
+                return file(str(staged_path))
+            return folder(str(staged_path))
 
         # Recurse into typed containers.
         origin = get_origin(annotation)

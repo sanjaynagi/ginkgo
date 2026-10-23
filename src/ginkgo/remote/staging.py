@@ -433,21 +433,28 @@ class StagingCache:
             if not (self._root / entry.blob_path).exists()
         ]
 
-    def digest(self, *, uri: str) -> str:
-        """Return the digest of what this cache staged for *uri*.
+    @staticmethod
+    def digest_of(staged_path: Path) -> str:
+        """Return the digest of what a staging call just returned.
 
-        A file's is the BLAKE3 digest of its bytes; a folder's is the digest
-        of its listing (each object's URI, size, ETag and version).
+        The cache is content-addressed, so a staged path is named by its
+        digest (``blobs/<digest>``, ``folders/<listing digest>``): a file's
+        is the BLAKE3 digest of its bytes, a folder's the digest of its
+        listing (each object's URI, size, ETag and version). Reading it from
+        the path rather than the index ties it to that staging call, where
+        two calls for one URI at different versions could race.
 
-        Raises
-        ------
-        KeyError
-            If nothing has been staged for *uri*.
+        Parameters
+        ----------
+        staged_path : Path
+            A path :meth:`stage_file` or :meth:`stage_folder` returned.
+
+        Returns
+        -------
+        str
+            Its digest.
         """
-        entry = self.index.entry(uri=uri)
-        if entry is None:
-            raise KeyError(uri)
-        return entry.digest
+        return staged_path.name
 
     def lookup(self, *, uri: str) -> StagingEntry | None:
         """Look up the staging entry for a URI without downloading.

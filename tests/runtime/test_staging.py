@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from ginkgo.core.hashing import hash_bytes
 from ginkgo.core.remote import remote_file, remote_folder
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.remote.staging import StagingCache, StagingEntry, StagingIndex
@@ -76,6 +77,23 @@ class TestStageFile:
         assert path_a == path_b  # Same blob.
         blobs = list((tmp_path / "staging" / "blobs").iterdir())
         assert len(blobs) == 1
+
+
+class TestDigestOf:
+    def test_a_staged_path_carries_the_digest_of_what_that_call_staged(self, tmp_path) -> None:
+        cache = StagingCache(root=tmp_path / "staging")
+        v1 = cache.stage_file(
+            ref=remote_file("s3://bucket/data/file.txt", version_id="v1"),
+            backend=_make_mock_backend(content=b"first", etag="e1"),
+        )
+        # A second version of the same URI replaces the index row.
+        cache.stage_file(
+            ref=remote_file("s3://bucket/data/file.txt", version_id="v2"),
+            backend=_make_mock_backend(content=b"second", etag="e2"),
+        )
+
+        assert StagingCache.digest_of(v1) == hash_bytes(b"first")
+        assert cache.lookup(uri="s3://bucket/data/file.txt").digest == hash_bytes(b"second")
 
 
 class TestStageFolder:

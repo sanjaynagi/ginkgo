@@ -223,10 +223,6 @@ class TestStagedAccess:
         src.write_text("hello world")
 
         class _FakeCache:
-            def digest(self, *, uri: str) -> str:  # noqa: ARG002
-
-                return "digest"
-
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return src
 
@@ -248,10 +244,6 @@ class TestStagedAccess:
         (staged / "b.txt").write_text("defg")
 
         class _FakeCache:
-            def digest(self, *, uri: str) -> str:  # noqa: ARG002
-
-                return "digest"
-
             def stage_folder(self, *, ref: RemoteFolderRef) -> Path:  # noqa: ARG002
                 return staged
 
@@ -433,10 +425,6 @@ class TestWorkerHydration:
         staged_path.write_text("content")
 
         class _FakeCache:
-            def digest(self, *, uri: str) -> str:  # noqa: ARG002
-
-                return "digest"
-
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return staged_path
 
@@ -453,7 +441,7 @@ class TestWorkerHydration:
         )
         assert hydration.args["in"] == file(str(staged_path))
         # The fallback download leaves the input's digest for provenance.
-        assert hydration.digests == {ref.uri: "digest"}
+        assert hydration.digests == {ref.uri: staged_path.name}
 
 
 # ---------------------------------------------------------------------------
@@ -737,10 +725,6 @@ class TestRemoteStagerFuseRouting:
         from ginkgo.remote import staging
 
         class _FakeCache:
-            def digest(self, *, uri: str) -> str:  # noqa: ARG002
-
-                return "digest"
-
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return tmp_path / "staged.bin"
 
@@ -813,10 +797,6 @@ class TestRemoteStagerFuseRouting:
         from ginkgo.remote import staging
 
         class _FakeCache:
-            def digest(self, *, uri: str) -> str:  # noqa: ARG002
-
-                return "digest"
-
             def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
                 return tmp_path / "staged.bin"
 

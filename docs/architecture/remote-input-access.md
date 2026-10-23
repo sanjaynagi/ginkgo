@@ -61,7 +61,10 @@ digest): the driver's `RemoteStager` for inputs it stages, the worker for
 `direct` inputs and for a mount that fell back to a download. The evaluator
 merges them per task into `TaskAnnotated(fields={"remote_input_digests":
 {uri: digest}})`. A FUSE-mounted input is never downloaded whole, so it records
-none.
+none, and neither does a cache hit, which downloads nothing: its key component
+already holds the input's ETag and size or listing digest. A folder's listing
+digest is the store's identity for the prefix, not a content hash, so it does
+not compare with a local `folder` input's content digest.
 
 ## Per-input policy resolution
 
