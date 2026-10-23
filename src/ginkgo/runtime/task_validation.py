@@ -292,7 +292,7 @@ def label_input_value(
     #307 phase 2, a plain ``str``/``Any``/``list[str]``/... value that names
     an existing regular file, see :func:`is_content_trackable_path_value`),
     ``"version"`` (a ``RemoteRef`` or fuse-streamed ref —
-    tracked by version id), ``"path"`` (a value that names an existing path
+    tracked by its version id, or its ETag or listing from the store), ``"path"`` (a value that names an existing path
     but is not content-hashed — a directory, or a bare word colliding with a
     file name — tracked by its path *string* only), ``"output"`` (an ``Out[...]`` parameter — tracked by
     path string only, by design, since it names what the task is about to

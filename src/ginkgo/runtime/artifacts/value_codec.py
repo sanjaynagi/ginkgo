@@ -504,7 +504,6 @@ def _encode_binary_payload(
         "__ginkgo_type__": "binary",
         "artifact": f"artifacts/{artifact_name}",
         "codec": codec_name,
-        "sha256": digest,
         "storage": "artifact",
     }
 

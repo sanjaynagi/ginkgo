@@ -69,6 +69,23 @@ mount fails).
 identity** — toggling streaming on or off for an unchanged ref does not
 invalidate existing cache entries.
 
+## Cache identity
+
+A remote input is keyed by its store's metadata, never by its downloaded
+bytes: `version_id` when pinned, otherwise a file's ETag and size or a
+folder's listing digest (`RemoteRef.identity`). When a dispatched node has an
+input without one, the staging pool resolves it first
+(`RemoteStager.resolve_task_identities`, one HEAD or LIST per URI per run,
+memoised so every task reading a URI sees the same version), then the cache
+is checked, and only a miss stages. A FUSE marker carries the same identity
+and keys exactly as its ref does.
+
+Staging checks the bytes it fetches against that identity: a file whose ETag
+moved, or a folder whose listing changed, after the key was built fails with
+`RemoteIdentityError` instead of running on bytes the key does not
+describe. So does an object whose store reports no ETag. Neither is retried:
+within a run the memoised identity stays the same, so only a new run helps.
+
 ## Mount lifecycle
 
 The driver never mounts. Per-input policy is resolved on the driver

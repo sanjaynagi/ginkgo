@@ -21,7 +21,7 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -36,7 +36,62 @@ from ginkgo.store.protocol import ProjectionOp
 from ginkgo.store.sqlite import MEMORY
 from ginkgo.workspace_layout import WorkspaceLayout
 
-__all__ = ["StagingCache", "StagingEntry", "StagingIndex"]
+__all__ = [
+    "RemoteIdentityError",
+    "StagingCache",
+    "StagingEntry",
+    "StagingIndex",
+    "resolve_identity",
+]
+
+
+class RemoteIdentityError(RuntimeError):
+    """Raised when a remote input cannot be identified, or no longer matches its identity.
+
+    Either way the input cannot be trusted to be what the cache key says, and
+    trying again within the run changes nothing, so it is never retried.
+    """
+
+
+def resolve_identity(*, ref: RemoteRef, backend: ObjectStore | None = None) -> RemoteRef:
+    """Return *ref* with the store's identity for its bytes filled in.
+
+    A file is identified by its ETag and size, read with one HEAD; a folder by
+    the digest of its listing, read with one LIST. A ref that already has an
+    identity, pinned by ``version_id`` or resolved before, is returned as is.
+
+    Parameters
+    ----------
+    ref : RemoteRef
+        The remote input.
+    backend : ObjectStore | None
+        Store to ask. Resolved from the ref's scheme if ``None``.
+
+    Returns
+    -------
+    RemoteRef
+        A ref whose :meth:`~ginkgo.core.remote.RemoteRef.identity` is set.
+
+    Raises
+    ------
+    RemoteIdentityError
+        If the store reports no ETag for a file, so a change to it could not
+        be detected.
+    """
+    if ref.identity() is not None:
+        return ref
+    backend = backend or resolve_backend(ref.scheme)
+    if isinstance(ref, RemoteFolderRef):
+        objects = backend.list_prefix(bucket=ref.bucket, prefix=ref.key)
+        return replace(ref, listing_digest=_folder_manifest_digest(uri=ref.uri, objects=objects))
+
+    meta = backend.head(bucket=ref.bucket, key=ref.key)
+    if meta.etag is None:
+        raise RemoteIdentityError(
+            f"The store reports no ETag for {ref.uri}, so a change to it cannot be "
+            "detected. Pin it with remote_file(..., version_id=...)."
+        )
+    return replace(ref, etag=meta.etag, size=meta.size)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -269,6 +324,11 @@ class StagingCache:
 
         objects = backend.list_prefix(bucket=ref.bucket, prefix=ref.key)
         folder_digest = _folder_manifest_digest(uri=ref.uri, objects=objects)
+        if ref.listing_digest is not None and folder_digest != ref.listing_digest:
+            raise RemoteIdentityError(
+                f"{ref.uri} changed after its cache key was computed. "
+                "Run again to use the new contents."
+            )
         folder_dir = self._folders_dir / folder_digest
 
         if folder_dir.exists():
@@ -406,6 +466,10 @@ class StagingCache:
         if ref.version_id is not None and existing.version_id == ref.version_id:
             return False
 
+        # A resolved ETag was read moments ago; no need to ask the store again.
+        if isinstance(ref, RemoteFileRef) and ref.etag is not None:
+            return existing.etag != ref.etag
+
         # Check remote ETag.
         try:
             remote_meta = backend.head(bucket=ref.bucket, key=ref.key)
@@ -435,6 +499,11 @@ class StagingCache:
                 key=ref.key,
                 dest_path=temp_path,
             )
+            if ref.etag is not None and meta.etag is not None and meta.etag != ref.etag:
+                raise RemoteIdentityError(
+                    f"{ref.uri} changed after its cache key was computed "
+                    f"(ETag {ref.etag} became {meta.etag}). Run again to use the new version."
+                )
 
             digest = hash_file(temp_path)
 

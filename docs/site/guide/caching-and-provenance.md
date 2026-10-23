@@ -19,7 +19,14 @@ level, Ginkgo hashes:
 Nothing else reaches the key (see
 [A Task Sees Only Its Arguments](#a-task-sees-only-its-arguments)).
 
-Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
+Inputs annotated `file` or `folder` are hashed by content. A remote input
+(`remote_file`, `remote_folder`, or a remote URI under a `file`/`folder`
+annotation) is keyed by what its store reports instead, so checking the cache
+never downloads it: its `version_id` when pinned, otherwise its ETag and size
+(one HEAD) or, for a folder, the digest of its listing (one LIST). That
+identifies where the input is and what its store says about it, not its
+content: the same bytes copied to another URI miss, and so does a re-upload of
+identical bytes on stores whose ETag changes on every write. A plain `str` (or
 `Any`/`list[str]`/...) value that names an existing *file* and reads as a path
 (a separator or a file extension) is hashed by content too, whatever its
 annotation — everything else is hashed from its `repr`. See
@@ -311,7 +318,8 @@ Ginkgo names which:
   #307 phase 2) a plain value that names an existing regular file and reads
   as a path: the bytes are hashed.
 - **version** — a remote reference, or a remote file streamed through FUSE:
-  tracked by its version id.
+  tracked by its version id, or by the ETag and size (a folder: its listing)
+  the store reports.
 - **path** — a value that names an existing path but is not content-hashed: a
   directory (never auto-hashed — annotate `folder`), a bare word with no
   separator or extension. Tracked by the path *string* only.

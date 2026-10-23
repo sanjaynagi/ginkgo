@@ -26,6 +26,11 @@ def encode_fuse_ref(*, ref: RemoteRef, policy: str) -> dict[str, Any]:
         Resolved policy string (``"fuse"`` or ``"fuse (auto)"``).
     """
     tag = FUSE_FILE_TYPE if isinstance(ref, RemoteFileRef) else FUSE_FOLDER_TYPE
+    identity = (
+        {"etag": ref.etag, "size": ref.size}
+        if isinstance(ref, RemoteFileRef)
+        else {"listing_digest": ref.listing_digest}
+    )
     return {
         "__ginkgo_type__": tag,
         "uri": ref.uri,
@@ -34,6 +39,7 @@ def encode_fuse_ref(*, ref: RemoteRef, policy: str) -> dict[str, Any]:
         "key": ref.key,
         "namespace": ref.namespace,
         "version_id": ref.version_id,
+        **identity,
         "policy": policy,
     }
 
@@ -48,18 +54,19 @@ def is_fuse_ref(value: Any) -> bool:
 
 def decode_fuse_ref(value: dict[str, Any]) -> tuple[RemoteRef, str]:
     """Rehydrate a fuse payload dict into a :class:`RemoteRef` + policy."""
-    from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef
-
-    cls = RemoteFileRef if value["__ginkgo_type__"] == FUSE_FILE_TYPE else RemoteFolderRef
-    ref = cls(
-        uri=value["uri"],
-        scheme=value["scheme"],
-        bucket=value["bucket"],
-        key=value["key"],
-        namespace=value.get("namespace"),
-        version_id=value.get("version_id"),
-        access="fuse",
-    )
+    common = {
+        "uri": value["uri"],
+        "scheme": value["scheme"],
+        "bucket": value["bucket"],
+        "key": value["key"],
+        "namespace": value.get("namespace"),
+        "version_id": value.get("version_id"),
+        "access": "fuse",
+    }
+    if value["__ginkgo_type__"] == FUSE_FILE_TYPE:
+        ref: RemoteRef = RemoteFileRef(**common, etag=value.get("etag"), size=value.get("size"))
+    else:
+        ref = RemoteFolderRef(**common, listing_digest=value.get("listing_digest"))
     return ref, value.get("policy", "fuse")
 
 

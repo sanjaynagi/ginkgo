@@ -610,6 +610,45 @@ class TestCacheKeyStability:
         marker_hash = store._hash_value(annotation=file, value=marker)
         assert ref_hash == marker_hash
 
+    def test_resolved_unpinned_marker_hashes_same_as_ref(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
+        from ginkgo.runtime.caching.cache import CacheStore
+        from ginkgo.runtime.caching.index import CacheIndex
+
+        store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
+        ref = replace(remote_file("s3://bucket/key.bam"), etag="e1", size=10)
+        marker = encode_fuse_ref(ref=replace(ref, access="fuse"), policy="fuse")
+
+        assert store._hash_value(annotation=file, value=ref) == store._hash_value(
+            annotation=file, value=marker
+        )
+
+    def test_an_overwritten_object_keys_differently_in_fuse_mode(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
+        from ginkgo.runtime.caching.cache import CacheStore
+        from ginkgo.runtime.caching.index import CacheIndex
+
+        store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
+        ref = remote_file("s3://bucket/key.bam", access="fuse")
+        before = encode_fuse_ref(ref=replace(ref, etag="e1", size=10), policy="fuse")
+        after = encode_fuse_ref(ref=replace(ref, etag="e2", size=10), policy="fuse")
+
+        assert store._hash_value(annotation=file, value=before) != store._hash_value(
+            annotation=file, value=after
+        )
+
+    def test_an_unresolved_marker_has_no_key(self, tmp_path: Path) -> None:
+        from ginkgo.runtime.caching.cache import CacheStore
+        from ginkgo.runtime.caching.index import CacheIndex
+
+        store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
+        marker = encode_fuse_ref(ref=remote_file("s3://bucket/key.bam"), policy="fuse")
+
+        with pytest.raises(ValueError, match="must be resolved"):
+            store._hash_value(annotation=file, value=marker)
+
     def test_marker_stat_value_same_as_ref(self, tmp_path: Path) -> None:
         from ginkgo.runtime.caching.cache import CacheStore
         from ginkgo.runtime.caching.index import CacheIndex

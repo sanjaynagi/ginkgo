@@ -88,9 +88,8 @@ Notes on the fields:
   redacts secrets and reduces anything with no JSON form to a description of
   itself. That happens at emit time rather than on the way into SQLite because
   `--agent-output` renders the same events straight to stdout.
-- Input digests are spelled `digest`. They are BLAKE3; only the cache key's own
-  payload still says `sha256`, and renaming it there would invalidate every
-  entry on disk for no gain.
+- Input digests are spelled `digest` and are BLAKE3, as in the cache key's own
+  components.
 - `task_inputs` holds one row per parameter, keyed `(run_id, task_id, param)`,
   replaced wholesale when a task is re-planned after a dynamic expansion so a
   stale row cannot outlive its parameter. `tracking` is the input's cache

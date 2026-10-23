@@ -161,7 +161,7 @@ class TestOutCacheKey:
             )
             assert key
             assert hashes["out_path"]["type"] == "str"
-            assert "sha256" in hashes["out_path"]
+            assert "digest" in hashes["out_path"]
 
     def test_output_param_key_is_stable_across_calls(self, tmp_path: Path):
         with CacheIndex.in_memory() as index:

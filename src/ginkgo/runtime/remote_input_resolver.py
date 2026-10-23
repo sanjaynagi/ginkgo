@@ -6,26 +6,36 @@ annotations) into local paths via the worker-local staging cache. It
 also owns in-flight deduplication so that two tasks asking for the same
 remote ref share a single download.
 
-A small set of pure helpers covers the question "does this argument
-need staging before its cache identity is safe?" — used by the cache
-hit fast path in the evaluator.
+Before staging, it resolves each remote input's identity from its store's
+metadata (one HEAD or LIST), so the evaluator can look the task up in the
+cache without downloading anything. :func:`remote_value_needs_identity`
+answers whether an argument still needs that.
 """
 
 from __future__ import annotations
 
 
+import json
 import os
 import time
 from concurrent.futures import Future
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Lock
 from typing import Any, get_args, get_origin
 
 from ginkgo.config import load_runtime_config
-from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
+from ginkgo.core.remote import (
+    RemoteFileRef,
+    RemoteFolderRef,
+    RemoteRef,
+    is_remote_uri,
+    remote_file,
+    remote_folder,
+)
 from ginkgo.core.types import (
     PLAIN_SCALAR_TYPES,
+    annotation_includes,
     file,
     folder,
     plain_data_strings,
@@ -39,12 +49,18 @@ from ginkgo.remote.access.resolver import (
     load_access_config,
     resolve_access,
 )
+from ginkgo.remote.staging import resolve_identity
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
-def remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
-    """Return whether a value must be staged before cache identity is safe."""
+def remote_value_needs_identity(*, annotation: Any, value: Any) -> bool:
+    """Return whether a value holds a remote input whose identity is not known yet.
+
+    Such an input is resolved, with one HEAD or LIST on its store, before the
+    task's cache key can be built. A remote URI string counts only under a
+    ``file`` or ``folder`` annotation; anywhere else it is a plain string.
+    """
     if type(value) in PLAIN_SCALAR_TYPES:
         return False
     # A large plain value is settled by its distinct strings alone.
@@ -52,41 +68,44 @@ def remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
     if strings is not None and not any(is_remote_uri(text) for text in strings):
         return False
     if isinstance(value, RemoteRef):
-        return value.version_id is None
-
-    if isinstance(value, str) and is_remote_uri(value):
-        return True
-
-    origin = get_origin(annotation)
-    if origin in {list, tuple} and isinstance(value, (list, tuple)):
-        inner_args = get_args(annotation)
-        inner_annotation = inner_args[0] if inner_args else Any
-        return any(
-            remote_value_requires_staging(annotation=inner_annotation, value=item)
-            for item in value
+        return value.identity() is None
+    if isinstance(value, str):
+        return is_remote_uri(value) and (
+            annotation_includes(annotation=annotation, expected=file)
+            or annotation_includes(annotation=annotation, expected=folder)
         )
 
-    if origin is dict and isinstance(value, dict):
-        key_annotation, value_annotation = (
-            get_args(annotation) if len(get_args(annotation)) == 2 else (Any, Any)
-        )
-        return any(
-            remote_value_requires_staging(annotation=key_annotation, value=key)
-            or remote_value_requires_staging(annotation=value_annotation, value=item)
-            for key, item in value.items()
-        )
-
+    item_annotation, value_annotation = _element_annotations(annotation)
     if isinstance(value, list | tuple):
         return any(
-            remote_value_requires_staging(annotation=annotation, value=item) for item in value
+            remote_value_needs_identity(annotation=item_annotation, value=item) for item in value
         )
-
     if isinstance(value, dict):
         return any(
-            remote_value_requires_staging(annotation=Any, value=item) for item in value.values()
+            remote_value_needs_identity(annotation=value_annotation, value=item)
+            for item in value.values()
         )
-
     return False
+
+
+def _element_annotations(annotation: Any) -> tuple[Any, Any]:
+    """Return the annotation of a typed container's items and of a dict's values.
+
+    An untyped container keeps its own annotation for its items, as the
+    walk above always has.
+    """
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in {list, tuple}:
+        return (args[0] if args else Any), Any
+    if origin is dict:
+        return Any, (args[1] if len(args) == 2 else Any)
+    return annotation, Any
+
+
+def _param_annotation(*, task_def: Any, name: str) -> Any:
+    """Return a task parameter's resolved annotation."""
+    return task_def.type_hints.get(name, task_def.signature.parameters[name].annotation)
 
 
 def count_remote_inputs(value: Any) -> int:
@@ -110,7 +129,7 @@ def remote_ref_identity(*, ref: RemoteRef) -> str:
             ref.scheme,
             ref.bucket,
             ref.key,
-            ref.version_id or "",
+            json.dumps(ref.identity(), sort_keys=True),
         ]
     )
 
@@ -201,6 +220,10 @@ class RemoteStager:
         init=False,
         repr=False,
     )
+    _identities: dict[tuple[str, str], RemoteRef] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _identity_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     # Per-task entry points --------------------------------------------------
 
@@ -220,17 +243,72 @@ class RemoteStager:
             )
         return staged
 
-    def cache_lookup_requires_staging(self, *, node: Any) -> bool:
-        """Return whether cache identity depends on staging remote inputs."""
+    def needs_identity(self, *, node: Any) -> bool:
+        """Return whether any of the node's remote inputs still needs its identity."""
         assert node.resolved_args is not None
-        for name, value in node.resolved_args.items():
-            annotation = node.task_def.type_hints.get(
-                name,
-                node.task_def.signature.parameters[name].annotation,
+        return any(
+            remote_value_needs_identity(
+                annotation=_param_annotation(task_def=node.task_def, name=name), value=value
             )
-            if remote_value_requires_staging(annotation=annotation, value=value):
-                return True
-        return False
+            for name, value in node.resolved_args.items()
+        )
+
+    def resolve_task_identities(self, *, node: Any) -> dict[str, Any]:
+        """Return the node's arguments with each remote input's identity resolved.
+
+        Runs on the staging pool, since it asks the store: one HEAD per file
+        and one LIST per folder. A remote URI string under a ``file`` or
+        ``folder`` annotation becomes the ref it names.
+        """
+        assert node.resolved_args is not None
+        return {
+            name: self._resolve_identities(
+                annotation=_param_annotation(task_def=node.task_def, name=name), value=value
+            )
+            for name, value in node.resolved_args.items()
+        }
+
+    def _resolve_identities(self, *, annotation: Any, value: Any) -> Any:
+        """Resolve the remote inputs in one value, leaving everything else as is."""
+        if not remote_value_needs_identity(annotation=annotation, value=value):
+            return value
+        if isinstance(value, RemoteRef):
+            return self._resolve_ref(ref=value)
+        if isinstance(value, str):
+            names_file = annotation_includes(annotation=annotation, expected=file)
+            ref = remote_file(value) if names_file else remote_folder(value)
+            return self._resolve_ref(ref=ref)
+
+        item_annotation, value_annotation = _element_annotations(annotation)
+        if isinstance(value, list | tuple):
+            return rebuild_sequence(
+                like=value,
+                items=[
+                    self._resolve_identities(annotation=item_annotation, value=item)
+                    for item in value
+                ],
+            )
+        return {
+            key: self._resolve_identities(annotation=value_annotation, value=item)
+            for key, item in value.items()
+        }
+
+    def _resolve_ref(self, *, ref: RemoteRef) -> RemoteRef:
+        """Resolve one ref, asking the store once per URI in a run.
+
+        Every task in a run that reads a URI sees the same identity, so they
+        all key on, and read, the same version of it.
+        """
+        if ref.identity() is not None:
+            return ref
+        key = (type(ref).__name__, ref.uri)
+        with self._identity_lock:
+            resolved = self._identities.get(key)
+        if resolved is None:
+            resolved = resolve_identity(ref=ref)
+            with self._identity_lock:
+                resolved = self._identities.setdefault(key, resolved)
+        return replace(resolved, access=ref.access)
 
     # Argument-walking helpers ----------------------------------------------
 
