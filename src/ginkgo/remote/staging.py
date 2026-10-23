@@ -433,6 +433,29 @@ class StagingCache:
             if not (self._root / entry.blob_path).exists()
         ]
 
+    @staticmethod
+    def digest_of(staged_path: Path) -> str:
+        """Return the digest of what a staging call just returned.
+
+        The cache is content-addressed, so a staged path is named by its
+        digest (``blobs/<digest>``, ``folders/<listing digest>``): a file's
+        is the BLAKE3 digest of its bytes, a folder's the digest of its
+        listing (each object's URI, size, ETag and version). Reading it from
+        the path rather than the index ties it to that staging call, where
+        two calls for one URI at different versions could race.
+
+        Parameters
+        ----------
+        staged_path : Path
+            A path :meth:`stage_file` or :meth:`stage_folder` returned.
+
+        Returns
+        -------
+        str
+            Its digest.
+        """
+        return staged_path.name
+
     def lookup(self, *, uri: str) -> StagingEntry | None:
         """Look up the staging entry for a URI without downloading.
 

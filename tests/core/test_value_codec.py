@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from ginkgo.core.types import file, folder
-from ginkgo.remote.access.protocol import FUSE_FILE_TYPE
+from ginkgo.remote.access.protocol import REMOTE_FILE_TYPE
 from ginkgo.runtime.artifacts.value_codec import (
     CodecError,
     check_encoded,
@@ -208,7 +208,7 @@ class TestDecodeTags:
         check_encoded(payload)
 
     def test_a_fuse_marker_passes_through_for_worker_hydration(self, tmp_path) -> None:
-        marker = {"__ginkgo_type__": FUSE_FILE_TYPE, "uri": "gs://bucket/key"}
+        marker = {"__ginkgo_type__": REMOTE_FILE_TYPE, "uri": "gs://bucket/key"}
 
         assert decode_value(marker, base_dir=tmp_path) is marker
 

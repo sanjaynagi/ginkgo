@@ -1,20 +1,27 @@
 # Remote Input Access
 
-Ginkgo supports two strategies for making a remote object (an
+Ginkgo has three modes for making a remote object (an
 `s3://` / `gs://` / `oci://` URI referenced by a task input) available
 inside the worker pod:
 
-1. **Staged access** (default). The driver downloads the object to a
-   local content-addressed cache, uploads it to the shared remote
-   artifact CAS, and the worker downloads it again into the pod before
-   the task starts. Three passes over the same bytes.
-2. **FUSE-mounted access**. The driver does not touch the bytes. The
+1. **Direct access** (default). The driver does not touch the bytes. The
+   worker downloads the object from its source into the pod before the
+   task starts: one pass over the bytes. The worker needs read access to
+   the source bucket.
+2. **Staged access**. The driver downloads the object to a local
+   content-addressed cache, uploads it to the shared remote artifact CAS,
+   and the worker downloads it again into the pod before the task starts.
+   Three passes over the same bytes, but only the driver needs access to
+   the source.
+3. **FUSE-mounted access**. The driver does not touch the bytes. The
    worker pod mounts the bucket (using `gcsfuse`, `mountpoint-s3`, or
    `rclone mount`) and the task reads byte ranges on demand. Sparse
    access patterns pay only for the bytes the task actually touches.
 
-Streaming is **opt-in** per input, per task, or via config default. The
-staged path remains the correctness fallback.
+For a task that runs on this host, `direct` and `stage` are the same: the
+input is downloaded into the local staging cache. Streaming is **opt-in**
+per input, per task, or via config default; a failed mount falls back to a
+download.
 
 Both the **remote dispatch path** and the **local process-pool path**
 can stream. Local streaming applies to worker (Python) tasks on a host
@@ -47,6 +54,18 @@ into the result envelope as `remote_input_access`; the evaluator records
 them against the task as `TaskAnnotated(fields={"remote_input_access": …})`,
 which lands in the ledger's `tasks.extra`.
 
+A remote input's cache key holds its store metadata, not its bytes, so the
+content is recorded separately. Whoever downloads an input records its digest
+(`StagingCache.digest`: BLAKE3 of a file's bytes, or a folder's listing
+digest): the driver's `RemoteStager` for inputs it stages, the worker for
+`direct` inputs and for a mount that fell back to a download. The evaluator
+merges them per task into `TaskAnnotated(fields={"remote_input_digests":
+{uri: digest}})`. A FUSE-mounted input is never downloaded whole, so it records
+none, and neither does a cache hit, which downloads nothing: its key component
+already holds the input's ETag and size or listing digest. A folder's listing
+digest is the store's identity for the prefix, not a content hash, so it does
+not compare with a local `folder` input's content digest.
+
 ## Per-input policy resolution
 
 `ginkgo/remote/access/resolver.py::resolve_access` layers policies in
@@ -59,11 +78,10 @@ order of decreasing precedence:
 4. Auto-enable heuristic
    (`auto_fuse=true` + `known_size >= auto_fuse_min_bytes`
    + `streaming_compatible=True` + `doctor_ok=True`).
-5. `[remote.access] default` (defaults to `"stage"`).
+5. `[remote.access] default` (defaults to `"direct"`).
 
-The canonical policy returned is one of `"stage"`, `"fuse"`,
-`"fuse (auto)"`, or `"stage (fallback)"` (produced by the worker when a
-mount fails).
+The canonical policy returned is one of `"direct"`, `"stage"`, `"fuse"`
+or `"fuse (auto)"`.
 
 `ref.access` participates in `__repr__` but is **excluded from cache
 identity** — toggling streaming on or off for an unchanged ref does not
@@ -89,16 +107,19 @@ within a run the memoised identity stays the same, so only a new run helps.
 ## Mount lifecycle
 
 The driver never mounts. Per-input policy is resolved on the driver
-side; fuse-marked refs are shipped in the task payload as
-`{"__ginkgo_type__": "fuse_file" | "fuse_folder", ...}` marker dicts
-(see `ginkgo/remote/access/protocol.py`).
+side; a `direct` or `fuse` input is shipped in the task payload as a
+`{"__ginkgo_type__": "remote_input_file" | "remote_input_folder", "policy": …}`
+marker dict carrying the ref and its identity (see
+`ginkgo/remote/access/protocol.py`).
 
 The worker:
 
-1. Receives the payload, identifies fuse markers via `is_fuse_ref`.
-2. Constructs a `MountedAccess` and replaces each marker with
-   `file(mount_path)` / `folder(mount_path)` via
-   `ginkgo.remote.access.worker_hydration.hydrate_fuse_refs`.
+1. Receives the payload, identifies markers via `is_remote_input`.
+2. Replaces each marker with `file(path)` / `folder(path)` via
+   `ginkgo.remote.access.worker_hydration.hydrate_remote_inputs`: a
+   `direct` input is downloaded into the pod's scratch staging cache, which
+   checks it against the marker's identity; a `fuse` input is mounted
+   through a `MountedAccess`.
 3. Runs the task body against the local mount paths.
 4. On exit (success or failure), calls `MountedAccess.close()` which
    unmounts every active mount and records `unmount_seconds`.
@@ -162,8 +183,8 @@ non-streaming pods continue to use the baseline `image`.
 
 If `MountedAccess.materialize_*` raises at hydration time (driver
 binary missing, capability denied, health check failed), the worker
-falls back to `StagedAccess(policy="stage (fallback)")` for that
-individual ref. The fallback reason is appended to
+downloads that individual ref instead, through the same `StagedAccess`
+it uses for `direct` inputs. The fallback reason is appended to
 `AccessStats.fallback_reason` and surfaced in provenance. The task
 does not fail because of a mount failure unless the staged fallback
 also fails.
@@ -172,7 +193,7 @@ also fails.
 
 ```toml
 [remote.access]
-default = "stage"
+default = "direct"
 auto_fuse = false
 auto_fuse_min_bytes = 2147483648   # 2 GiB
 default_for_pattern = [

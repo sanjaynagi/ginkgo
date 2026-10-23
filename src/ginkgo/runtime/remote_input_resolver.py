@@ -42,14 +42,14 @@ from ginkgo.core.types import (
     rebuild_sequence,
 )
 from ginkgo.remote.access.doctor import local_streaming_available
-from ginkgo.remote.access.protocol import encode_fuse_ref
+from ginkgo.remote.access.protocol import encode_remote_input, is_fuse_policy
 from ginkgo.remote.access.resolver import (
     AccessConfig,
     TaskAccessPolicy,
     load_access_config,
     resolve_access,
 )
-from ginkgo.remote.staging import resolve_identity
+from ginkgo.remote.staging import StagingCache, resolve_identity
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -197,6 +197,23 @@ def load_remote_publisher() -> Any | None:
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class StagedInputs:
+    """A task's arguments with their remote inputs staged or marked.
+
+    Parameters
+    ----------
+    args : dict[str, Any]
+        The arguments, each remote input replaced by a local path or a marker.
+    digests : dict[str, str]
+        The digest of each input staged here, by URI (see
+        :meth:`ginkgo.remote.staging.StagingCache.digest_of`).
+    """
+
+    args: dict[str, Any]
+    digests: dict[str, str]
+
+
 @dataclass(kw_only=True)
 class RemoteStager:
     """Stage remote inputs into local paths with in-flight deduplication.
@@ -227,13 +244,16 @@ class RemoteStager:
 
     # Per-task entry points --------------------------------------------------
 
-    def stage_task_inputs(self, *, node: Any) -> dict[str, Any]:
+    def stage_task_inputs(self, *, node: Any) -> StagedInputs:
         """Stage remote inputs for one task in the reserved worker slot."""
         assert node.resolved_args is not None
         stage_started = time.perf_counter()
-        staged = self.stage_remote_refs(
+        digests: dict[str, str] = {}
+        args = self.stage_remote_refs(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
+            dispatches_remote=node.executor_name is not None,
+            digests=digests,
         )
         if self.timing_recorder is not None:
             self.timing_recorder(
@@ -241,7 +261,7 @@ class RemoteStager:
                 phase="remote_stage_seconds",
                 started=stage_started,
             )
-        return staged
+        return StagedInputs(args=args, digests=digests)
 
     def needs_identity(self, *, node: Any) -> bool:
         """Return whether any of the node's remote inputs still needs its identity."""
@@ -317,42 +337,44 @@ class RemoteStager:
         *,
         task_def: Any,
         resolved_args: dict[str, Any],
+        dispatches_remote: bool,
+        digests: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Stage every remote reference in a resolved argument map.
+        """Stage the remote inputs in a resolved argument map, or leave them to the worker.
 
-        Refs resolved to a ``fuse`` policy are emitted as encoded marker
-        dicts (see :func:`ginkgo.remote.access.protocol.encode_fuse_ref`)
-        and **not** staged locally; the worker mounts them on demand.
+        A ``fuse`` input, and a ``direct`` one when the task is dispatched to a
+        remote executor, becomes a marker dict (see
+        :func:`ginkgo.remote.access.protocol.encode_remote_input`) that the
+        worker reads itself. Every other input is downloaded here.
+
+        Parameters
+        ----------
+        task_def : Any
+            The task the arguments belong to.
+        resolved_args : dict[str, Any]
+            Its resolved arguments.
+        dispatches_remote : bool
+            Whether the task runs on a remote executor rather than this host.
+        digests : dict[str, str] | None
+            When given, receives the digest of each input staged here, by URI.
+
+        Returns
+        -------
+        dict[str, Any]
+            The arguments with every remote input staged or marked.
         """
         task_policy = TaskAccessPolicy.from_task_def(task_def)
         access_config = self._get_access_config()
 
-        # Fuse mounting is wired for the remote dispatch path (the worker
-        # mounts markers via `MountedAccess`) and for local process-pool
-        # tasks (hydrated in `run_task` against a task-local mount root).
-        # Driver-kind tasks run on the scheduler thread with no mount
-        # lifecycle, so they always stage. Local worker tasks stream only
-        # when the host has a healthy driver + `/dev/fuse`; that per-scheme
-        # check is deferred to `resolve_access` via `require_local_driver`.
-        dispatches_remote = bool(
-            getattr(task_def, "remote", False)
-            or getattr(task_def, "executor", None) is not None
-            or getattr(task_def, "gpu", 0) > 0
-        )
-        # A driver kind's body runs on the scheduler or in a driver subprocess,
-        # not through ``run_task`` in the process pool, so it has no local
-        # mount lifecycle and always stages remote inputs.
-        is_driver_kind = task_kind(task_def).execution_mode == "driver"
-        require_local_driver = False
-        if not dispatches_remote:
-            if is_driver_kind:
-                task_policy = TaskAccessPolicy(
-                    remote_input_access="stage",
-                    streaming_compatible=False,
-                    fuse_prefetch=task_policy.fuse_prefetch,
-                )
-            else:
-                require_local_driver = True
+        # A driver kind's body runs on the scheduler or in a driver
+        # subprocess, not through ``run_task``, so it has no mount lifecycle:
+        # its inputs are downloaded here.
+        if not dispatches_remote and task_kind(task_def).execution_mode == "driver":
+            task_policy = TaskAccessPolicy(
+                remote_input_access="direct",
+                streaming_compatible=False,
+                fuse_prefetch=task_policy.fuse_prefetch,
+            )
 
         staged: dict[str, Any] = {}
         for name, value in resolved_args.items():
@@ -367,7 +389,8 @@ class RemoteStager:
                 value=value,
                 task_policy=task_policy,
                 access_config=access_config,
-                require_local_driver=require_local_driver,
+                dispatches_remote=dispatches_remote,
+                digests=digests,
             )
         return staged
 
@@ -378,57 +401,44 @@ class RemoteStager:
         value: Any,
         task_policy: TaskAccessPolicy | None = None,
         access_config: AccessConfig | None = None,
-        require_local_driver: bool = False,
+        dispatches_remote: bool = False,
+        digests: dict[str, str] | None = None,
     ) -> Any:
         """Stage a single value, recursing into typed containers.
 
-        When ``require_local_driver`` is ``True`` (local worker tasks),
-        fuse selection is gated per scheme on the local host having a
-        healthy driver + ``/dev/fuse``; otherwise fuse degrades to
-        ``stage``. Remote dispatch leaves this ``False`` and assumes the
-        pod carries the drivers.
+        A task on this host streams only when the host has a healthy driver
+        and ``/dev/fuse`` for the scheme; otherwise fuse falls back to a
+        download. A remote task's pod is assumed to carry the drivers. A
+        ``direct`` input is left to the worker only when ``dispatches_remote``;
+        on this host it is staged.
         """
         task_policy = task_policy or TaskAccessPolicy()
         access_config = access_config or self._get_access_config()
 
-        def _policy_for(ref: RemoteRef) -> str:
-            driver_available = (
-                local_streaming_available(scheme=ref.scheme) if require_local_driver else True
-            )
-            return resolve_access(
-                ref=ref,
+        # A remote URI under a file/folder annotation is the ref it names.
+        if isinstance(value, str) and is_remote_uri(value):
+            if annotation_includes(annotation=annotation, expected=file):
+                value = remote_file(value)
+            elif annotation_includes(annotation=annotation, expected=folder):
+                value = remote_folder(value)
+
+        if isinstance(value, (RemoteFileRef, RemoteFolderRef)):
+            driver_available = dispatches_remote or local_streaming_available(scheme=value.scheme)
+            policy = resolve_access(
+                ref=value,
                 task_policy=task_policy,
                 config=access_config,
+                known_size=value.size if isinstance(value, RemoteFileRef) else None,
                 driver_available=driver_available,
             )
-
-        # Explicit remote refs.
-        if isinstance(value, (RemoteFileRef, RemoteFolderRef)):
-            policy = _policy_for(value)
-            if policy.startswith("fuse"):
-                return encode_fuse_ref(ref=value, policy=policy)
+            if is_fuse_policy(policy) or (policy == "direct" and dispatches_remote):
+                return encode_remote_input(ref=value, policy=policy)
+            staged_path = self._stage_remote_ref(ref=value)
+            if digests is not None:
+                digests[value.uri] = StagingCache.digest_of(staged_path)
             if isinstance(value, RemoteFileRef):
-                return file(str(self._stage_remote_ref(ref=value)))
-            return folder(str(self._stage_remote_ref(ref=value)))
-
-        # Annotation-aware coercion: raw URI string → remote ref → staged path.
-        if isinstance(value, str) and is_remote_uri(value):
-            if annotation is file:
-                from ginkgo.core.remote import remote_file
-
-                ref = remote_file(value)
-                policy = _policy_for(ref)
-                if policy.startswith("fuse"):
-                    return encode_fuse_ref(ref=ref, policy=policy)
-                return file(str(self._stage_remote_ref(ref=ref)))
-            if annotation is folder:
-                from ginkgo.core.remote import remote_folder
-
-                ref = remote_folder(value)
-                policy = _policy_for(ref)
-                if policy.startswith("fuse"):
-                    return encode_fuse_ref(ref=ref, policy=policy)
-                return folder(str(self._stage_remote_ref(ref=ref)))
+                return file(str(staged_path))
+            return folder(str(staged_path))
 
         # Recurse into typed containers.
         origin = get_origin(annotation)
@@ -441,13 +451,18 @@ class RemoteStager:
                     value=item,
                     task_policy=task_policy,
                     access_config=access_config,
-                    require_local_driver=require_local_driver,
+                    dispatches_remote=dispatches_remote,
+                    digests=digests,
                 )
                 for item in value
             ]
             return rebuild_sequence(like=value, items=staged_items)
 
         return value
+
+    def default_access(self, *, task_def: Any) -> str:
+        """Return the access mode a task's remote input gets without a hint of its own."""
+        return task_def.remote_input_access or self._get_access_config().default
 
     def _get_access_config(self) -> AccessConfig:
         """Return the cached access config, loading it on first use."""

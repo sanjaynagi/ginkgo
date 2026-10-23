@@ -88,8 +88,9 @@ def run_worker_payload(payload: dict) -> dict:
         if output_param_entries:
             _resolve_output_param_paths(payload, entries=output_param_entries)
 
-        # Hydrate fuse-marked inputs by mounting their buckets on the pod.
-        mounted_access = _hydrate_fuse_inputs(payload)
+        # Read the inputs the driver left to the worker: download or mount them.
+        hydration = _hydrate_remote_markers(payload)
+        mounted_access = hydration.mounted_access if hydration is not None else None
 
         from ginkgo.runtime.worker import run_task
 
@@ -97,9 +98,12 @@ def run_worker_payload(payload: dict) -> dict:
         # since nothing in the pod's transport directory reaches the client.
         result = run_task(payload, artifact_store=remote_store)
 
-        # Fold remote-input-access stats into the envelope for provenance.
+        # Fold remote-input-access stats into the envelope for provenance,
+        # with the digest of each input the worker downloaded.
         if mounted_access is not None and result.get("ok"):
             result["remote_input_access"] = mounted_access.stats().to_dict()
+        if hydration is not None and hydration.digests:
+            result["remote_input_digests"] = hydration.digests
 
         # Publish declared Out[...] outputs the task body wrote back to the
         # shared artifact store so the client can restore them at their
@@ -251,34 +255,35 @@ def _worker_remote_store(config: dict[str, str]) -> RemoteArtifactStore:
     )
 
 
-def _hydrate_fuse_inputs(payload: dict):
-    """Mount fuse-marked inputs and replace markers with local paths.
+def _hydrate_remote_markers(payload: dict):
+    """Read the inputs the driver left to the worker, replacing markers with paths.
 
-    Returns the :class:`MountedAccess` instance used (or ``None`` when
-    the payload contained no fuse markers) so the caller can close the
-    mounts and collect stats.
+    A ``direct`` input is downloaded into the pod's scratch area; a ``fuse``
+    input is mounted. Returns the :class:`Hydration`, holding the mounts for
+    the caller to close and the downloads' digests, or ``None`` when the
+    payload has no markers.
     """
     args = payload.get("args")
-    if not isinstance(args, dict) or not _payload_has_fuse_markers(args):
+    if not isinstance(args, dict) or not _payload_has_remote_markers(args):
         return None
 
-    from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+    from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
 
-    rewritten, mounted_access = hydrate_fuse_refs(args=args)
-    payload["args"] = rewritten
-    return mounted_access
+    hydration = hydrate_remote_inputs(args=args, staging_root=_scratch_root() / "ginkgo-staging")
+    payload["args"] = hydration.args
+    return hydration
 
 
-def _payload_has_fuse_markers(value) -> bool:
-    """Shallow/recursive scan for the fuse marker tag."""
-    from ginkgo.remote.access.protocol import is_fuse_ref
+def _payload_has_remote_markers(value) -> bool:
+    """Shallow/recursive scan for a remote-input marker."""
+    from ginkgo.remote.access.protocol import is_remote_input
 
-    if is_fuse_ref(value):
+    if is_remote_input(value):
         return True
     if isinstance(value, dict):
-        return any(_payload_has_fuse_markers(v) for v in value.values())
+        return any(_payload_has_remote_markers(v) for v in value.values())
     if isinstance(value, (list, tuple)):
-        return any(_payload_has_fuse_markers(v) for v in value)
+        return any(_payload_has_remote_markers(v) for v in value)
     return False
 
 

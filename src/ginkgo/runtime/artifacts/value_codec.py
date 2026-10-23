@@ -108,12 +108,12 @@ def encode_value(
         }
 
     if type(value) is dict:
-        # Fuse-streamed marker dicts produced by the driver-side resolver
+        # Remote-input marker dicts produced by the driver-side resolver
         # are JSON-safe already; pass them through untouched so the worker
         # receives the original payload unchanged.
-        from ginkgo.remote.access.protocol import is_fuse_ref
+        from ginkgo.remote.access.protocol import is_remote_input
 
-        if is_fuse_ref(value):
+        if is_remote_input(value):
             return value
         return {
             "__ginkgo_type__": "dict",
@@ -277,15 +277,15 @@ def encoded_artifact_ids(payload: Any) -> set[str]:
 def _reject_unknown_tag(payload: dict[str, Any]) -> None:
     """Raise for a tag no decoder branch handled.
 
-    Fuse markers pass through, mirroring ``encode_value``; the worker hydrates
-    them after decoding. Any other tag was written by a codec this version no
+    Remote-input markers pass through, mirroring ``encode_value``; the worker
+    hydrates them after decoding. Any other tag was written by a codec this version no
     longer has, and returning it as a raw dict would hand the task a value it
     never produced.
     """
-    from ginkgo.remote.access.protocol import is_fuse_ref
+    from ginkgo.remote.access.protocol import is_remote_input
 
     kind = payload.get("__ginkgo_type__")
-    if kind is not None and not is_fuse_ref(payload):
+    if kind is not None and not is_remote_input(payload):
         raise CodecError(f"Unknown encoded value type: {kind!r}")
 
 

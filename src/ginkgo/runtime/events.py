@@ -128,12 +128,17 @@ class TaskRunning(TaskEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class TaskStaging(TaskEvent):
-    """Task is staging remote inputs before dispatch."""
+    """Task is preparing its remote inputs before dispatch.
+
+    ``access_method`` says how they reach the task: ``direct`` (the worker
+    downloads them; on this host, staged locally), ``stage`` (the driver
+    downloads them), ``fuse`` (mounted), or ``hybrid`` for a mix.
+    """
 
     event: str = "task_staging"
     status: Literal["staging"] = "staging"
     remote_input_count: int = 0
-    access_method: Literal["stage", "fuse", "hybrid"] = "stage"
+    access_method: Literal["direct", "stage", "fuse", "hybrid"] = "direct"
 
 
 @dataclass(kw_only=True, frozen=True)

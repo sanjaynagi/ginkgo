@@ -4,17 +4,19 @@ Layers (highest precedence first):
 
 1. Explicit ``access=...`` on the ref (``remote_file(..., access="fuse")``).
 2. Task decorator default (``@task(remote_input_access="fuse")``).
-3. Config default (``[remote.access] default = "stage" | "fuse"``).
+3. Config default (``[remote.access] default = "direct" | "stage" | "fuse"``).
 4. Auto-enable heuristic (off by default; gated on size threshold,
    driver availability, doctor probe freshness).
 
 Returns a canonical policy string — one of:
 
-- ``"stage"`` — download via :class:`StagedAccess`.
+- ``"direct"`` — the worker downloads it from its source; a task on this
+  host stages it, as for ``"stage"``. The default.
+- ``"stage"`` — download via :class:`StagedAccess` on the driver.
 - ``"fuse"`` — user / config opted in explicitly.
 - ``"fuse (auto)"`` — auto-enable heuristic fired.
-- ``"stage (fallback)"`` — used by the worker after a mount failure; not
-  produced by this resolver directly.
+
+A worker whose mount fails downloads that input instead, as for ``"direct"``.
 """
 
 from __future__ import annotations
@@ -34,8 +36,8 @@ class AccessConfig:
     Parameters
     ----------
     default : str
-        Default access mode when nothing else decides (``"stage"`` in the
-        typical config).
+        Default access mode when nothing else decides; ``"direct"`` unless
+        configured.
     auto_fuse : bool
         Whether the auto-enable heuristic is active.
     auto_fuse_min_bytes : int
@@ -46,7 +48,7 @@ class AccessConfig:
         Whether the cluster passed the FUSE doctor probe recently.
     """
 
-    default: str = "stage"
+    default: str = "direct"
     auto_fuse: bool = False
     auto_fuse_min_bytes: int = 2 * 1024**3
     pattern_defaults: tuple[tuple[str, str], ...] = ()
@@ -57,7 +59,7 @@ class AccessConfig:
         """Build an :class:`AccessConfig` from a ``[remote.access]`` dict."""
         if not mapping:
             return cls()
-        default = str(mapping.get("default", "stage"))
+        default = str(mapping.get("default", "direct"))
         auto_fuse = bool(mapping.get("auto_fuse", False))
         auto_fuse_min_bytes = int(mapping.get("auto_fuse_min_bytes", 2 * 1024**3))
 
@@ -86,7 +88,7 @@ class TaskAccessPolicy:
     Parameters
     ----------
     remote_input_access : str | None
-        Per-task default mode (``"stage"`` / ``"fuse"`` / ``None``).
+        Per-task default mode (``"direct"`` / ``"stage"`` / ``"fuse"`` / ``None``).
     streaming_compatible : bool
         ``False`` when the task declares it cannot tolerate streaming;
         blocks fuse auto-promotion and explicit fuse selection.
@@ -144,37 +146,31 @@ def resolve_access(
     config = config or AccessConfig()
     task_policy = task_policy or TaskAccessPolicy()
 
-    # 1. Explicit ref.access always wins (bypass streaming_compatible).
-    if ref.access == "stage":
-        return "stage"
-    if ref.access == "fuse":
-        if not task_policy.streaming_compatible:
-            return "stage"
-        return "fuse" if driver_available else "stage"
+    # A fuse request that cannot be met falls back to downloading, the way
+    # the config downloads: "direct" unless it says "stage".
+    download = "stage" if config.default == "stage" else "direct"
+    can_stream = task_policy.streaming_compatible and driver_available
+
+    def honour(mode: str) -> str:
+        return download if mode == "fuse" and not can_stream else mode
+
+    # 1. Explicit ref.access always wins.
+    if ref.access is not None:
+        return honour(ref.access)
 
     # 2. Task decorator default.
     if task_policy.remote_input_access is not None:
-        mode = task_policy.remote_input_access
-        if mode == "fuse":
-            if not task_policy.streaming_compatible:
-                return "stage"
-            return "fuse" if driver_available else "stage"
-        return mode  # "stage"
+        return honour(task_policy.remote_input_access)
 
     # 3. Pattern-based config default.
     pattern_mode = _match_pattern(ref=ref, patterns=config.pattern_defaults)
     if pattern_mode is not None:
-        if pattern_mode == "fuse":
-            if not task_policy.streaming_compatible or not driver_available:
-                return "stage"
-            return "fuse"
-        return pattern_mode
+        return honour(pattern_mode)
 
     # 4. Auto-enable heuristic.
     if (
         config.auto_fuse
-        and task_policy.streaming_compatible
-        and driver_available
+        and can_stream
         and config.doctor_ok
         and known_size is not None
         and known_size >= config.auto_fuse_min_bytes
@@ -182,7 +178,7 @@ def resolve_access(
         return "fuse (auto)"
 
     # 5. Config default.
-    return config.default
+    return honour(config.default)
 
 
 def _match_pattern(

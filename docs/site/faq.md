@@ -907,17 +907,20 @@ resource request; captured pod/job logs are attached at completion.
 
 ### When are remote inputs streamed via FUSE versus staged/downloaded?
 
-Each remote input (`gs://`, `s3://`, `oci://`) is resolved to one of two modes:
-**stage** (default) downloads the whole object to local disk before the task
-runs, or **fuse** mounts the bucket in-container and streams reads on demand.
-`stage` is the safe default; `fuse` is only chosen when a driver is available for
-the scheme and the task is streaming-compatible.
+Each remote input (`gs://`, `s3://`, `oci://`) is resolved to one of three
+modes. **direct** (default) has the worker download the whole object from its
+source before the task runs. **stage** has the driver download it and pass it
+to the worker through the artifact store, for workers that cannot read the
+source bucket. **fuse** mounts the bucket in-container and streams reads on
+demand; it is only chosen when a driver is available for the scheme and the
+task is streaming-compatible. For a task running on this host, `direct` and
+`stage` both download into the local staging cache.
 
 ### How do I control the access mode — per ref, per task, by pattern, or via config?
 
 The precedence is: (1) an explicit `access=` on the ref
 (`remote_file(..., access="fuse")`) wins; (2) the task decorator default
-`remote_input_access="fuse"|"stage"`; (3) a pattern match from config; (4) an
+`remote_input_access="direct"|"stage"|"fuse"`; (3) a pattern match from config; (4) an
 auto-enable size heuristic; (5) the config default. A task can veto streaming
 with `streaming_compatible=False`, which forces `stage` even when `fuse` was
 requested. Pattern rules live under `[remote.access]` as `default_for_pattern`
@@ -926,7 +929,7 @@ and the full URI).
 
 ```toml
 [remote.access]
-default = "stage"       # or "fuse"
+default = "direct"      # or "stage", "fuse"
 auto_fuse = false       # size-gated auto-promotion; needs a passing doctor probe
 
 [[remote.access.default_for_pattern]]

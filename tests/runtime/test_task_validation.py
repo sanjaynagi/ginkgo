@@ -16,7 +16,7 @@ import pytest
 from ginkgo.core.remote import RemoteFileRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.types import file, folder, tmp_dir, untracked
-from ginkgo.remote.access.protocol import encode_fuse_ref
+from ginkgo.remote.access.protocol import encode_remote_input
 from ginkgo.runtime.task_validation import TaskValidator, label_input_value
 
 
@@ -68,7 +68,7 @@ class TestVersionLabel:
         assert label_input_value(annotation=str, value=_remote_ref()) == "version"
 
     def test_fuse_marker_is_version(self) -> None:
-        marker = encode_fuse_ref(ref=_remote_ref(), policy="fuse")
+        marker = encode_remote_input(ref=_remote_ref(), policy="fuse")
         assert label_input_value(annotation=str, value=marker) == "version"
 
 

@@ -22,9 +22,10 @@ from ginkgo.remote.access import (
     PerInputStats,
     StagedAccess,
     TaskAccessPolicy,
-    decode_fuse_ref,
-    encode_fuse_ref,
-    is_fuse_ref,
+    decode_remote_input,
+    encode_remote_input,
+    is_fuse_input,
+    is_remote_input,
     resolve_access,
 )
 from ginkgo.remote.access.drivers.base import (
@@ -118,7 +119,7 @@ class TestResolveAccess:
     def test_auto_enable_gated_on_size(self) -> None:
         ref = remote_file("s3://b/small.txt")
         config = AccessConfig(auto_fuse=True, auto_fuse_min_bytes=1024)
-        assert resolve_access(ref=ref, config=config, known_size=100) == "stage"
+        assert resolve_access(ref=ref, config=config, known_size=100) == "direct"
 
     def test_auto_enable_blocked_by_streaming_incompatible(self) -> None:
         ref = remote_file("s3://b/huge.fastq")
@@ -131,17 +132,28 @@ class TestResolveAccess:
                 task_policy=task_policy,
                 known_size=2048,
             )
-            == "stage"
+            == "direct"
         )
 
-    def test_driver_missing_falls_back(self) -> None:
+    def test_driver_missing_falls_back_to_downloading(self) -> None:
         ref = remote_file("s3://b/k.txt", access="fuse")
-        assert resolve_access(ref=ref, driver_available=False) == "stage"
+        assert resolve_access(ref=ref, driver_available=False) == "direct"
 
     def test_streaming_incompatible_blocks_explicit_fuse(self) -> None:
         ref = remote_file("s3://b/k.txt", access="fuse")
         policy = TaskAccessPolicy(streaming_compatible=False)
-        assert resolve_access(ref=ref, task_policy=policy) == "stage"
+        assert resolve_access(ref=ref, task_policy=policy) == "direct"
+
+    def test_a_fuse_fallback_downloads_the_way_the_config_does(self) -> None:
+        ref = remote_file("s3://b/k.txt", access="fuse")
+        config = AccessConfig(default="stage")
+        assert resolve_access(ref=ref, config=config, driver_available=False) == "stage"
+
+    def test_a_fuse_config_default_falls_back_when_streaming_is_refused(self) -> None:
+        ref = remote_file("s3://b/k.txt")
+        policy = TaskAccessPolicy(streaming_compatible=False)
+        config = AccessConfig(default="fuse")
+        assert resolve_access(ref=ref, task_policy=policy, config=config) == "direct"
 
 
 class TestAccessConfig:
@@ -166,7 +178,7 @@ class TestAccessConfig:
         )
 
     def test_from_mapping_handles_none(self) -> None:
-        assert AccessConfig.from_mapping(None).default == "stage"
+        assert AccessConfig.from_mapping(None).default == "direct"
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +189,11 @@ class TestAccessConfig:
 class TestFuseRefEncoding:
     def test_encode_then_decode_file(self) -> None:
         ref = remote_file("s3://b/k.bam", access="fuse", version_id="v1")
-        encoded = encode_fuse_ref(ref=ref, policy="fuse")
-        assert is_fuse_ref(encoded)
+        encoded = encode_remote_input(ref=ref, policy="fuse")
+        assert is_remote_input(encoded)
         # Survives JSON round-trip.
         round_tripped = json.loads(json.dumps(encoded))
-        decoded, policy = decode_fuse_ref(round_tripped)
+        decoded, policy = decode_remote_input(round_tripped)
         assert isinstance(decoded, RemoteFileRef)
         assert decoded.uri == ref.uri
         assert decoded.version_id == "v1"
@@ -189,15 +201,15 @@ class TestFuseRefEncoding:
 
     def test_encode_then_decode_folder(self) -> None:
         ref = remote_folder("gs://b/prefix/", access="fuse")
-        encoded = encode_fuse_ref(ref=ref, policy="fuse (auto)")
-        decoded, policy = decode_fuse_ref(encoded)
+        encoded = encode_remote_input(ref=ref, policy="fuse (auto)")
+        decoded, policy = decode_remote_input(encoded)
         assert isinstance(decoded, RemoteFolderRef)
         assert decoded.bucket == "b"
         assert policy == "fuse (auto)"
 
     def test_non_fuse_dict_is_not_recognised(self) -> None:
-        assert is_fuse_ref({"__ginkgo_type__": "file", "value": "/x"}) is False
-        assert is_fuse_ref("s3://b/k") is False
+        assert is_remote_input({"__ginkgo_type__": "file", "value": "/x"}) is False
+        assert is_remote_input("s3://b/k") is False
 
 
 # ---------------------------------------------------------------------------
@@ -348,10 +360,10 @@ class TestMountedAccess:
 class TestWorkerHydration:
     def test_markers_become_file_values(self, tmp_path: Path) -> None:
         from ginkgo.core.types import file
-        from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+        from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
 
         ref = remote_file("s3://bucket/path/one.txt", access="fuse")
-        marker = encode_fuse_ref(ref=ref, policy="fuse")
+        marker = encode_remote_input(ref=ref, policy="fuse")
 
         driver = _StubDriver()
         mounted = MountedAccess(
@@ -360,19 +372,20 @@ class TestWorkerHydration:
             driver_factory=lambda scheme: driver,  # noqa: ARG005
         )
         args = {"fastq": marker, "threads": 4}
-        rewritten, m = hydrate_fuse_refs(args=args, mounted_access=mounted)
-        assert m is mounted
+        hydration = hydrate_remote_inputs(args=args, mounted_access=mounted)
+        rewritten = hydration.args
+        assert hydration.mounted_access is mounted
         assert isinstance(rewritten["fastq"], file)
         assert rewritten["fastq"].endswith("path/one.txt")
         assert rewritten["threads"] == 4
 
     def test_markers_in_nested_containers(self, tmp_path: Path) -> None:
-        from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+        from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
 
         ref_a = remote_file("s3://bucket/a.txt", access="fuse")
         ref_b = remote_file("s3://bucket/b.txt", access="fuse")
-        marker_a = encode_fuse_ref(ref=ref_a, policy="fuse")
-        marker_b = encode_fuse_ref(ref=ref_b, policy="fuse")
+        marker_a = encode_remote_input(ref=ref_a, policy="fuse")
+        marker_b = encode_remote_input(ref=ref_b, policy="fuse")
 
         driver = _StubDriver()
         mounted = MountedAccess(
@@ -381,14 +394,14 @@ class TestWorkerHydration:
             driver_factory=lambda scheme: driver,  # noqa: ARG005
         )
         args = {"files": [marker_a, marker_b]}
-        rewritten, _ = hydrate_fuse_refs(args=args, mounted_access=mounted)
+        rewritten = hydrate_remote_inputs(args=args, mounted_access=mounted).args
         assert len(rewritten["files"]) == 2
         assert all("bucket" in str(p) for p in rewritten["files"])
 
     def test_mount_failure_falls_back_to_staged(self, tmp_path: Path) -> None:
         from ginkgo.core.types import file
         from ginkgo.remote.access.staged import StagedAccess as StagedStrategy
-        from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+        from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
 
         class _FailingDriver:
             name = "failing"
@@ -420,13 +433,15 @@ class TestWorkerHydration:
 
         fallback = StagedStrategy(cache=_FakeCache(), policy="stage (fallback)")
         ref = remote_file("s3://bucket/one.txt", access="fuse")
-        marker = encode_fuse_ref(ref=ref, policy="fuse")
-        rewritten, m = hydrate_fuse_refs(
+        marker = encode_remote_input(ref=ref, policy="fuse")
+        hydration = hydrate_remote_inputs(
             args={"in": marker},
             mounted_access=mounted,
-            fallback_access=fallback,
+            staged_access=fallback,
         )
-        assert rewritten["in"] == file(str(staged_path))
+        assert hydration.args["in"] == file(str(staged_path))
+        # The fallback download leaves the input's digest for provenance.
+        assert hydration.digests == {ref.uri: staged_path.name}
 
 
 # ---------------------------------------------------------------------------
@@ -503,32 +518,34 @@ class TestLocalStreamingAvailable:
 
 
 class TestLocalWorkerFuseHydration:
-    def test_args_have_fuse_markers_detects_nested(self) -> None:
-        from ginkgo.runtime.worker import _args_have_fuse_markers
+    def test_args_have_fuse_inputs_detects_nested(self) -> None:
+        from ginkgo.runtime.worker import _args_have_fuse_inputs
 
         ref = remote_file("s3://bucket/one.txt", access="fuse")
-        marker = encode_fuse_ref(ref=ref, policy="fuse")
-        assert _args_have_fuse_markers({"a": marker}) is True
-        assert _args_have_fuse_markers({"a": [1, {"b": marker}]}) is True
-        assert _args_have_fuse_markers({"a": 1, "b": "s3://x/y"}) is False
+        marker = encode_remote_input(ref=ref, policy="fuse")
+        direct = encode_remote_input(ref=ref, policy="direct")
+        assert _args_have_fuse_inputs({"a": marker}) is True
+        assert _args_have_fuse_inputs({"a": [1, {"b": marker}]}) is True
+        assert _args_have_fuse_inputs({"a": 1, "b": "s3://x/y"}) is False
+        assert _args_have_fuse_inputs({"a": direct}) is False
 
     def test_local_fuse_access_mounts_under_transport_dir(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         from ginkgo.core.types import file as file_type
         from ginkgo.remote.access import mounted as mounted_mod
-        from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+        from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
         from ginkgo.runtime.worker import _local_fuse_access
 
         driver = _StubDriver()
         monkeypatch.setattr(mounted_mod, "resolve_driver", lambda *, scheme: driver)
 
         ref = remote_file("s3://bucket/one.txt", access="fuse")
-        marker = encode_fuse_ref(ref=ref, policy="fuse")
+        marker = encode_remote_input(ref=ref, policy="fuse")
         access = _local_fuse_access(args={"data": marker}, base_dir=tmp_path)
 
         assert access is not None
-        rewritten, _ = hydrate_fuse_refs(args={"data": marker}, mounted_access=access)
+        rewritten = hydrate_remote_inputs(args={"data": marker}, mounted_access=access).args
         assert isinstance(rewritten["data"], file_type)
         # Mount lives under the task-local transport dir, not a shared root.
         assert str(rewritten["data"]).startswith(str(tmp_path / "fuse"))
@@ -554,7 +571,7 @@ class TestExecutorFuseDetection:
         from ginkgo.remote.executor_support import payload_requires_fuse
 
         ref = remote_file("s3://b/k.bam", access="fuse")
-        marker = encode_fuse_ref(ref=ref, policy="fuse")
+        marker = encode_remote_input(ref=ref, policy="fuse")
 
         assert payload_requires_fuse({"args": {}}) is False
         assert payload_requires_fuse({"args": {"raw": "plain"}}) is False
@@ -602,7 +619,7 @@ class TestCacheKeyStability:
 
         store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
         ref = remote_file("s3://bucket/key.bam", version_id="v42")
-        marker = encode_fuse_ref(
+        marker = encode_remote_input(
             ref=remote_file("s3://bucket/key.bam", version_id="v42", access="fuse"),
             policy="fuse",
         )
@@ -618,7 +635,7 @@ class TestCacheKeyStability:
 
         store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
         ref = replace(remote_file("s3://bucket/key.bam"), etag="e1", size=10)
-        marker = encode_fuse_ref(ref=replace(ref, access="fuse"), policy="fuse")
+        marker = encode_remote_input(ref=replace(ref, access="fuse"), policy="fuse")
 
         assert store._hash_value(annotation=file, value=ref) == store._hash_value(
             annotation=file, value=marker
@@ -632,8 +649,8 @@ class TestCacheKeyStability:
 
         store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
         ref = remote_file("s3://bucket/key.bam", access="fuse")
-        before = encode_fuse_ref(ref=replace(ref, etag="e1", size=10), policy="fuse")
-        after = encode_fuse_ref(ref=replace(ref, etag="e2", size=10), policy="fuse")
+        before = encode_remote_input(ref=replace(ref, etag="e1", size=10), policy="fuse")
+        after = encode_remote_input(ref=replace(ref, etag="e2", size=10), policy="fuse")
 
         assert store._hash_value(annotation=file, value=before) != store._hash_value(
             annotation=file, value=after
@@ -644,7 +661,7 @@ class TestCacheKeyStability:
         from ginkgo.runtime.caching.index import CacheIndex
 
         store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
-        marker = encode_fuse_ref(ref=remote_file("s3://bucket/key.bam"), policy="fuse")
+        marker = encode_remote_input(ref=remote_file("s3://bucket/key.bam"), policy="fuse")
 
         with pytest.raises(ValueError, match="must be resolved"):
             store._hash_value(annotation=file, value=marker)
@@ -655,7 +672,7 @@ class TestCacheKeyStability:
 
         store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
         ref = remote_file("s3://bucket/key.bam", version_id="v42")
-        marker = encode_fuse_ref(
+        marker = encode_remote_input(
             ref=remote_file("s3://bucket/key.bam", version_id="v42", access="fuse"),
             policy="fuse",
         )
@@ -688,8 +705,9 @@ class TestRemoteStagerFuseRouting:
         staged = stager.stage_remote_refs(
             task_def=task_def,
             resolved_args={"data": ref},
+            dispatches_remote=task_def.remote,
         )
-        assert is_fuse_ref(staged["data"])
+        assert is_fuse_input(staged["data"])
         assert staged["data"]["uri"] == "s3://bucket/k.txt"
 
     def test_local_task_without_driver_forces_stage(self, tmp_path: Path, monkeypatch) -> None:
@@ -731,12 +749,13 @@ class TestRemoteStagerFuseRouting:
         staged = stager.stage_remote_refs(
             task_def=task_def,
             resolved_args={"data": ref},
+            dispatches_remote=task_def.remote,
         )
         # Without a local driver, output is a staged local path (file instance).
         from ginkgo.core.types import file as file_type
 
         assert isinstance(staged["data"], file_type)
-        assert not is_fuse_ref(staged["data"])
+        assert not is_fuse_input(staged["data"])
 
     def test_local_task_streams_when_driver_available(self, monkeypatch) -> None:
         from ginkgo.remote.access.resolver import AccessConfig
@@ -760,8 +779,9 @@ class TestRemoteStagerFuseRouting:
         staged = stager.stage_remote_refs(
             task_def=task_def,
             resolved_args={"data": ref},
+            dispatches_remote=task_def.remote,
         )
-        assert is_fuse_ref(staged["data"])
+        assert is_fuse_input(staged["data"])
         assert staged["data"]["uri"] == "s3://bucket/k.txt"
 
     def test_local_driver_kind_task_forces_stage(self, tmp_path: Path, monkeypatch) -> None:
@@ -799,8 +819,9 @@ class TestRemoteStagerFuseRouting:
         staged = stager.stage_remote_refs(
             task_def=task_def,
             resolved_args={"data": ref},
+            dispatches_remote=task_def.remote,
         )
         from ginkgo.core.types import file as file_type
 
         assert isinstance(staged["data"], file_type)
-        assert not is_fuse_ref(staged["data"])
+        assert not is_fuse_input(staged["data"])

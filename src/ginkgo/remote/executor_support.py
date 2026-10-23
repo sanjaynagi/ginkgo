@@ -41,14 +41,12 @@ def generate_job_name(attempt: dict[str, Any]) -> str:
 
 
 def payload_requires_fuse(attempt: dict[str, Any]) -> bool:
-    """Return True when the payload contains any fuse-marked inputs."""
-    from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
-
-    fuse_tags = {FUSE_FILE_TYPE, FUSE_FOLDER_TYPE}
+    """Return True when the payload holds any input the worker mounts."""
+    from ginkgo.remote.access.protocol import is_fuse_input
 
     def walk(value: Any) -> bool:
         if isinstance(value, dict):
-            if value.get("__ginkgo_type__") in fuse_tags:
+            if is_fuse_input(value):
                 return True
             return any(walk(item) for item in value.values())
         if isinstance(value, (list, tuple)):

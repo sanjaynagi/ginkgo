@@ -35,7 +35,7 @@ from ginkgo.core.types import (
     unwrap_optional_annotation,
 )
 from ginkgo.remote.access.protocol import (
-    is_fuse_ref,
+    is_remote_input,
 )
 from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -126,9 +126,9 @@ def _stage_value(
     known_digests: dict[str, str],
 ) -> Any:
     """Stage a single argument value, recursing into typed containers."""
-    # Fuse-streamed refs bypass CAS entirely — the worker mounts the
-    # bucket directly. Pass the marker dict through unchanged.
-    if is_fuse_ref(value):
+    # A remote input the worker reads itself bypasses CAS entirely. Pass the
+    # marker dict through unchanged.
+    if is_remote_input(value):
         return value
 
     # file / folder: upload content, emit a remote reference dict.

@@ -262,6 +262,19 @@ Build for Linux (required for cloud VMs, even when building on macOS):
 docker buildx build --platform linux/amd64 -t <image-uri> --push .
 ```
 
+### What a worker needs to read
+
+A worker reads and writes object storage itself: the artifact store
+(`[remote.artifacts] store`) for `file`/`folder` values and large results,
+and, in `direct` mode (the default), the bucket of every remote input it is
+given. Grant the worker's identity (the Kubernetes service account, or the
+GCP Batch service account) read access to those source buckets as well as
+read/write access to the artifact store. A worker without it fails on the
+input it cannot read, naming the URI. To keep source-bucket access on the
+driver alone, set `[remote.access] default = "stage"`, or `access="stage"`
+on the input; the driver then downloads it and hands it over through the
+artifact store.
+
 ### Adding workflow dependencies on top of the base image
 
 Most workflows need extra Python packages (PyTorch, scikit-learn, biopython,
@@ -340,14 +353,17 @@ All of this is visible in `ginkgo runs show <run_id>`.
 
 ## Remote-Input Access: Stage or Stream
 
-Remote inputs reach a worker in one of two modes. Each scheme comes from a
+Remote inputs reach a worker in one of three modes. Each scheme comes from a
 plugin, which provides both the object store and its FUSE driver: `s3://` from
 `ginkgo-aws` (mountpoint-s3), `gs://` from `ginkgo-gcp` (gcsfuse) and `oci://`
 from `ginkgo-oci` (rclone). See
 [Plugins](../getting-started/installation.md#plugins).
 
-**Stage** (default) downloads the whole object to local disk before
-the task starts. **Fuse** mounts the bucket in-container and streams reads
+**Direct** (default) has the worker download the whole object from its
+source before the task starts, so the worker needs read access to the
+bucket. **Stage** has the driver download it instead and hand it over
+through the artifact store, for workers that cannot read the source.
+**Fuse** mounts the bucket in-container and streams reads
 on demand — useful for sparse random access (BAM index lookups, Parquet
 column projection) or whole-file reads that would otherwise block on a
 multi-GB download.
@@ -376,7 +392,7 @@ Config defaults live under `[remote.access]`:
 
 ```toml
 [remote.access]
-default = "stage"          # or "fuse"
+default = "direct"         # or "stage", "fuse"
 auto_fuse = false          # enable the size-based auto-fuse heuristic
 auto_fuse_min_bytes = 2147483648  # 2GiB default; threshold for auto_fuse
 default_for_pattern = [    # optional, first match wins over `default`

@@ -83,6 +83,7 @@ from ginkgo.runtime.environment.secrets import (
 )
 from ginkgo.runtime.remote_input_resolver import (
     RemoteStager,
+    StagedInputs,
     count_remote_inputs,
     load_remote_publisher,
     resolve_staging_jobs,
@@ -135,6 +136,10 @@ def _reconstruct_worker_error(error_payload: dict[str, Any]) -> BaseException:
         exc_type = getattr(builtins, type_name, RuntimeError)
         if isinstance(exc_type, type) and issubclass(exc_type, BaseException):
             return exc_type(*args)
+
+    # Rebuilt as itself so the scheduler knows not to retry it.
+    if (module_name, type_name) == (RemoteIdentityError.__module__, RemoteIdentityError.__name__):
+        return RemoteIdentityError(*args)
 
     return RuntimeError(error_payload["message"])
 
@@ -288,6 +293,7 @@ class NodeRun:
     extra_source_hash: str | None = None
     runner_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
+    remote_input_digests: dict[str, str] = field(default_factory=dict)
     measured_resources: dict[str, Any] | None = None
     blocked_by: TaskNode | None = None
     """The failed task a skip is attributed to; set only when "skipped"."""
@@ -515,7 +521,6 @@ class ConcurrentEvaluator:
             expr=node.node.expr,
             task_def=node.task_def,
             include_tmp_dirs=False,
-            stage_remote_refs=False,
         )
 
     def expand_probed_template(self, *, node: NodeRun, template: Any) -> list[int]:
@@ -755,7 +760,6 @@ class ConcurrentEvaluator:
             expr=node.node.expr,
             task_def=node.task_def,
             include_tmp_dirs=False,
-            stage_remote_refs=False,
         )
         # Before the cache-hit branch, so the warning appears on the run that
         # serves the stale result.
@@ -950,7 +954,6 @@ class ConcurrentEvaluator:
                 include_tmp_dirs=True,
                 existing_args=node.resolved_args,
                 tmp_paths=node.tmp_paths,
-                stage_remote_refs=False,
             )
             if count_remote_inputs(node.resolved_args) > 0:
                 node.state = "staging"
@@ -976,7 +979,10 @@ class ConcurrentEvaluator:
             TaskStaging,
             node=node,
             remote_input_count=count_remote_inputs(node.resolved_args),
-            access_method=_classify_access_method(value=node.resolved_args),
+            access_method=_classify_access_method(
+                value=node.resolved_args,
+                default=self._stager.default_access(task_def=node.task_def),
+            ),
         )
         future = self._executors.staging.submit(self._stager.stage_task_inputs, node=node)
         self._track(future, node=node, on_done=self._on_inputs_staged)
@@ -1069,10 +1075,11 @@ class ConcurrentEvaluator:
 
     def _on_inputs_staged(self, *, node: NodeRun, completed_value: Any) -> None:
         """Start task execution after remote inputs have been staged locally."""
-        if not isinstance(completed_value, dict):
+        if not isinstance(completed_value, StagedInputs):
             raise TypeError("Expected staged task arguments from staging phase")
 
-        node.resolved_args = completed_value
+        node.resolved_args = completed_value.args
+        self._record_input_digests(node=node, digests=completed_value.digests)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=node.resolved_args)
         self._start_task_execution(node=node)
 
@@ -1364,7 +1371,6 @@ class ConcurrentEvaluator:
         expr: Expr,
         task_def: TaskDef,
         include_tmp_dirs: bool,
-        stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
@@ -1402,12 +1408,6 @@ class ConcurrentEvaluator:
                 continue
 
             raise TypeError(f"{task_def.fn.__name__}() missing required argument: '{name}'")
-
-        if stage_remote_refs:
-            resolved_args = self._stager.stage_remote_refs(
-                task_def=task_def,
-                resolved_args=resolved_args,
-            )
 
         return resolved_args
 
@@ -1729,6 +1729,19 @@ class ConcurrentEvaluator:
             remove_declared_output(output)
             output.parent.mkdir(parents=True, exist_ok=True)
 
+    def _record_input_digests(self, *, node: NodeRun, digests: dict[str, str]) -> None:
+        """Record the digest of each remote input fetched for *node*, by URI.
+
+        The driver reports what it staged and the worker what it downloaded;
+        a task can have both, so the record accumulates.
+        """
+        if not digests:
+            return
+        node.remote_input_digests.update(digests)
+        self._annotate_task(
+            node=node, fields={"remote_input_digests": dict(node.remote_input_digests)}
+        )
+
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.
 
@@ -1736,6 +1749,8 @@ class ConcurrentEvaluator:
         and local (process-pool) workers, and surfaces a notice when a
         mount fell back to staging.
         """
+        if isinstance(payload, dict) and isinstance(payload.get("remote_input_digests"), dict):
+            self._record_input_digests(node=node, digests=payload["remote_input_digests"])
         if isinstance(payload, dict) and isinstance(payload.get("remote_input_access"), dict):
             access_stats = payload["remote_input_access"]
             self._annotate_task(node=node, fields={"remote_input_access": access_stats})
@@ -2345,21 +2360,21 @@ def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, A
     ]
 
 
-def _classify_access_method(*, value: Any) -> str:
-    """Return ``"stage"``, ``"fuse"``, or ``"hybrid"`` for a resolved-args tree.
+def _classify_access_method(*, value: Any, default: str) -> str:
+    """Return the access mode a resolved-args tree asks for, or ``"hybrid"``.
 
-    Walks the value recursively, inspecting explicit ``access`` hints on
-    :class:`RemoteRef` leaves. Refs without an explicit ``access`` hint
-    count as ``"stage"`` for reporting purposes; the auto-enable
-    heuristic may still promote them at staging time.
+    Walks the value recursively, reading the ``access`` hint on each
+    :class:`RemoteRef` leaf; a ref without one takes *default*, the task's or
+    the config's mode.
     """
     from ginkgo.core.remote import RemoteRef
+    from ginkgo.remote.access.protocol import is_fuse_policy
 
     seen: set[str] = set()
 
     def walk(item: Any) -> None:
         if isinstance(item, RemoteRef):
-            seen.add(item.access or "stage")
+            seen.add(item.access or default)
             return
         if isinstance(item, dict):
             for v in item.values():
@@ -2370,8 +2385,7 @@ def _classify_access_method(*, value: Any) -> str:
                 walk(v)
 
     walk(value)
-    if "fuse" in seen and len(seen) > 1:
+    if len(seen) > 1:
         return "hybrid"
-    if "fuse" in seen:
-        return "fuse"
-    return "stage"
+    mode = seen.pop() if seen else default
+    return "fuse" if is_fuse_policy(mode) else mode

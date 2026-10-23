@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-_VALID_ACCESS_MODES = frozenset({"stage", "fuse"})
+_VALID_ACCESS_MODES = frozenset({"direct", "stage", "fuse"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -39,7 +39,7 @@ class RemoteRef:
     version_id : str | None
         Optional immutable version pin.
     access : str | None
-        Preferred access mode (``"stage"`` or ``"fuse"``). Participates in
+        Preferred access mode (``"direct"``, ``"stage"`` or ``"fuse"``). Participates in
         ``__repr__`` but is excluded from equality / hashing so toggling
         access does not invalidate cache entries.
     """
@@ -122,7 +122,7 @@ def remote_file(
     version_id : str | None
         Optional version ID for immutable pinning.
     access : str | None
-        Preferred access mode (``"stage"`` or ``"fuse"``). ``None`` defers
+        Preferred access mode (``"direct"``, ``"stage"`` or ``"fuse"``). ``None`` defers
         the choice to the configured default / policy resolver.
 
     Returns
@@ -134,8 +134,8 @@ def remote_file(
     PluginNotFoundError
         If no installed plugin provides an object store for the URI's scheme.
     ValueError
-        If the URI is malformed, or ``access`` is not one of ``"stage"`` /
-        ``"fuse"``.
+        If the URI is malformed, or ``access`` is not one of ``"direct"``,
+        ``"stage"`` or ``"fuse"``.
     """
     location = parse_remote_uri(uri)
     _validate_access(access)
@@ -165,7 +165,7 @@ def remote_folder(
     version_id : str | None
         Optional version ID for immutable pinning.
     access : str | None
-        Preferred access mode (``"stage"`` or ``"fuse"``). ``None`` defers
+        Preferred access mode (``"direct"``, ``"stage"`` or ``"fuse"``). ``None`` defers
         the choice to the configured default / policy resolver.
 
     Returns
@@ -177,8 +177,8 @@ def remote_folder(
     PluginNotFoundError
         If no installed plugin provides an object store for the URI's scheme.
     ValueError
-        If the URI is malformed, or ``access`` is not one of ``"stage"`` /
-        ``"fuse"``.
+        If the URI is malformed, or ``access`` is not one of ``"direct"``,
+        ``"stage"`` or ``"fuse"``.
     """
     location = parse_remote_uri(uri)
     _validate_access(access)
