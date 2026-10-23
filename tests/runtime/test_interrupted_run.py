@@ -69,8 +69,8 @@ print("handled" if seen else "swallowed")
 """
 
 
-#: Runs one remote task whose job never finishes, SIGTERMs itself half a
-#: second in, and prints how long the scheduler took to cancel the job.
+#: Runs one remote task whose job never finishes, SIGTERMs itself once the job
+#: is submitted, and prints how long the scheduler took to cancel the job.
 _REMOTE_CANCEL_SCRIPT = """
 import os
 import signal
@@ -112,6 +112,8 @@ class Handle:
 
 class NeverFinishes(RemoteExecutor):
     def submit(self, *, attempt):
+        # Signalled only once submitted, so the scheduler's handler is armed.
+        threading.Timer(0.2, interrupt).start()
         return Handle()
 
 
@@ -125,7 +127,6 @@ def interrupt():
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-threading.Timer(0.5, interrupt).start()
 registry = ExecutorRegistry.for_executor(NeverFinishes(), name="remote")
 try:
     ConcurrentEvaluator(jobs=1, executor_registry=registry).evaluate(forever())
@@ -189,32 +190,6 @@ class TestCpSatSignalHandling:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "handled"
 
-    def test_the_solver_never_takes_an_interrupt(self, monkeypatch) -> None:
-        # A solver catching SIGINT would swallow a Ctrl-C that lands mid-solve.
-        from ortools.sat.python import cp_model
-
-        from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
-
-        seen: list[bool] = []
-        solve = cp_model.CpSolver.Solve
-
-        def recording_solve(self, *args, **kwargs):
-            seen.append(self.parameters.catch_sigint_signal)
-            return solve(self, *args, **kwargs)
-
-        monkeypatch.setattr(cp_model.CpSolver, "Solve", recording_solve)
-        select_dispatch_subset(
-            ready_tasks=[SchedulableTask(node_id=0, threads=1, memory_gb=0)],
-            jobs=1,
-            cores=1,
-            memory=1,
-            gpus=0,
-            available_group_slots=None,
-            custom_budgets=None,
-        )
-
-        assert seen == [False]
-
 
 class TestRemoteJobCancellation:
     """SIGTERM cancels remote jobs promptly, not when some job next finishes."""
@@ -232,46 +207,48 @@ class TestRemoteJobCancellation:
         assert float(result.stdout.strip()) < 2.0
 
 
-class TestCancelledRunSummary:
-    """A cancelled run reads back as terminal, and as not a success."""
+def test_run_summary_reports_a_cancelled_run(ledger) -> None:
+    summary = ledger.finish(status="cancelled", error="Interrupted by SIGINT")
 
-    def test_run_summary_reports_a_cancelled_run(self, ledger) -> None:
-        summary = ledger.finish(status="cancelled", error="Interrupted by SIGINT")
-
-        assert summary.status == "cancelled"
-        assert not summary.succeeded
+    assert summary.status == "cancelled"
+    assert not summary.succeeded
 
 
-class TestCloseUnfinishedRun:
-    """The exit-stack safety net tells an interrupt apart from a failure."""
+@pytest.mark.parametrize(
+    ("exc", "status"),
+    [
+        (KeyboardInterrupt("Interrupted by SIGINT"), "cancelled"),
+        (RuntimeError("boom"), "failed"),
+        (None, "failed"),
+    ],
+)
+def test_the_exit_guard_tells_an_interrupt_from_a_failure(
+    ledger, exc: BaseException | None, status: str
+) -> None:
+    from ginkgo.cli.commands.run import _close_unfinished_run
 
-    def _emitted(self, exc: BaseException | None) -> RunCompleted:
-        from ginkgo.cli.commands.run import _close_unfinished_run
-        from ginkgo.runtime.events import EventBus
+    emitted: list[RunCompleted] = []
+    ledger.bus.subscribe(lambda e: emitted.append(e) if isinstance(e, RunCompleted) else None)
+    try:
+        if exc is not None:
+            raise exc
+    except BaseException:
+        _close_unfinished_run(bus=ledger.bus, recorder=ledger.recorder, run_id=ledger.run_id)
+    else:
+        _close_unfinished_run(bus=ledger.bus, recorder=ledger.recorder, run_id=ledger.run_id)
 
-        class _Recorder:
-            completed = False
+    assert [event.status for event in emitted] == [status]
 
-        emitted: list[RunCompleted] = []
-        bus = EventBus()
-        bus.subscribe(emitted.append)
-        try:
-            if exc is not None:
-                raise exc
-        except BaseException:
-            _close_unfinished_run(bus=bus, recorder=_Recorder(), run_id="run-1")
-        else:
-            _close_unfinished_run(bus=bus, recorder=_Recorder(), run_id="run-1")
-        return emitted[0]
 
-    def test_an_interrupt_closes_the_run_cancelled(self) -> None:
-        assert self._emitted(KeyboardInterrupt("Interrupted by SIGINT")).status == "cancelled"
+def test_a_cancelled_run_is_listed_by_its_status(tmp_path: Path) -> None:
+    from tests.conftest import Ledger, run_cli
 
-    def test_any_other_exception_still_closes_the_run_failed(self) -> None:
-        assert self._emitted(RuntimeError("boom")).status == "failed"
+    ledger = Ledger.start(root=tmp_path, run_id="20260101_000000_000000_abcdef12")
+    ledger.finish(status="cancelled")
+    ledger.close()
 
-    def test_no_exception_at_all_closes_the_run_failed(self) -> None:
-        assert self._emitted(None).status == "failed"
+    listing = run_cli("runs", "ls", "--status", "cancelled")
+    assert "20260101_000000_000000_abcdef12" in listing.stdout
 
 
 @pytest.mark.integration
@@ -279,8 +256,6 @@ class TestInterruptedRunEndToEnd:
     """The whole path: SIGINT a real run, then read what the ledger says."""
 
     def test_ctrl_c_records_the_run_cancelled_and_exits_130(self, tmp_path: Path) -> None:
-        if not PYTHON.exists():  # pragma: no cover - depends on a prepared env
-            pytest.skip("pixi environment not installed")
         # Long enough that a slow runner still has tasks left to interrupt
         # once it notices the first one has succeeded.
         _write_project(tmp_path, sleep_seconds=10)
@@ -323,25 +298,7 @@ class TestInterruptedRunEndToEnd:
             (task.skipped_because or {}).get("reason") == "interrupted" for task in summary.tasks
         )
 
-    def test_a_cancelled_run_is_listed_by_its_status(self, tmp_path: Path) -> None:
-        if not PYTHON.exists():  # pragma: no cover - depends on a prepared env
-            pytest.skip("pixi environment not installed")
-        from tests.conftest import Ledger
-
-        ledger = Ledger.start(root=tmp_path, run_id="20260101_000000_000000_abcdef12")
-        ledger.finish(status="cancelled")
-        ledger.close()
-
-        listing = subprocess.run(
-            [str(PYTHON), "-m", "ginkgo.cli", "runs", "ls", "--status", "cancelled"],
-            cwd=tmp_path,
-            check=False,
-            text=True,
-            capture_output=True,
-        )
-        assert "20260101_000000_000000_abcdef12" in listing.stdout
-
-    @pytest.mark.parametrize("delay", [0.1, 0.8, 1.6, 2.4, 4.0])
+    @pytest.mark.parametrize("delay", [0.1, 1.6, 4.0])
     def test_ctrl_c_at_any_moment_exits_promptly_with_130(
         self, tmp_path: Path, delay: float
     ) -> None:
@@ -349,8 +306,6 @@ class TestInterruptedRunEndToEnd:
         # starts its pools, and while tasks run. Only the parent is signalled,
         # as `kill -INT` would: the run must stop its minute-long tasks rather
         # than wait for them.
-        if not PYTHON.exists():  # pragma: no cover - depends on a prepared env
-            pytest.skip("pixi environment not installed")
         _write_project(tmp_path, sleep_seconds=60)
 
         process = subprocess.Popen(

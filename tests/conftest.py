@@ -31,6 +31,76 @@ from ginkgo.runtime.events import (
 from tests.remote_fakes import RemoteRoundTrip, set_up_round_trip
 
 
+@dataclass(frozen=True)
+class CliResult:
+    """What one in-process ``ginkgo`` invocation returned and printed."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def run_cli(*args: str, cwd: Path | None = None) -> CliResult:
+    """Run ``ginkgo *args`` in this process and capture its streams.
+
+    Behaves like ``python -m ginkgo.cli`` without paying for a fresh
+    interpreter: the streams are not terminals, so output is laid out exactly as
+    it would be through a pipe. A test that needs the process boundary itself —
+    a signal, a fresh interpreter, the real plugin entry points — should spawn
+    one instead.
+
+    Parameters
+    ----------
+    *args : str
+        The command line after ``ginkgo``.
+    cwd : Path | None
+        Directory to run in; the current one when omitted.
+    """
+    import contextlib
+    import io
+    import os
+
+    from ginkgo.cli import main
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    previous = Path.cwd()
+    if cwd is not None:
+        os.chdir(cwd)
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                code = main(list(args))
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else int(exc.code is not None)
+    finally:
+        os.chdir(previous)
+    return CliResult(returncode=code, stdout=stdout.getvalue(), stderr=stderr.getvalue())
+
+
+@pytest.fixture(autouse=True, scope="session")
+def preloaded_worker_processes():
+    """Start the evaluator's worker processes from a preloaded fork server.
+
+    Each run opens a fresh process pool whose ``spawn`` workers re-import
+    ginkgo, numpy and pandas, which costs seconds per run. Forking them from a
+    server that imported those once keeps every worker a separate, clean
+    process with the test's working directory and ``sys.path``, at a fraction
+    of the cost.
+    """
+    import multiprocessing
+
+    import ginkgo.runtime.executors as executors
+
+    context = multiprocessing.get_context("forkserver")
+    context.set_forkserver_preload(
+        ["ginkgo.runtime.worker", "numpy", "pandas", "pytest", "tests.conftest"]
+    )
+    patch = pytest.MonkeyPatch()
+    patch.setattr(executors, "get_context", lambda method=None: context)
+    yield
+    patch.undo()
+
+
 @pytest.fixture(autouse=True)
 def isolate_working_directory(
     monkeypatch: pytest.MonkeyPatch,

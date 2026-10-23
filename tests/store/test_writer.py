@@ -59,25 +59,25 @@ def test_stored_event_lifts_the_filtered_columns_out_of_the_payload() -> None:
     assert '"task_name": "demo.task"' in row.payload
 
 
-def test_events_are_stored_in_the_order_they_were_emitted(tmp_path: Path) -> None:
+def test_many_events_land_whole_in_emission_order_and_quickly(tmp_path: Path) -> None:
+    """Ten thousand events span many batches of ``MAX_BATCH_EVENTS``."""
+    assert MAX_BATCH_EVENTS < 5_000
     writer = _writer(tmp_path)
+    started = time.perf_counter()
     _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
-    for index in range(20):
+    for index in range(10_000):
         _put(
             writer,
-            TaskNotice(
-                run_id="run-1",
-                task_id=f"task_{index:04d}",
-                task_name="demo",
-                message=str(index),
-            ),
+            TaskNotice(run_id="run-1", task_id="task_0000", task_name="demo", message=str(index)),
         )
     writer.close()
+    elapsed = time.perf_counter() - started
 
     rows = _events(tmp_path)
+    assert len(rows) == 10_001
     assert [seq for seq, _ in rows] == sorted(seq for seq, _ in rows)
     assert rows[0][1] == "run_started"
-    assert len(rows) == 21
+    assert elapsed < 5.0, f"10k events took {elapsed:.2f}s"
 
 
 def test_a_terminal_event_is_readable_before_the_writer_closes(tmp_path: Path) -> None:
@@ -109,35 +109,6 @@ def test_flush_makes_everything_queued_so_far_visible(tmp_path: Path) -> None:
     with open_store(tmp_path / "ginkgo.db", readonly=True) as store:
         assert store.query("SELECT run_id FROM runs")[0]["run_id"] == "run-1"
     writer.close()
-
-
-def test_a_batch_larger_than_the_cap_still_lands_whole(tmp_path: Path) -> None:
-    writer = _writer(tmp_path)
-    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
-    total = MAX_BATCH_EVENTS * 2 + 7
-    for index in range(total):
-        _put(
-            writer,
-            TaskNotice(run_id="run-1", task_id="task_0000", task_name="demo", message=str(index)),
-        )
-    writer.close()
-
-    assert len(_events(tmp_path)) == total + 1
-
-
-def test_ten_thousand_events_land_quickly(tmp_path: Path) -> None:
-    writer = _writer(tmp_path)
-    started = time.perf_counter()
-    for index in range(10_000):
-        _put(
-            writer,
-            TaskNotice(run_id="run-1", task_id="task_0000", task_name="demo", message=str(index)),
-        )
-    writer.close()
-    elapsed = time.perf_counter() - started
-
-    assert len(_events(tmp_path)) == 10_000
-    assert elapsed < 5.0, f"10k events took {elapsed:.2f}s"
 
 
 def test_the_run_records_what_writing_its_ledger_cost(tmp_path: Path) -> None:
@@ -173,18 +144,12 @@ def test_a_write_failure_fails_the_run_and_names_the_database(tmp_path: Path) ->
         writer.close()
 
 
-def test_close_is_idempotent(tmp_path: Path) -> None:
+def test_close_is_idempotent_and_putting_after_it_is_refused(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
     _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
     writer.close()
     writer.close()
 
     assert len(_events(tmp_path)) == 1
-
-
-def test_putting_after_close_is_refused(tmp_path: Path) -> None:
-    writer = _writer(tmp_path)
-    writer.close()
-
     with pytest.raises(StoreError, match="already closed"):
         _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))

@@ -31,41 +31,25 @@ def _consumed(node_id: int, path: str, kind: str | None = None) -> ConsumedPath:
 
 
 class TestPathIndex:
-    def test_exact_match(self) -> None:
+    @pytest.mark.parametrize(
+        ("produced", "consumed", "found"),
+        [
+            (("/w/results/a.txt", "file"), (2, "/w/results/a.txt", None), True),
+            (("/w/qc", "folder"), (2, "/w/qc/report.html", None), True),
+            (("/w/results/a.txt", "file"), (2, "/w/results", "folder"), True),
+            # An untyped string naming the directory is not a folder read.
+            (("/w/results/a.txt", "file"), (2, "/w/results", None), False),
+            (("/w/a.txt", "file"), (1, "/w/a.txt", None), False),  # never itself
+            (("/w/qc", "folder"), (2, "/w/qc2/x.txt", None), False),  # sibling prefix
+        ],
+    )
+    def test_producers_for(self, produced, consumed, found: bool) -> None:
         index = PathIndex()
-        index.add_produced([_produced(1, "/w/results/a.txt")])
+        index.add_produced([_produced(1, produced[0], kind=produced[1])])
 
-        found = index.producers_for(_consumed(2, "/w/results/a.txt"))
-
-        assert [entry.node_id for entry in found] == [1]
-
-    def test_consumer_inside_a_produced_folder(self) -> None:
-        index = PathIndex()
-        index.add_produced([_produced(1, "/w/qc", kind="folder")])
-
-        found = index.producers_for(_consumed(2, "/w/qc/report.html"))
-
-        assert [entry.node_id for entry in found] == [1]
-
-    def test_folder_consumer_containing_a_produced_file(self) -> None:
-        index = PathIndex()
-        index.add_produced([_produced(1, "/w/results/a.txt")])
-
-        assert index.producers_for(_consumed(2, "/w/results", kind="folder"))
-        # An untyped string naming the directory is not a folder read.
-        assert not index.producers_for(_consumed(2, "/w/results"))
-
-    def test_a_node_never_matches_itself(self) -> None:
-        index = PathIndex()
-        index.add_produced([_produced(1, "/w/a.txt")])
-
-        assert index.producers_for(_consumed(1, "/w/a.txt")) == []
-
-    def test_sibling_prefix_is_not_containment(self) -> None:
-        index = PathIndex()
-        index.add_produced([_produced(1, "/w/qc", kind="folder")])
-
-        assert index.producers_for(_consumed(2, "/w/qc2/x.txt")) == []
+        assert [e.node_id for e in index.producers_for(_consumed(*consumed))] == (
+            [1] if found else []
+        )
 
     def test_consumers_for_finds_earlier_consumers(self) -> None:
         index = PathIndex()

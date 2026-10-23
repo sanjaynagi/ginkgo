@@ -40,26 +40,11 @@ def _recorder(tmp_path: Path, *, run_id: str = "run-1") -> tuple[StoreRecorder, 
     return recorder, bus, layout.db
 
 
-def test_the_manifest_is_exported_when_the_run_completes(tmp_path: Path) -> None:
-    recorder, bus, db = _recorder(tmp_path)
-    bus.emit(RunStarted(run_id="run-1", workflow="flow.py"))
-    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", node_id=0, task_name="demo"))
-    bus.emit(TaskCompleted(run_id="run-1", task_id="task_0000", task_name="demo", attempt=1))
-    bus.emit(RunCompleted(run_id="run-1", status="success"))
-    recorder.close()
-
-    manifest = yaml.safe_load(
-        (tmp_path / ".ginkgo" / "runs" / "run-1" / "manifest.yaml").read_text(encoding="utf-8")
-    )
-    assert manifest["run_id"] == "run-1"
-    assert manifest["status"] == "succeeded"
-    assert [task["task_id"] for task in manifest["tasks"]] == ["task_0000"]
-
-    with open_store(db, readonly=True) as store:
-        assert store.query("SELECT snapshot_written FROM runs")[0]["snapshot_written"] == 1
+def _manifest(tmp_path: Path) -> dict:
+    return yaml.safe_load((tmp_path / ".ginkgo/runs/run-1/manifest.yaml").read_text())
 
 
-def test_the_manifest_is_what_inspect_run_prints(tmp_path: Path) -> None:
+def test_the_manifest_is_exported_on_completion_as_inspect_prints_it(tmp_path: Path) -> None:
     """One home for the run's serialised form: the file cannot drift from the CLI."""
     recorder, bus, db = _recorder(tmp_path)
     bus.emit(RunStarted(run_id="run-1", workflow="flow.py", params={"seed": 7}))
@@ -68,14 +53,14 @@ def test_the_manifest_is_what_inspect_run_prints(tmp_path: Path) -> None:
     bus.emit(RunCompleted(run_id="run-1", status="success"))
     recorder.close()
 
-    manifest = yaml.safe_load(
-        (tmp_path / ".ginkgo" / "runs" / "run-1" / "manifest.yaml").read_text(encoding="utf-8")
-    )
-    with open_store(db, readonly=True) as store:
-        summary = RunSummary.load(store, "run-1", runs_root=tmp_path / ".ginkgo" / "runs")
-
-    assert manifest == summary.to_payload()
+    manifest = _manifest(tmp_path)
+    assert manifest["status"] == "succeeded"
     assert manifest["params"] == {"seed": 7}
+    assert [task["task_id"] for task in manifest["tasks"]] == ["task_0000"]
+    with open_store(db, readonly=True) as store:
+        assert store.query("SELECT snapshot_written FROM runs")[0]["snapshot_written"] == 1
+        summary = RunSummary.load(store, "run-1", runs_root=tmp_path / ".ginkgo" / "runs")
+    assert manifest == summary.to_payload()
 
 
 def test_a_committed_handler_can_read_what_it_is_reacting_to(tmp_path: Path) -> None:
@@ -162,10 +147,7 @@ def test_a_notice_after_completion_is_kept_with_the_run(tmp_path: Path) -> None:
     bus.emit(RunNotice(run_id="run-1", message="Slack notification failed: refused"))
     recorder.close()
 
-    manifest = yaml.safe_load(
-        (tmp_path / ".ginkgo" / "runs" / "run-1" / "manifest.yaml").read_text(encoding="utf-8")
-    )
-    assert manifest["notices"] == ["Slack notification failed: refused"]
+    assert _manifest(tmp_path)["notices"] == ["Slack notification failed: refused"]
 
 
 def test_a_run_that_unwinds_without_completing_is_marked_failed(tmp_path: Path) -> None:

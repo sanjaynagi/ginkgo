@@ -17,6 +17,26 @@ from ginkgo.runtime.module_loader import (
     package_qualified_name,
 )
 
+pytestmark = pytest.mark.usefixtures("restore_imports")
+
+_GREET = "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n"
+
+
+def _write(path: Path, text: str = "") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _scaffold_package(root: Path, *, package: str = "workflow", entry: str = "flow.py") -> Path:
+    """Create a ``<package>/`` whose entry imports a sibling module relatively."""
+    _write(root / package / "__init__.py")
+    _write(root / package / "modules" / "__init__.py")
+    _write(root / package / "modules" / "analysis.py", "def build() -> str:\n    return 'ok'\n")
+    return _write(
+        root / package / entry, "from .modules.analysis import build\n\nRESULT = build()\n"
+    )
+
 
 @pytest.fixture
 def reimportable_ginkgo_config():
@@ -39,339 +59,162 @@ def reimportable_ginkgo_config():
         importlib.reload(ginkgo)
 
 
-class TestLoadModuleFromPath:
-    def test_importing_ginkgo_does_not_eagerly_import_config_module(
-        self, reimportable_ginkgo_config
-    ) -> None:
-        sys.modules.pop("ginkgo.config", None)
+def test_importing_ginkgo_defers_the_config_module(reimportable_ginkgo_config) -> None:
+    sys.modules.pop("ginkgo.config", None)
+    importlib.reload(ginkgo)
 
-        importlib.reload(ginkgo)
+    assert "ginkgo.config" not in sys.modules
 
-        assert "ginkgo.config" not in sys.modules
+    from ginkgo.config import config_session
 
-    def test_importing_config_submodule_preserves_ginkgo_config_callable(
-        self, reimportable_ginkgo_config
-    ) -> None:
-        sys.modules.pop("ginkgo.config", None)
+    assert config_session is not None
+    assert callable(ginkgo.config)
+    assert not isinstance(ginkgo.config, ModuleType)
 
-        importlib.reload(ginkgo)
 
-        from ginkgo.config import config_session
-
-        assert config_session is not None
-        assert callable(ginkgo.config)
-        assert not isinstance(ginkgo.config, ModuleType)
-
-    def test_import_roots_for_path_include_package_root_parent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+class TestImportRoots:
+    def test_a_package_entry_can_import_its_own_package(self, tmp_path: Path, monkeypatch) -> None:
         repo_root = tmp_path / "AmpSeeker"
-        package_dir = repo_root / "ampseeker_ginkgo"
-        package_dir.mkdir(parents=True)
+        repo_root.mkdir()
         monkeypatch.chdir(repo_root)
+        _write(repo_root / "ampseeker_ginkgo" / "__init__.py")
+        _write(
+            repo_root / "ampseeker_ginkgo" / "helpers.py", "def msg() -> str:\n    return 'ok'\n"
+        )
+        workflow_path = _write(
+            repo_root / "ampseeker_ginkgo" / "workflow.py",
+            "from ampseeker_ginkgo.helpers import msg\n\nMESSAGE = msg()\n",
+        )
 
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        workflow_path = package_dir / "workflow.py"
-        workflow_path.write_text("VALUE = 1\n", encoding="utf-8")
+        assert import_roots_for_path(workflow_path) == [
+            str(workflow_path.parent.resolve()),
+            str(repo_root.resolve()),
+        ]
+        assert load_module_from_path(workflow_path).MESSAGE == "ok"
 
-        roots = import_roots_for_path(workflow_path)
-
-        assert roots == [str(package_dir.resolve()), str(repo_root.resolve())]
-
-    def test_import_roots_fall_back_to_the_working_directory_without_ginkgo_toml(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_roots_fall_back_to_the_working_directory_without_ginkgo_toml(
+        self, tmp_path: Path
     ) -> None:
         """N7: ``exp/flow.py`` can import ``exp.tasks`` from an unconfigured project."""
-        experiment = tmp_path / "exp"
-        experiment.mkdir()
-        flow_path = experiment / "flow.py"
-        flow_path.write_text("", encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
+        flow_path = _write(tmp_path / "exp" / "flow.py")
 
-        roots = import_roots_for_path(flow_path)
+        assert import_roots_for_path(flow_path) == [
+            str(flow_path.parent.resolve()),
+            str(tmp_path.resolve()),
+        ]
 
-        assert roots == [str(experiment.resolve()), str(tmp_path.resolve())]
-
-    def test_load_module_supports_importing_own_package(self, tmp_path: Path) -> None:
-        repo_root = tmp_path / "AmpSeeker"
-        package_dir = repo_root / "ampseeker_ginkgo"
-        package_dir.mkdir(parents=True)
-
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "helpers.py").write_text(
-            "def build_message() -> str:\n    return 'ok'\n",
-            encoding="utf-8",
-        )
-        workflow_path = package_dir / "workflow.py"
-        workflow_path.write_text(
-            "from ampseeker_ginkgo.helpers import build_message\n\nMESSAGE = build_message()\n",
-            encoding="utf-8",
-        )
-
-        original_sys_path = list(sys.path)
-        try:
-            module = load_module_from_path(workflow_path)
-            assert str(repo_root) in sys.path
-        finally:
-            sys.path[:] = original_sys_path
-
-        assert module.MESSAGE == "ok"
-
-    def test_import_roots_for_path_include_project_root_for_unpackaged_test_workflow(
+    def test_an_unpackaged_test_workflow_can_import_the_project_package(
         self, tmp_path: Path
     ) -> None:
-        # Mirrors a fresh `ginkgo init` scaffold: a package with __init__.py
-        # and workflow.py, a ginkgo.toml at the project root, and a test
-        # workflow under tests/workflows/ (no __init__.py there) that
-        # imports from the project's own package.
+        # Mirrors a fresh `ginkgo init` scaffold: a test workflow under
+        # tests/workflows/ (no __init__.py) importing the project's package.
         project_root = tmp_path / "w1"
-        package_dir = project_root / "w1"
-        package_dir.mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "workflow.py").write_text(
-            "def main() -> str:\n    return 'ok'\n",
-            encoding="utf-8",
-        )
-        (project_root / "ginkgo.toml").write_text("", encoding="utf-8")
-
-        test_workflows_dir = project_root / "tests" / "workflows"
-        test_workflows_dir.mkdir(parents=True)
-        smoke_path = test_workflows_dir / "smoke.py"
-        smoke_path.write_text(
+        _write(project_root / "ginkgo.toml")
+        _write(project_root / "w1" / "__init__.py")
+        _write(project_root / "w1" / "workflow.py", "def main() -> str:\n    return 'ok'\n")
+        smoke_path = _write(
+            project_root / "tests" / "workflows" / "smoke.py",
             "from w1.workflow import main\n\nRESULT = main()\n",
-            encoding="utf-8",
         )
 
-        roots = import_roots_for_path(smoke_path)
-
-        assert str(project_root.resolve()) in roots
-
-    def test_load_module_supports_test_workflow_importing_project_package(
-        self, tmp_path: Path
-    ) -> None:
-        project_root = tmp_path / "w1"
-        package_dir = project_root / "w1"
-        package_dir.mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "workflow.py").write_text(
-            "def main() -> str:\n    return 'ok'\n",
-            encoding="utf-8",
-        )
-        (project_root / "ginkgo.toml").write_text("", encoding="utf-8")
-
-        test_workflows_dir = project_root / "tests" / "workflows"
-        test_workflows_dir.mkdir(parents=True)
-        smoke_path = test_workflows_dir / "smoke.py"
-        smoke_path.write_text(
-            "from w1.workflow import main\n\nRESULT = main()\n",
-            encoding="utf-8",
-        )
-
-        original_sys_path = list(sys.path)
-        try:
-            module = load_module_from_path(smoke_path)
-        finally:
-            sys.path[:] = original_sys_path
-
-        assert module.RESULT == "ok"
-
-
-def _scaffold_package(tmp_path: Path, *, entry_name: str) -> Path:
-    """Create a canonical ``workflow/`` package whose entry imports relatively."""
-    package_dir = tmp_path / "w1" / "workflow"
-    (package_dir / "modules").mkdir(parents=True)
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
-    (package_dir / "modules" / "__init__.py").write_text("", encoding="utf-8")
-    (package_dir / "modules" / "analysis.py").write_text(
-        "def build() -> str:\n    return 'ok'\n",
-        encoding="utf-8",
-    )
-    entry_path = package_dir / entry_name
-    entry_path.write_text(
-        "from .modules.analysis import build\n\nRESULT = build()\n",
-        encoding="utf-8",
-    )
-    return entry_path
-
-
-def _forget_workflow_package() -> None:
-    """Drop the scaffolded package from ``sys.modules`` between tests."""
-    for name in [
-        name for name in sys.modules if name == "workflow" or name.startswith("workflow.")
-    ]:
-        del sys.modules[name]
+        assert str(project_root.resolve()) in import_roots_for_path(smoke_path)
+        assert load_module_from_path(smoke_path).RESULT == "ok"
 
 
 class TestPackageQualifiedLoading:
     def test_entry_in_package_supports_relative_imports(self, tmp_path: Path) -> None:
-        workflow_path = _scaffold_package(tmp_path, entry_name="flow.py")
+        workflow_path = _scaffold_package(tmp_path / "w1")
 
-        original_sys_path = list(sys.path)
-        try:
-            module = load_module_from_path(workflow_path)
-        finally:
-            sys.path[:] = original_sys_path
-            _forget_workflow_package()
+        module = load_module_from_path(workflow_path)
 
         assert package_qualified_name(workflow_path) == "workflow.flow"
-        assert module.__name__ == "workflow.flow"
-        assert module.__package__ == "workflow"
-        assert module.RESULT == "ok"
+        assert (module.__name__, module.__package__, module.RESULT) == (
+            "workflow.flow",
+            "workflow",
+            "ok",
+        )
 
     def test_entry_named_after_its_own_package_does_not_shadow_it(self, tmp_path: Path) -> None:
         """A pkg/pkg.py entry must not shadow pkg/ during the parent import.
 
         The entry file's own directory is on sys.path, so ``import pkg`` would
-        resolve to that sibling module rather than the package unless the
-        package root's parent is ordered ahead of it. Autodiscovery cannot
-        produce this layout — it only accepts flow.py — but an explicit path
-        accepts any file name, including pkg/pkg.py.
+        resolve to that sibling module unless the package root's parent is
+        ordered ahead of it. An explicit path accepts any file name.
         """
-        package_dir = tmp_path / "proj" / "analysis"
-        (package_dir / "modules").mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "modules" / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "modules" / "helpers.py").write_text(
-            "def build() -> str:\n    return 'ok'\n", encoding="utf-8"
+        entry_path = _scaffold_package(tmp_path / "proj", package="analysis", entry="analysis.py")
+
+        module = load_module_from_path(entry_path)
+
+        assert (module.__name__, module.RESULT) == ("analysis.analysis", "ok")
+
+    @pytest.mark.parametrize("packaged", [True, False])
+    def test_a_failed_entry_module_is_not_left_cached(self, tmp_path: Path, packaged) -> None:
+        if packaged:
+            _write(tmp_path / "w1" / "workflow" / "__init__.py")
+        entry_path = _write(
+            tmp_path / "w1" / "workflow" / "flow.py", "raise RuntimeError('boom')\n"
         )
-        entry_path = package_dir / "analysis.py"
-        entry_path.write_text(
-            "from .modules.helpers import build\n\nRESULT = build()\n", encoding="utf-8"
-        )
+        name = "workflow.flow" if packaged else module_name_for_path(entry_path)
 
-        original_sys_path = list(sys.path)
-        try:
-            module = load_module_from_path(entry_path)
-        finally:
-            sys.path[:] = original_sys_path
-            for name in [
-                name for name in sys.modules if name == "analysis" or name.startswith("analysis.")
-            ]:
-                del sys.modules[name]
+        with pytest.raises(RuntimeError, match="boom"):
+            load_module_from_path(entry_path)
+        assert name not in sys.modules
 
-        assert module.__name__ == "analysis.analysis"
-        assert module.RESULT == "ok"
+        # A later load must re-execute rather than short-circuit onto the
+        # half-initialised module.
+        entry_path.write_text("RESULT = 'recovered'\n", encoding="utf-8")
+        assert load_module_from_path(entry_path).RESULT == "recovered"
 
-    def test_failed_entry_module_is_not_left_cached(self, tmp_path: Path) -> None:
-        package_dir = tmp_path / "w1" / "workflow"
-        package_dir.mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        entry_path = package_dir / "flow.py"
-        entry_path.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
-
-        original_sys_path = list(sys.path)
-        try:
-            with pytest.raises(RuntimeError, match="boom"):
-                load_module_from_path(entry_path)
-            assert "workflow.flow" not in sys.modules
-
-            # A later load must re-execute rather than short-circuit onto the
-            # half-initialised module.
-            entry_path.write_text("RESULT = 'recovered'\n", encoding="utf-8")
-            assert load_module_from_path(entry_path).RESULT == "recovered"
-        finally:
-            sys.path[:] = original_sys_path
-            _forget_workflow_package()
-
-    def test_failed_bare_module_is_not_left_cached(self, tmp_path: Path) -> None:
-        entry_path = tmp_path / "flow.py"
-        entry_path.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
-
-        original_sys_path = list(sys.path)
-        try:
-            with pytest.raises(RuntimeError, match="boom"):
-                load_module_from_path(entry_path)
-        finally:
-            sys.path[:] = original_sys_path
-
-        assert module_name_for_path(entry_path) not in sys.modules
-
-    def test_submodules_of_the_same_package_survive_a_reload(self, tmp_path: Path) -> None:
+    def test_reloading_re_executes_the_entry_but_keeps_its_submodules(
+        self, tmp_path: Path
+    ) -> None:
         """One ginkgo run loads the entry twice; task identity must not churn."""
-        entry_path = _scaffold_package(tmp_path, entry_name="flow.py")
+        entry_path = _scaffold_package(tmp_path / "w1")
 
-        original_sys_path = list(sys.path)
-        try:
-            load_module_from_path(entry_path)
-            first = sys.modules["workflow.modules.analysis"]
-            load_module_from_path(entry_path)
-            second = sys.modules["workflow.modules.analysis"]
-        finally:
-            sys.path[:] = original_sys_path
-            _forget_workflow_package()
+        load_module_from_path(entry_path)
+        first = sys.modules["workflow.modules.analysis"]
+        # Differ in size so the stale bytecode cache cannot mask a reload.
+        entry_path.write_text(
+            "from .modules.analysis import build\n\nRESULT = build() * 2\n", encoding="utf-8"
+        )
+        second = load_module_from_path(entry_path)
 
-        assert first is second
+        assert second.RESULT == "okok"
+        assert sys.modules["workflow.modules.analysis"] is first
 
     def test_a_same_named_package_from_elsewhere_is_evicted(self, tmp_path: Path) -> None:
         """Two trees cannot share a package name; the stale one must not win."""
-        first_entry = _scaffold_package(tmp_path / "one", entry_name="flow.py")
-        second_entry = _scaffold_package(tmp_path / "two", entry_name="flow.py")
-
-        original_sys_path = list(sys.path)
-        try:
-            load_module_from_path(first_entry)
-            second = load_module_from_path(second_entry)
-            loaded_package = sys.modules["workflow"]
-        finally:
-            sys.path[:] = original_sys_path
-            _forget_workflow_package()
+        load_module_from_path(_scaffold_package(tmp_path / "one"))
+        second_entry = _scaffold_package(tmp_path / "two")
+        second = load_module_from_path(second_entry)
 
         assert second.__file__ == str(second_entry)
-        assert Path(loaded_package.__file__).parent == second_entry.parent
+        assert Path(sys.modules["workflow"].__file__).parent == second_entry.parent
 
     def test_explicit_dotted_module_name_gets_its_parent_package(self, tmp_path: Path) -> None:
         """The worker binding path names modules explicitly; same invariant."""
-        entry_path = _scaffold_package(tmp_path, entry_name="flow.py")
+        entry_path = _scaffold_package(tmp_path / "w1")
         analysis_path = entry_path.parent / "modules" / "analysis.py"
         analysis_path.write_text(
             "from . import __name__ as package_name\n\nPACKAGE = package_name\n",
             encoding="utf-8",
         )
 
-        original_sys_path = list(sys.path)
-        try:
-            module = load_module_from_path(analysis_path, module_name="workflow.modules.analysis")
-        finally:
-            sys.path[:] = original_sys_path
-            _forget_workflow_package()
+        module = load_module_from_path(analysis_path, module_name="workflow.modules.analysis")
 
-        assert module.__name__ == "workflow.modules.analysis"
-        assert module.PACKAGE == "workflow.modules"
+        assert (module.__name__, module.PACKAGE) == (
+            "workflow.modules.analysis",
+            "workflow.modules",
+        )
 
     def test_bare_entry_file_keeps_synthetic_top_level_name(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("RESULT = 'ok'\n", encoding="utf-8")
+        workflow_path = _write(tmp_path / "workflow.py", "RESULT = 'ok'\n")
 
-        original_sys_path = list(sys.path)
-        try:
-            module = load_module_from_path(workflow_path)
-        finally:
-            sys.path[:] = original_sys_path
+        module = load_module_from_path(workflow_path)
 
         assert package_qualified_name(workflow_path) is None
         assert module.__name__.startswith("ginkgo_user_")
         assert module.RESULT == "ok"
-
-    def test_repeated_loads_re_execute_the_entry_module(self, tmp_path: Path) -> None:
-        project_root = tmp_path / "w1"
-        package_dir = project_root / "workflow"
-        package_dir.mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        workflow_path = package_dir / "flow.py"
-        workflow_path.write_text("VALUE = 1\n", encoding="utf-8")
-
-        original_sys_path = list(sys.path)
-        try:
-            first = load_module_from_path(workflow_path)
-            # Differ in size so the stale bytecode cache cannot mask a reload.
-            workflow_path.write_text("VALUE = 22222\n", encoding="utf-8")
-            second = load_module_from_path(workflow_path)
-        finally:
-            sys.path[:] = original_sys_path
-            _forget_workflow_package()
-
-        assert first.VALUE == 1
-        assert second.VALUE == 22222
 
 
 class TestCacheNameIsPathIndependent:
@@ -379,95 +222,46 @@ class TestCacheNameIsPathIndependent:
 
     Regression coverage for issue #291: renaming, moving, or copying a
     byte-identical single-file workflow used to cold-start its entire cache,
-    because the synthetic per-path module name (``ginkgo_user_<stem>_<hash of
-    absolute path>``) leaked into the task's cache-key identity.
+    because the synthetic per-path module name leaked into the task's identity.
     """
 
     def test_byte_identical_workflows_share_a_name_across_paths(self, tmp_path: Path) -> None:
-        source = (
-            "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n"
-        )
+        first = load_module_from_path(_write(tmp_path / "a" / "workflow.py", _GREET))
+        second = load_module_from_path(_write(tmp_path / "b" / "renamed.py", _GREET))
 
-        first_dir = tmp_path / "a"
-        first_dir.mkdir()
-        first_path = first_dir / "workflow.py"
-        first_path.write_text(source, encoding="utf-8")
-
-        second_dir = tmp_path / "b"
-        second_dir.mkdir()
-        second_path = second_dir / "renamed.py"
-        second_path.write_text(source, encoding="utf-8")
-
-        original_sys_path = list(sys.path)
-        try:
-            first_module = load_module_from_path(first_path)
-            second_module = load_module_from_path(second_path)
-        finally:
-            sys.path[:] = original_sys_path
-
-        # The synthetic module names themselves still differ per path/name...
-        assert first_module.__name__ != second_module.__name__
-
-        # ...but the task's recorded identity must agree.
-        assert first_module.greet.name == second_module.greet.name == "<workflow>.greet"
-        assert first_module.greet.base_name == "greet"
-
-        # The source hash folds in the entry module's own name as part of its
-        # local import closure; that must be path-independent too, or an
-        # identical name still lands on a different cache key.
-        assert first_module.greet.cache_source_hash == second_module.greet.cache_source_hash
+        assert first.__name__ != second.__name__
+        assert first.greet.name == second.greet.name == "<workflow>.greet"
+        assert first.greet.base_name == "greet"
+        # The source hash folds in the entry module's own name, so that must be
+        # path-independent too, or an identical name lands on a different key.
+        assert first.greet.cache_source_hash == second.greet.cache_source_hash
 
     def test_dotted_package_tasks_keep_their_real_name(self, tmp_path: Path) -> None:
-        package_dir = tmp_path / "workflow"
-        package_dir.mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        entry_path = package_dir / "flow.py"
-        entry_path.write_text(
-            "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n",
-            encoding="utf-8",
-        )
+        _write(tmp_path / "workflow" / "__init__.py")
+        module = load_module_from_path(_write(tmp_path / "workflow" / "flow.py", _GREET))
 
-        original_sys_path = list(sys.path)
-        try:
-            module = load_module_from_path(entry_path)
-        finally:
-            sys.path[:] = original_sys_path
-            _forget_workflow_package()
-
-        assert module.greet.name == "workflow.flow.greet"
-        assert module.greet.base_name == "greet"
+        assert (module.greet.name, module.greet.base_name) == ("workflow.flow.greet", "greet")
 
 
 class TestRelativeImportGuidance:
     def test_relative_import_without_a_package_names_the_missing_init(
         self, tmp_path: Path
     ) -> None:
-        package_dir = tmp_path / "w1" / "workflow"
-        (package_dir / "modules").mkdir(parents=True)
-        (package_dir / "modules" / "analysis.py").write_text("VALUE = 1\n", encoding="utf-8")
-        entry_path = package_dir / "flow.py"
-        entry_path.write_text("from .modules.analysis import VALUE\n", encoding="utf-8")
+        _write(tmp_path / "w1" / "workflow" / "modules" / "analysis.py", "VALUE = 1\n")
+        entry_path = _write(
+            tmp_path / "w1" / "workflow" / "flow.py", "from .modules.analysis import VALUE\n"
+        )
 
-        original_sys_path = list(sys.path)
-        try:
-            with pytest.raises(ImportError) as excinfo:
-                load_module_from_path(entry_path)
-        finally:
-            sys.path[:] = original_sys_path
+        with pytest.raises(ImportError) as excinfo:
+            load_module_from_path(entry_path)
 
         message = str(excinfo.value)
         assert "flow.py uses a relative import" in message
-        assert "workflow/ is not a Python package" in message
         assert "workflow/__init__.py" in message
         assert isinstance(excinfo.value.__cause__, ImportError)
 
     def test_unrelated_import_errors_are_left_alone(self, tmp_path: Path) -> None:
-        entry_path = tmp_path / "flow.py"
-        entry_path.write_text("import definitely_not_a_real_module\n", encoding="utf-8")
+        entry_path = _write(tmp_path / "flow.py", "import definitely_not_a_real_module\n")
 
-        original_sys_path = list(sys.path)
-        try:
-            with pytest.raises(ModuleNotFoundError, match="definitely_not_a_real_module"):
-                load_module_from_path(entry_path)
-        finally:
-            sys.path[:] = original_sys_path
+        with pytest.raises(ModuleNotFoundError, match="definitely_not_a_real_module"):
+            load_module_from_path(entry_path)

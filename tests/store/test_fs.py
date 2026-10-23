@@ -7,79 +7,44 @@ from pathlib import Path
 from ginkgo.store import fs
 
 
-class TestClassification:
-    """Which mounts SQLite is warned about."""
-
-    def test_a_temporary_directory_is_not_a_network_filesystem(self, tmp_path):
-        assert fs.is_network_filesystem(tmp_path / "ginkgo.db") is None
-
-    def test_a_path_that_does_not_exist_yet_is_still_classified(self, tmp_path):
-        """The database is checked before it is created."""
-        assert fs.is_network_filesystem(tmp_path / "missing" / "ginkgo.db") is None
-
-    def test_an_nfs_mount_is_reported_with_its_type(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(fs, "_mount_table", lambda: [("/", "apfs"), (str(tmp_path), "nfs4")])
-
-        assert fs.is_network_filesystem(tmp_path / "ginkgo.db") == "nfs4"
-
-    def test_the_longest_matching_mount_point_wins(self, tmp_path, monkeypatch):
-        nested = tmp_path / "scratch"
-        nested.mkdir()
-        monkeypatch.setattr(
-            fs, "_mount_table", lambda: [(str(tmp_path), "nfs4"), (str(nested), "ext4")]
-        )
-
-        assert fs.is_network_filesystem(nested / "ginkgo.db") is None
+def test_a_local_path_is_not_a_network_filesystem_even_before_it_exists(tmp_path):
+    assert fs.is_network_filesystem(tmp_path / "ginkgo.db") is None
+    assert fs.is_network_filesystem(tmp_path / "missing" / "ginkgo.db") is None
 
 
-class TestMountTableParsing:
-    """Both mount-table formats ginkgo reads."""
+def test_the_longest_matching_mount_point_classifies_the_path(tmp_path, monkeypatch):
+    nested = tmp_path / "scratch"
+    nested.mkdir()
+    monkeypatch.setattr(
+        fs, "_mount_table", lambda: [("/", "apfs"), (str(tmp_path), "nfs4"), (str(nested), "ext4")]
+    )
 
-    def test_proc_mounts(self):
-        text = "server:/vol /mnt/data nfs4 rw,relatime 0 0\n/dev/sda1 / ext4 rw 0 0\n"
-
-        assert fs._parse_proc_mounts(text) == [("/mnt/data", "nfs4"), ("/", "ext4")]
-
-    def test_bsd_mount_output(self):
-        text = (
-            "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n"
-            "//user@host/share on /Volumes/share (smbfs, nodev, nosuid, mounted by user)\n"
-        )
-
-        assert fs._parse_mount_output(text) == [
-            ("/", "apfs"),
-            ("/Volumes/share", "smbfs"),
-        ]
+    assert fs.is_network_filesystem(tmp_path / "ginkgo.db") == "nfs4"
+    assert fs.is_network_filesystem(nested / "ginkgo.db") is None
 
 
-class TestWarning:
-    """The warning is one line, and only ever printed once."""
+def test_both_mount_table_formats_are_parsed():
+    proc = "server:/vol /mnt/data nfs4 rw,relatime 0 0\n/dev/sda1 / ext4 rw 0 0\n"
+    bsd = (
+        "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n"
+        "//user@host/share on /Volumes/share (smbfs, nodev, nosuid, mounted by user)\n"
+    )
 
-    def test_nothing_is_printed_for_a_local_path(self, tmp_path, capsys, monkeypatch):
-        monkeypatch.setattr(fs, "_warned", False)
+    assert fs._parse_proc_mounts(proc) == [("/mnt/data", "nfs4"), ("/", "ext4")]
+    assert fs._parse_mount_output(bsd) == [("/", "apfs"), ("/Volumes/share", "smbfs")]
 
-        fs.warn_if_network_filesystem(tmp_path / "ginkgo.db")
 
-        assert capsys.readouterr().err == ""
+def test_a_network_path_warns_once_naming_the_database(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(fs, "_warned", False)
+    fs.warn_if_network_filesystem(tmp_path / "ginkgo.db")
+    assert capsys.readouterr().err == ""
 
-    def test_a_network_path_warns_once_per_process(self, tmp_path, capsys, monkeypatch):
-        monkeypatch.setattr(fs, "_warned", False)
-        monkeypatch.setattr(fs, "is_network_filesystem", lambda path: "lustre")
+    monkeypatch.setattr(fs, "_warned", False)
+    monkeypatch.setattr(fs, "is_network_filesystem", lambda path: "lustre")
+    fs.warn_if_network_filesystem(Path("/mnt/shared/ledger.db"))
+    fs.warn_if_network_filesystem(Path("/mnt/shared/ledger.db"))
 
-        fs.warn_if_network_filesystem(Path("/scratch/ledger/ginkgo.db"))
-        fs.warn_if_network_filesystem(Path("/scratch/ledger/ginkgo.db"))
-
-        # Rich wraps the line to the console width; the warning is one message.
-        assert " ".join(capsys.readouterr().err.split()) == (
-            "⚠ /scratch/ledger/ginkgo.db is on lustre; SQLite locking may be "
-            "unreliable. Set GINKGO_DB to a local path."
-        )
-
-    def test_the_warning_names_the_relocated_database(self, tmp_path, capsys, monkeypatch):
-        """GINKGO_DB is exactly the case where naming ``.ginkgo`` would mislead."""
-        monkeypatch.setattr(fs, "_warned", False)
-        monkeypatch.setattr(fs, "is_network_filesystem", lambda path: "nfs4")
-
-        fs.warn_if_network_filesystem(Path("/mnt/shared/ledger.db"))
-
-        assert "/mnt/shared/ledger.db is on nfs4" in " ".join(capsys.readouterr().err.split())
+    err = " ".join(capsys.readouterr().err.split())
+    assert err.count("SQLite locking may be unreliable") == 1
+    assert "/mnt/shared/ledger.db is on lustre" in err
+    assert "Set GINKGO_DB to a local path" in err

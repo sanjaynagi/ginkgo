@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import importlib.util
 import ast
-from collections import Counter
+import importlib.util
+import json
 import re
 import shutil
 import subprocess
 import sys
 import tomllib
+from collections import Counter
 from datetime import datetime, timedelta, timezone
-import json
 from pathlib import Path
-from typing import Any
 
 import pytest
-import yaml
 from rich.console import Console
 
 import ginkgo
@@ -31,873 +29,467 @@ from ginkgo.cli.renderers.common import (
 from ginkgo.envs.interpreter import source_import_roots
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
-
+from tests.cli.conftest import (
+    SIMPLE_FLOW,
+    manifest_of,
+    run_dir_of,
+    run_ok,
+    unwrapped,
+    write,
+)
+from tests.conftest import run_cli
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PYTHON = Path(sys.executable)
-
-
-def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", *args],
-        cwd=cwd,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-
-
-def _unwrapped(output: str) -> str:
-    """Collapse Rich's console wrapping so a multi-word phrase reads contiguously.
-
-    Rich wraps at the console width, and where the wrap lands depends on
-    variable-length content in the same paragraph (a tmpdir path, a task label).
-    Assert against this rather than the raw stream whenever the phrase under test
-    is not guaranteed to start its own line.
-    """
-    return " ".join(output.split())
-
-
-def _manifest(run_dir: Path) -> dict[str, Any]:
-    """Read a run's exported manifest, keying its tasks by task id.
-
-    The manifest is what ``ginkgo runs show --json`` prints, written as YAML; the
-    only reshaping here is the list of tasks into a mapping, which is how these
-    tests ask about one of them.
-    """
-    data = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
-    return {**data, "tasks": {task["task_id"]: task for task in data["tasks"]}}
-
-
-def _extract_run_dir(output: str) -> Path:
-    match = re.search(r"Run directory: (.+)", output)
-    if match is None:
-        raise AssertionError(f"Run directory not found in output:\n{output}")
-    return Path(match.group(1).strip())
+RUN_HEADER = r"🌿 ginkgo run {} \([0-9]{{8}}_[0-9]{{6}}_[0-9]{{6}}_[0-9a-f]{{8}}\)"
+CACHE = Path(".ginkgo") / "cache"
 
 
 def _seed_cache_entry(
-    *,
-    cache_root: Path,
     name: str,
+    *,
     age_days: int,
     function: str = "demo.x",
     payload: str = "{}",
     last_hit_days: int | None = None,
 ) -> Path:
     """Create a cache entry aged ``age_days`` days — bytes and row — for prune tests."""
-    entry = cache_root / name
+    entry = CACHE / name
     entry.mkdir(parents=True)
     (entry / "output.json").write_text(payload, encoding="utf-8")
-
-    created_at = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
-    with CacheIndex.open(path=WorkspaceLayout.sibling_of(cache_root).db) as index:
+    now = datetime.now(timezone.utc)
+    with CacheIndex.open(path=WorkspaceLayout.sibling_of(CACHE).db) as index:
         index.record_entry(
             cache_key=name,
-            meta={"function": function, "created_at": created_at},
+            meta={
+                "function": function,
+                "created_at": (now - timedelta(days=age_days)).isoformat(),
+            },
             artifact_ids={},
             size_bytes=len(payload.encode("utf-8")),
             run_id=None,
         )
         if last_hit_days is not None:
-            hit_at = (datetime.now(timezone.utc) - timedelta(days=last_hit_days)).isoformat()
-            index.record_hit(name, at=hit_at)
+            index.record_hit(name, at=(now - timedelta(days=last_hit_days)).isoformat())
     return entry
 
 
-def _run_trivial_workflow_cache_key(cwd: Path) -> str:
-    """Run a one-task workflow and return that task's cache key."""
-    Path(cwd / "workflow.py").write_text(
-        "from pathlib import Path\n"
-        "from ginkgo import flow, task\n\n"
-        "@task()\n"
-        "def write_message(output_path: str) -> str:\n"
-        "    Path(output_path).write_text('hi', encoding='utf-8')\n"
-        "    return output_path\n\n"
-        "@flow\n"
-        "def main():\n"
-        "    return write_message(output_path='result.txt')\n",
-        encoding="utf-8",
-    )
-    result = _run_cli("run", "workflow.py", cwd=cwd)
-    assert result.returncode == 0, result.stderr
-    run_dir = _extract_run_dir(result.stdout)
-    manifest = _manifest(run_dir)
-    return next(iter(manifest["tasks"].values()))["cache_key"]
+def _task(run_dir: Path) -> dict:
+    """Return the only task of a run's manifest."""
+    return next(iter(manifest_of(run_dir)["tasks"].values()))
 
 
 def test_version_flag_reports_pyproject_version() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    expected = pyproject["project"]["version"]
-    result = _run_cli("--version", cwd=REPO_ROOT)
-    assert result.returncode == 0
-    assert result.stdout.strip() == f"ginkgo {expected}"
+    result = run_ok("--version")
+    assert result.stdout.strip() == f"ginkgo {pyproject['project']['version']}"
 
 
 def test_init_help_describes_every_flag() -> None:
-    result = _run_cli("init", "--help", cwd=REPO_ROOT)
-
-    assert result.returncode == 0
-    help_text = _unwrapped(result.stdout)
+    help_text = unwrapped(run_ok("init", "--help").stdout)
     assert "--no-skills Write the project scaffold without the agent skills." in help_text
     assert "--skills-only Write only the agent skills, not the project scaffold." in help_text
     assert "--force Overwrite scaffold files that already exist." in help_text
 
 
 @pytest.mark.parametrize(
-    ("command", "subcommands"),
+    ("args", "subcommands"),
     [
-        ("cache", "{ls,stats,clear,explain,prune}"),
-        ("inspect", "{workflow}"),
-        ("runs", "{ls,show}"),
-        ("export", "{events,manifest}"),
-        ("secrets", "{list,validate}"),
+        (("cache",), "{ls,stats,clear,explain,prune}"),
+        (("inspect",), "{workflow}"),
+        (("runs",), "{ls,show}"),
+        (("export",), "{events,manifest}"),
+        (("secrets",), "{list,validate}"),
+        ((), ""),
     ],
 )
-def test_command_group_without_subcommand_shows_help(command: str, subcommands: str) -> None:
-    result = _run_cli(command, cwd=REPO_ROOT)
-
+def test_command_group_without_subcommand_shows_help(args: tuple, subcommands: str) -> None:
+    result = run_cli(*args)
     assert result.returncode == 2
-    assert f"usage: ginkgo {command}" in result.stderr
+    assert f"usage: ginkgo {' '.join(args)}".strip() in result.stderr
     assert subcommands in result.stderr
-    assert "the following arguments are required" not in result.stderr
-
-
-def test_bare_ginkgo_shows_help() -> None:
-    """The root parser is a group too, so naming no command shows its help."""
-    result = _run_cli(cwd=REPO_ROOT)
-
-    assert result.returncode == 2
-    assert "usage: ginkgo" in result.stderr
     assert "the following arguments are required" not in result.stderr
 
 
 def test_missing_positional_keeps_its_precise_error() -> None:
     """Only a missing subcommand becomes help; other missing arguments do not."""
-    result = _run_cli("why", cwd=REPO_ROOT)
-
+    result = run_cli("why")
     assert result.returncode == 2
     assert "the following arguments are required" in result.stderr
 
 
 class TestCliRunAndCache:
     def test_run_writes_manifest_params_and_cache_metadata(self) -> None:
-        Path("ginkgo.toml").write_text('message = "default"\nextra = "base"\n', encoding="utf-8")
-        Path("override-1.toml").write_text('message = "first"\n', encoding="utf-8")
-        Path("override-2.toml").write_text(
-            'message = "second"\nextra = "override"\n', encoding="utf-8"
-        )
-        Path("workflow.py").write_text(
-            """
-import ginkgo
-from pathlib import Path
-from ginkgo import flow, task, untracked
-
-cfg = ginkgo.config("ginkgo.toml")
-
-@task()
-def write_message(message: str, output_path: untracked) -> str:
-    Path(output_path).write_text(message, encoding="utf-8")
-    return output_path
-
-@flow
-def main():
-    return write_message(message=cfg["message"], output_path="result.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        first = _run_cli(
-            "run",
+        write("ginkgo.toml", 'message = "default"\nextra = "base"\n')
+        write("override-1.toml", 'message = "first"\n')
+        write("override-2.toml", 'message = "second"\nextra = "override"\n')
+        write(
             "workflow.py",
-            "--config",
-            "override-1.toml",
-            "--config",
-            "override-2.toml",
-            cwd=Path.cwd(),
+            """
+            import ginkgo
+            from pathlib import Path
+            from ginkgo import flow, task, untracked
+
+            cfg = ginkgo.config("ginkgo.toml")
+
+            @task()
+            def write_message(message: str, output_path: untracked) -> str:
+                Path(output_path).write_text(message, encoding="utf-8")
+                return output_path
+
+            @flow
+            def main():
+                return write_message(message=cfg["message"], output_path="result.txt")
+            """,
         )
-        assert first.returncode == 0, first.stderr
-        assert re.search(
-            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
-            first.stdout,
-        )
+        args = ("run", "workflow.py", "--config", "override-1.toml", "--config", "override-2.toml")
+
+        first = run_ok(*args)
+        assert re.search(RUN_HEADER.format(r"workflow\.py"), first.stdout)
         # Load-bearing content only — decorative spinner/clock lines are not pinned.
         assert re.search(r"Running locally on \d+ Cores", first.stdout)
-        assert "write_message" in first.stdout
-        assert "succeeded" in first.stdout
-        assert "1/1 complete" in first.stdout
-        assert "Run Summary" not in first.stdout
-        assert '{"status":' not in first.stdout
-
-        first_run_dir = _extract_run_dir(first.stdout)
-        first_manifest = _manifest(first_run_dir)
+        assert "write_message" in first.stdout and "1/1 complete" in first.stdout
+        assert "Run Summary" not in first.stdout and '{"status":' not in first.stdout
+        first_manifest = manifest_of(run_dir_of(first.stdout))
         first_task = next(iter(first_manifest["tasks"].values()))
-
         assert Path("result.txt").read_text(encoding="utf-8") == "second"
         assert first_manifest["status"] == "succeeded"
-        assert first_task["status"] == "succeeded"
-        assert first_task["cached"] is False
+        assert (first_task["status"], first_task["cached"]) == ("succeeded", False)
         assert first_task["inputs"]["message"] == "second"
         assert first_manifest["params"] == {"extra": "override", "message": "second"}
 
-        second = _run_cli(
-            "run",
-            "workflow.py",
-            "--config",
-            "override-1.toml",
-            "--config",
-            "override-2.toml",
-            cwd=Path.cwd(),
-        )
-        assert second.returncode == 0, second.stderr
+        second = run_ok(*args)
+        second_task = _task(run_dir_of(second.stdout))
+        assert "cached" in second.stdout and "1/1 complete" in second.stdout
+        assert (second_task["status"], second_task["cached"]) == ("cached", True)
 
-        second_run_dir = _extract_run_dir(second.stdout)
-        second_manifest = _manifest(second_run_dir)
-        second_task = next(iter(second_manifest["tasks"].values()))
+    def test_cache_ls_and_clear_one_entry(self) -> None:
+        write("workflow.py", SIMPLE_FLOW)
+        cache_key = _task(run_dir_of(run_ok("run", "workflow.py").stdout))["cache_key"]
 
-        assert "cached" in second.stdout
-        assert "1/1 complete" in second.stdout
-        assert second_task["status"] == "cached"
-        assert second_task["cached"] is True
+        listed = run_ok("cache", "ls").stdout
+        for column in ("Cache Key", "Task", "Size", "Age"):
+            assert column in listed
+        assert cache_key in listed.replace("\n", "")
 
-    def test_cache_ls_lists_entry(self) -> None:
-        cache_key = _run_trivial_workflow_cache_key(Path.cwd())
-
-        listed = _run_cli("cache", "ls", cwd=Path.cwd())
-        assert listed.returncode == 0
-        assert "Cache Key" in listed.stdout
-        assert "Task" in listed.stdout
-        assert "Size" in listed.stdout
-        assert "Age" in listed.stdout
-        assert cache_key in listed.stdout.replace("\n", "")
-
-    def test_cache_ls_names_each_fan_out_branch_by_its_label(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def greet(name: str) -> str:
-    return name
-
-@flow
-def main():
-    return greet().map(name=["alpha", "beta"])
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert run.returncode == 0, run.stderr
-
-        listed = _run_cli("cache", "ls", cwd=Path.cwd())
-        assert listed.returncode == 0, listed.stderr
-        assert "Label" in listed.stdout
-        assert sorted(re.findall(r"greet\[\w+\]", listed.stdout)) == [
-            "greet[alpha]",
-            "greet[beta]",
-        ]
-
-    def test_cache_clear_removes_entry(self) -> None:
-        cache_key = _run_trivial_workflow_cache_key(Path.cwd())
-
-        cleared = _run_cli("cache", "clear", cache_key, cwd=Path.cwd())
-        assert cleared.returncode == 0
-        assert f"Removed cache entry {cache_key}" in cleared.stdout
-        assert not (Path(".ginkgo") / "cache" / cache_key).exists()
+        assert f"Removed cache entry {cache_key}" in run_ok("cache", "clear", cache_key).stdout
+        assert not (CACHE / cache_key).exists()
 
     def test_cache_ls_empty_state_is_styled(self) -> None:
-        result = _run_cli("cache", "ls", cwd=Path.cwd())
-        assert result.returncode == 0
+        result = run_ok("cache", "ls")
         assert "🌿 ginkgo cache ls" in result.stdout
         assert "No cache entries found." in result.stdout
 
     def test_run_manifest_records_retry_attempts(self) -> None:
-        Path("retry_workflow.py").write_text(
+        write(
+            "retry_workflow.py",
             """
-from pathlib import Path
-from ginkgo import flow, task
+            from pathlib import Path
+            from ginkgo import flow, task
 
-@task(retries=2)
-def flaky(marker_path: str) -> str:
-    marker = Path(marker_path)
-    failures = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
-    if failures < 1:
-        marker.write_text(str(failures + 1), encoding="utf-8")
-        raise RuntimeError("transient failure")
-    return "ok"
+            @task(retries=2)
+            def flaky(marker_path: str) -> str:
+                marker = Path(marker_path)
+                if not marker.exists():
+                    marker.write_text("1", encoding="utf-8")
+                    raise RuntimeError("transient failure")
+                return "ok"
 
-@flow
-def main():
-    return flaky(marker_path="retry.marker")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return flaky(marker_path="retry.marker")
+            """,
         )
-
-        result = _run_cli("run", "retry_workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        run_dir = _extract_run_dir(result.stdout)
-        manifest = _manifest(run_dir)
-        task = next(iter(manifest["tasks"].values()))
-
-        assert task["status"] == "succeeded"
-        assert task["max_attempts"] == 3
-        assert task["attempts"] == 2
+        task = _task(run_dir_of(run_ok("run", "retry_workflow.py").stdout))
+        assert (task["status"], task["max_attempts"], task["attempts"]) == ("succeeded", 3, 2)
 
     @pytest.mark.parametrize(
-        ("dry_run", "old_survives"),
-        [(True, True), (False, False)],
-        ids=["dry-run-keeps-all", "real-removes-old"],
+        ("args", "removed", "said"),
+        [
+            (("--older-than", "30d", "--dry-run"), set(), "would be removed"),
+            (("--older-than", "30d"), {"e100", "e60"}, "Removed"),
+            (("--max-entries", "2"), {"e100", "e60"}, "Removed"),
+            (("--max-size", "2KiB"), {"e100", "e60"}, "Removed"),
+        ],
     )
-    def test_cache_prune_older_than(self, dry_run: bool, old_survives: bool) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        old_entry = _seed_cache_entry(
-            cache_root=cache_root, name="old123", age_days=100, function="demo.old"
-        )
-        fresh_entry = _seed_cache_entry(
-            cache_root=cache_root, name="fresh456", age_days=5, function="demo.fresh"
-        )
-
-        args = ["cache", "prune", "--older-than", "30d"]
-        if dry_run:
-            args.append("--dry-run")
-        result = _run_cli(*args, cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo cache prune" in result.stdout
-        assert fresh_entry.exists()  # fresh entry always survives
-        assert old_entry.exists() is old_survives
-        if dry_run:
-            assert "would be removed" in result.stdout
-            assert "old123" in result.stdout
-        else:
-            assert "Removed" in result.stdout
+    def test_cache_prune_removes_the_oldest_entries(
+        self, args: tuple, removed: set, said: str
+    ) -> None:
+        entries = {
+            f"e{age}": _seed_cache_entry(f"e{age}", age_days=age, payload="x" * 1024)
+            for age in (100, 60, 20, 5)
+        }
+        result = run_ok("cache", "prune", *args)
+        assert "🌿 ginkgo cache prune" in result.stdout and said in result.stdout
+        assert {name for name, path in entries.items() if not path.exists()} == removed
 
     def test_cache_prune_least_recently_hit_gives_up_the_unused_first(self) -> None:
         """Age is not use: an old entry that keeps hitting outlives a young idle one."""
-        cache_root = Path(".ginkgo") / "cache"
-        old_but_used = _seed_cache_entry(
-            cache_root=cache_root, name="used", age_days=100, last_hit_days=1
-        )
-        young_but_idle = _seed_cache_entry(cache_root=cache_root, name="idle", age_days=5)
-
-        result = _run_cli(
-            "cache", "prune", "--max-entries", "1", "--least-recently-hit", cwd=Path.cwd()
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert old_but_used.exists()
-        assert not young_but_idle.exists()
+        old_but_used = _seed_cache_entry("used", age_days=100, last_hit_days=1)
+        young_but_idle = _seed_cache_entry("idle", age_days=5)
+        run_ok("cache", "prune", "--max-entries", "1", "--least-recently-hit")
+        assert old_but_used.exists() and not young_but_idle.exists()
 
     def test_cache_stats_counts_entries_and_bytes(self) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        _seed_cache_entry(cache_root=cache_root, name="a", age_days=1, payload="x" * 100)
-        _seed_cache_entry(
-            cache_root=cache_root, name="b", age_days=2, payload="y" * 50, last_hit_days=1
-        )
-
-        result = _run_cli("cache", "stats", "--json", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        stats = json.loads(result.stdout)
-        assert stats["entries"] == 2
-        assert stats["total_bytes"] == 150
-        assert stats["never_hit"] == 1
-        assert stats["never_hit_bytes"] == 100
+        _seed_cache_entry("a", age_days=1, payload="x" * 100)
+        _seed_cache_entry("b", age_days=2, payload="y" * 50, last_hit_days=1)
+        stats = json.loads(run_ok("cache", "stats", "--json").stdout)
+        assert (stats["entries"], stats["total_bytes"]) == (2, 150)
+        assert (stats["never_hit"], stats["never_hit_bytes"]) == (1, 100)
         assert stats["hit_histogram"] == {"0": 1, "1": 1}
         assert stats["top_functions"][0]["entries"] == 2
 
-    def _run_artifact_workflow(self) -> None:
-        """Run a workflow whose one task writes a 1000-byte file and a folder."""
-        Path("workflow.py").write_text(
+    def test_cache_sizes_count_and_prune_frees_artifact_bytes(self) -> None:
+        write(
+            "workflow.py",
             """
-from pathlib import Path
-from ginkgo import Out, file, flow, folder, task
+            from pathlib import Path
+            from ginkgo import Out, file, flow, folder, task
 
-@task()
-def make(dest: Out[file], tree: Out[folder]) -> tuple[file, folder]:
-    Path(dest).write_text("x" * 1000, encoding="utf-8")
-    Path(tree).mkdir(exist_ok=True)
-    Path(tree, "member.txt").write_text("y" * 100, encoding="utf-8")
-    return dest, tree
+            @task()
+            def make(dest: Out[file], tree: Out[folder]) -> tuple[file, folder]:
+                Path(dest).write_text("x" * 1000, encoding="utf-8")
+                Path(tree).mkdir(exist_ok=True)
+                Path(tree, "member.txt").write_text("y" * 100, encoding="utf-8")
+                return dest, tree
 
-@flow
-def main():
-    return make(dest="out.txt", tree="tree")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return make(dest="out.txt", tree="tree")
+            """,
         )
-        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert run.returncode == 0, run.stderr
-
-    def test_cache_sizes_count_the_artifacts_an_entry_names(self) -> None:
-        self._run_artifact_workflow()
-
-        stats = json.loads(_run_cli("cache", "stats", "--json", cwd=Path.cwd()).stdout)
-        (entry,) = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
-        text = _run_cli("cache", "stats", cwd=Path.cwd())
-
-        assert stats["artifact_bytes"] == 1100
-        assert entry["artifact_bytes"] == 1100
+        run_ok("run", "workflow.py")
+        stats = json.loads(run_ok("cache", "stats", "--json").stdout)
+        (entry,) = json.loads(run_ok("cache", "ls", "--json").stdout)
+        assert stats["artifact_bytes"] == entry["artifact_bytes"] == 1100
         assert entry["size_bytes"] == entry["output_bytes"] + 1100
-        assert stats["total_bytes"] == entry["size_bytes"]
-        assert stats["top_functions"][0]["bytes"] == entry["size_bytes"]
-        assert "Artifact store: 1.1 KiB" in text.stdout
+        assert stats["total_bytes"] == stats["top_functions"][0]["bytes"] == entry["size_bytes"]
+        assert "Artifact store: 1.1 KiB" in run_ok("cache", "stats").stdout
 
-    def test_cache_prune_max_size_counts_and_frees_artifact_bytes(self) -> None:
-        self._run_artifact_workflow()
+        assert "1 entries" in run_ok("cache", "prune", "--max-size", "1KB", "--dry-run").stdout
+        assert "Removed 1 cache entry" in run_ok("cache", "prune", "--max-size", "1KB").stdout
+        assert list((Path(".ginkgo") / "artifacts" / "blobs").iterdir()) == []
+        run_ok("db", "check")
 
-        preview = _run_cli("cache", "prune", "--max-size", "1KB", "--dry-run", cwd=Path.cwd())
-        assert "1 entries" in preview.stdout
-
-        result = _run_cli("cache", "prune", "--max-size", "1KB", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Removed 1 cache entry" in result.stdout
-        blobs = Path(".ginkgo") / "artifacts" / "blobs"
-        assert list(blobs.iterdir()) == []
-        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
-
-    def _run_large_value_workflow(self) -> None:
-        """Run a workflow with a value large enough to leave inline storage."""
-        Path("workflow.py").write_text(
+    def test_a_large_value_blob_is_counted_and_kept_while_named(self) -> None:
+        """SC5-3: a large value lives in the artifact store, and survives a sibling's clear."""
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def big() -> bytes:
-    return b"z" * (300 * 1024)
+            @task()
+            def big() -> bytes:
+                return b"z" * (300 * 1024)
 
-@task()
-def small() -> int:
-    return 1
+            @task()
+            def small() -> int:
+                return 1
 
-@flow
-def main():
-    return [big(), small()]
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return [big(), small()]
+            """,
         )
-        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert run.returncode == 0, run.stderr
+        run_ok("run", "workflow.py")
+        entries = {e["task_name"]: e for e in json.loads(run_ok("cache", "ls", "--json").stdout)}
+        assert entries["big"]["size_bytes"] > 300 * 1024
 
-    def test_an_entry_size_counts_the_blob_its_value_names(self) -> None:
-        """SC5-3: a large value lives in the artifact store, not in output.json."""
-        self._run_large_value_workflow()
-
-        entries = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
-
-        big = next(entry for entry in entries if entry["task_name"] == "big")
-        assert big["size_bytes"] > 300 * 1024
-
-    def test_clearing_one_entry_keeps_another_entrys_value_blob(self) -> None:
-        """SC5-3: the collector must not take a blob a surviving value names."""
-        self._run_large_value_workflow()
-        entries = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
-        small = next(entry for entry in entries if entry["task_name"] == "small")
-
-        cleared = _run_cli("cache", "clear", small["cache_key"], cwd=Path.cwd())
-        assert cleared.returncode == 0, cleared.stderr
-        rerun = _run_cli("run", "workflow.py", "--agent-output", cwd=Path.cwd())
-
-        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
-        completed = [
-            event
+        run_ok("cache", "clear", entries["small"]["cache_key"])
+        rerun = run_ok("run", "workflow.py", "--agent-output")
+        run_ok("db", "check")
+        statuses = {
+            event["task_name"].rsplit(".", 1)[-1]: event["status"]
             for event in map(json.loads, rerun.stdout.splitlines())
             if event.get("event") == "task_completed"
-        ]
-        statuses = {event["task_name"].rsplit(".", 1)[-1]: event["status"] for event in completed}
+        }
         assert statuses == {"big": "cached", "small": "success"}
 
-    def test_prune_removes_cache_directories_no_row_names(self) -> None:
-        """EV5-10: prune leaves nothing behind for `db check` to flag."""
-        cache_root = Path(".ginkgo") / "cache"
-        _seed_cache_entry(cache_root=cache_root, name="old", age_days=100)
-        orphan = cache_root / "orphan"
-        orphan.mkdir(parents=True)
-
-        result = _run_cli("cache", "prune", "--older-than", "30d", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "Removed 1 cache entry and 1 orphaned directory" in _unwrapped(result.stdout)
-        assert not orphan.exists()
-        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
+    @pytest.mark.parametrize("args", [("prune", "--older-than", "30d"), ("clear", "--all")])
+    def test_prune_and_clear_all_remove_orphaned_directories(self, args: tuple) -> None:
+        """EV5-10: nothing is left behind for `db check` to flag."""
+        known = _seed_cache_entry("old", age_days=100)
+        orphan = CACHE / "orphan"
+        orphan.mkdir()
+        result = run_ok("cache", *args)
+        assert "Removed 1 cache entry and 1 orphaned directory" in unwrapped(result.stdout)
+        assert not known.exists() and not orphan.exists()
+        run_ok("db", "check")
 
     def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
-        orphan = cache_root / "orphan"
-        orphan.mkdir(parents=True)
-        (orphan / "output.json").write_text("{}", encoding="utf-8")
-
-        result = _run_cli("cache", "clear", "--orphans", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "Removed 1 orphaned cache director" in result.stdout
-        assert known.exists()
-        assert not orphan.exists()
+        known = _seed_cache_entry("known", age_days=1)
+        orphan = CACHE / "orphan"
+        orphan.mkdir()
+        assert "Removed 1 orphaned cache director" in run_ok("cache", "clear", "--orphans").stdout
+        assert known.exists() and not orphan.exists()
 
     def test_cache_clear_task_removes_only_that_tasks_entries(self) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        first = _seed_cache_entry(cache_root=cache_root, name="a1", age_days=1, function="m.a")
-        second = _seed_cache_entry(cache_root=cache_root, name="a2", age_days=1, function="m.a")
-        other = _seed_cache_entry(cache_root=cache_root, name="b1", age_days=1, function="m.b")
+        first = _seed_cache_entry("a1", age_days=1, function="m.a", payload="x" * 2048)
+        second = _seed_cache_entry("a2", age_days=1, function="m.a")
+        other = _seed_cache_entry("b1", age_days=1, function="m.b")
 
-        result = _run_cli("cache", "clear", "--task", "a", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
+        result = run_ok("cache", "clear", "--task", "a")
         assert "Removed 2 cache entries" in result.stdout
-        assert not first.exists() and not second.exists()
-        assert other.exists()
-
-    def test_cache_clear_task_with_no_entries_is_an_error(self) -> None:
-        _seed_cache_entry(cache_root=Path(".ginkgo") / "cache", name="b1", age_days=1)
-
-        result = _run_cli("cache", "clear", "--task", "missing", cwd=Path.cwd())
-
-        assert result.returncode != 0
-        assert "No cache entries found for task: missing" in result.stdout + result.stderr
-
-    def test_cache_clear_all_removes_every_entry_and_orphan(self) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
-        orphan = cache_root / "orphan"
-        orphan.mkdir(parents=True)
-
-        result = _run_cli("cache", "clear", "--all", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "Removed 1 cache entry and 1 orphaned directory" in _unwrapped(result.stdout)
-        assert not known.exists() and not orphan.exists()
-
-    def test_cache_clear_counts_what_it_freed_and_points_at_vacuum(self) -> None:
-        """The rows go too, but their space is only returned by `db vacuum`."""
-        _seed_cache_entry(
-            cache_root=Path(".ginkgo") / "cache", name="known", age_days=1, payload="x" * 2048
-        )
-
-        result = _run_cli("cache", "clear", "--task", "demo.x", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        # The space on disk, in allocated blocks, as `du` would count it.
+        # The rows go too, but their space is only returned by `db vacuum`.
         assert "KiB freed on disk)" in result.stdout
-        assert "ginkgo db vacuum" in _unwrapped(result.stdout)
+        assert "ginkgo db vacuum" in unwrapped(result.stdout)
+        assert not first.exists() and not second.exists() and other.exists()
 
-    @pytest.mark.parametrize("value", ["bad", "0d"])
-    def test_cache_prune_rejects_an_invalid_duration_as_usage(self, value: str) -> None:
-        result = _run_cli("cache", "prune", "--older-than", value, cwd=Path.cwd())
-        assert result.returncode == 2
-        assert "argument --older-than: Invalid duration" in result.stderr
-        assert result.stdout == ""
-
-    def test_cache_prune_requires_at_least_one_policy(self) -> None:
-        result = _run_cli("cache", "prune", cwd=Path.cwd())
-        assert result.returncode != 0
-        combined = result.stdout + result.stderr
-        assert "--older-than" in combined
-
-    def test_cache_prune_by_max_entries_removes_oldest(self) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        entries = [
-            _seed_cache_entry(cache_root=cache_root, name=f"entry{index}", age_days=age_days)
-            for index, age_days in enumerate([100, 60, 30, 5])
-        ]
-
-        result = _run_cli("cache", "prune", "--max-entries", "2", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert not entries[0].exists()
-        assert not entries[1].exists()
-        assert entries[2].exists()
-        assert entries[3].exists()
-
-    def test_cache_prune_by_max_size_removes_oldest_until_under_budget(self) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        payload = "x" * 1024  # each entry holds ~1KB
-        entries = [
-            _seed_cache_entry(
-                cache_root=cache_root, name=f"sz{index}", age_days=age_days, payload=payload
-            )
-            for index, age_days in enumerate([100, 60, 5])
-        ]
-
-        # Cap total at 2KiB so only the oldest must drop.
-        result = _run_cli("cache", "prune", "--max-size", "2KiB", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert not entries[0].exists()
-        assert entries[1].exists()
-        assert entries[2].exists()
+        missing = run_cli("cache", "clear", "--task", "missing")
+        assert missing.returncode != 0
+        assert "No cache entries found for task: missing" in missing.stdout + missing.stderr
 
 
 class TestCliWhy:
-    def _run_producer(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from pathlib import Path
-from ginkgo import Out, file, flow, task
-
-@task()
-def write_report(output_path: Out[file]) -> file:
-    Path(output_path).write_text("report", encoding="utf-8")
-    return file(output_path)
-
-@flow
-def main():
-    return write_report(output_path="results/report.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
     def test_a_materialized_path_names_its_producer(self) -> None:
-        self._run_producer()
+        write(
+            "workflow.py",
+            """
+            from pathlib import Path
+            from ginkgo import Out, file, flow, task
 
-        result = _run_cli("why", "results/report.txt", cwd=Path.cwd())
+            @task()
+            def write_report(output_path: Out[file]) -> file:
+                Path(output_path).write_text("report", encoding="utf-8")
+                return file(output_path)
 
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo why" in result.stdout
-        assert "write_report" in result.stdout
+            @flow
+            def main():
+                return write_report(output_path="results/report.txt")
+            """,
+        )
+        run_ok("run", "workflow.py")
 
-    def test_json_carries_the_provenance(self) -> None:
-        self._run_producer()
-
-        result = _run_cli("why", "results/report.txt", "--json", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
+        text = run_ok("why", "results/report.txt").stdout
+        assert "🌿 ginkgo why" in text and "write_report" in text
+        payload = json.loads(run_ok("why", "results/report.txt", "--json").stdout)
         assert payload["task_name"].endswith("write_report")
         assert payload["path"] == str(Path("results/report.txt").resolve())
 
-    def test_an_unknown_path_is_reported(self) -> None:
-        self._run_producer()
-
-        result = _run_cli("why", "results/absent.txt", cwd=Path.cwd())
-
-        assert result.returncode == 1
-        assert "Nothing in the ledger produced" in result.stderr
+        unknown = run_cli("why", "results/absent.txt")
+        assert unknown.returncode == 1
+        assert "Nothing in the ledger produced" in unknown.stderr
 
 
 class TestCliDebug:
-    def test_debug_reports_failed_task_inputs_and_log_tail(self) -> None:
-        Path("failing_workflow.py").write_text(
+    def test_a_failed_run_reports_inputs_and_log_tail_everywhere(self) -> None:
+        write(
+            "failing_workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def explode(sample: str) -> str:
-    print(f"about-to-fail:{sample}")
-    raise RuntimeError("boom")
+            @task()
+            def explode(sample: str, attempt: int) -> str:
+                print(f"about-to-fail:{sample}")
+                raise RuntimeError("boom at [/tmp/example/pixi.toml:1:1]")
 
-@flow
-def main():
-    return explode(sample="sample_1")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return explode(sample="sample_1", attempt=3)
+            """,
         )
-
-        failed = _run_cli("run", "failing_workflow.py", cwd=Path.cwd())
+        failed = run_cli("run", "failing_workflow.py")
         assert failed.returncode == 1
-        assert re.search(
-            r"🌿 ginkgo run failing_workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
-            failed.stdout,
-        )
-        assert "explode" in failed.stdout
-        assert "✖ Failed in " in failed.stdout
-        assert "Run Summary" not in failed.stdout
-        assert "Failure Details: explode" in failed.stdout
-        assert "Reason" in failed.stdout
-        assert "boom" in failed.stdout
-        assert "Log tail" in failed.stdout
-        assert "about-to-fail:sample_1" in failed.stdout
-        assert "0/1 complete (1 failed)" in failed.stdout
-        assert '{"status":' not in failed.stdout
-        assert failed.stdout.index("CPU avg ") < failed.stdout.index("Failure Details: explode")
+        out = failed.stdout
+        assert re.search(RUN_HEADER.format(r"failing_workflow\.py"), out)
+        for phrase in (
+            "✖ Failed in ",
+            "Failure Details: explode",
+            "Reason",
+            "boom",
+            "Log tail",
+            "about-to-fail:sample_1",
+            "0/1 complete (1 failed)",
+        ):
+            assert phrase in out
+        assert "Run Summary" not in out and '{"status":' not in out
+        assert out.index("CPU avg ") < out.index("Failure Details: explode")
+        # Bracketed text in an error is printed literally, not read as Rich markup.
+        assert "MarkupError" not in failed.stderr
+        assert "boom at [/tmp/example/pixi.toml:1:1]" in unwrapped(failed.stderr)
 
-        run_dir = _extract_run_dir(failed.stderr)
-        manifest = _manifest(run_dir)
-        task = next(iter(manifest["tasks"].values()))
-        assert manifest["status"] == "failed"
-        assert task["status"] == "failed"
+        run_dir = run_dir_of(failed.stderr)
+        assert manifest_of(run_dir)["status"] == "failed"
+        assert _task(run_dir)["status"] == "failed"
 
-        debug = _run_cli("debug", run_dir.name, cwd=Path.cwd())
-        assert debug.returncode == 0
-        assert "Debug Report" in debug.stdout
-        assert "Failed Task: explode" in debug.stdout
-        assert "Task" in debug.stdout
-        assert "sample_1" in debug.stdout
+        debug = run_ok("debug", run_dir.name).stdout
+        for phrase in ("Debug Report", "Failed Task: explode", "sample_1", "Inputs", "Log tail"):
+            assert phrase in debug
+        assert "about-to-fail:sample_1" in debug
         # A Python exception has no exit code, so there is no row for one.
-        assert "Exit code" not in debug.stdout
-        assert "Inputs" in debug.stdout
-        assert "Log tail" in debug.stdout
-        assert "about-to-fail:sample_1" in debug.stdout
+        assert "Exit code" not in debug
+
+        debug_json = json.loads(run_ok("debug", run_dir.name, "--json").stdout)
+        assert debug_json["status"] == "failed"
+        assert debug_json["failures"][0]["task_name"] == "explode"
+        shown = json.loads(run_ok("runs", "show", run_dir.name, "--json").stdout)
+        assert shown["status"] == "failed"
+        assert shown["tasks"][0]["failure"]["kind"] == "user_code_error"
+
+        verbose = run_cli("run", "failing_workflow.py", "--verbose").stdout
+        assert "sample: sample_1" in verbose and "attempt: 3" in verbose
 
     def test_debug_no_failures_uses_styled_empty_state(self) -> None:
-        Path("ok_workflow.py").write_text(
-            """
+        write("ok_workflow.py", SIMPLE_FLOW)
+        run_id = run_dir_of(run_ok("run", "ok_workflow.py").stdout).name
+        debug = run_ok("debug", run_id).stdout
+        assert f"🌿 ginkgo debug {run_id}" in debug
+        assert f"✓ No failed tasks found in {run_id}" in debug
+
+
+_DROPPED_FLOW = """
 from ginkgo import flow, task
 
 @task()
-def ok() -> str:
-    return "ok"
+def label(text: str) -> str:
+    return text
 
 @flow
 def main():
-    return ok()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        completed = _run_cli("run", "ok_workflow.py", cwd=Path.cwd())
-        assert completed.returncode == 0, completed.stderr
-        run_dir = _extract_run_dir(completed.stdout)
-
-        debug = _run_cli("debug", run_dir.name, cwd=Path.cwd())
-        assert debug.returncode == 0
-        assert f"🌿 ginkgo debug {run_dir.name}" in debug.stdout
-        assert f"✓ No failed tasks found in {run_dir.name}" in debug.stdout
-
-    def test_verbose_run_includes_failure_inputs_and_error(self) -> None:
-        Path("failing_verbose_workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def explode(sample: str, attempt: int) -> str:
-    print(f"about-to-fail:{sample}:{attempt}")
-    raise RuntimeError("boom")
-
-@flow
-def main():
-    return explode(sample="sample_1", attempt=3)
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        failed = _run_cli("run", "failing_verbose_workflow.py", "--verbose", cwd=Path.cwd())
-        assert failed.returncode == 1
-        assert "Failure Details: explode" in failed.stdout
-        assert "Inputs" in failed.stdout
-        assert "sample: sample_1" in failed.stdout
-        assert "attempt: 3" in failed.stdout
-        assert "Reason" in failed.stdout
-        assert "boom" in failed.stdout
-
-    def test_cli_error_rendering_escapes_bracketed_text(self) -> None:
-        Path("markup_error_workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def explode() -> str:
-    raise RuntimeError("solver failed at [/tmp/example/pixi.toml:1:1]")
-
-@flow
-def main():
-    return explode()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "markup_error_workflow.py", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "MarkupError" not in result.stderr
-        assert "solver failed at [/tmp/example/pixi.toml:1:1]" in _unwrapped(result.stderr)
+    label(text="dropped")
+    {tail}
+"""
 
 
 class TestCliDryRun:
     def test_run_dry_run_previews_plan_without_executing(self) -> None:
-        Path("workflow.py").write_text(
+        write(
+            "workflow.py",
             """
-from pathlib import Path
-from ginkgo import flow, task
+            from pathlib import Path
+            from ginkgo import flow, task
 
-@task()
-def write_marker(path: str) -> str:
-    Path(path).write_text("executed", encoding="utf-8")
-    return path
+            @task()
+            def write_marker(path: str) -> str:
+                Path(path).write_text("executed", encoding="utf-8")
+                return path
 
-@flow
-def main():
-    return write_marker(path="should-not-exist.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return write_marker(path="should-not-exist.txt")
+            """,
         )
-
-        result = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo run workflow.py --dry-run" in result.stdout
-        assert "Dry run" in result.stdout
-        assert "1 task" in result.stdout
+        out = run_ok("run", "workflow.py", "--dry-run").stdout
+        assert "🌿 ginkgo run workflow.py --dry-run" in out
+        assert "Dry run" in out and "1 task" in out and "Wave 1" in out
         # Nothing is unknown, so there is no legend for it.
-        assert "cannot be known without running" not in result.stdout
-        assert "Wave 1" in result.stdout
+        assert "cannot be known without running" not in out
         # The plan labels a node exactly as the live run table does.
-        assert "• write_marker  [will run: no prior entry]" in result.stdout
-        assert "no tasks executed" in result.stdout
+        assert "• write_marker  [will run: no prior entry]" in out
+        assert "no tasks executed" in out
         assert not Path("should-not-exist.txt").exists()
         runs_root = Path(".ginkgo") / "runs"
         assert not runs_root.exists() or list(runs_root.iterdir()) == []
 
-    def test_run_dry_run_reports_calls_dropped_from_the_graph(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
+    def test_dropped_calls_are_reported_by_dry_run_and_run(self) -> None:
+        write("workflow.py", _DROPPED_FLOW.format(tail='return label(text="kept")'))
 
-@task()
-def label(text: str) -> str:
-    return text
+        dry = run_ok("run", "workflow.py", "--dry-run")
+        assert "1 task" in dry.stdout and "! label()" in dry.stdout
+        assert "Dropped (not reachable from the flow return value)" in unwrapped(dry.stdout)
+        # The plan section is the only report; the run-header warning is suppressed.
+        assert "⚠" not in dry.stderr
 
-@flow
-def main():
-    label(text="dropped")
-    return label(text="kept")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "1 task" in result.stdout
-        assert "Dropped (not reachable from the flow return value)" in _unwrapped(result.stdout)
-        assert "! label()" in result.stdout
-        # The plan section is the only report; the run-header warning is
-        # suppressed so a dry run does not say it twice.
-        assert "⚠" not in result.stderr
-
-    def test_run_reports_dropped_calls_before_executing(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def label(text: str) -> str:
-    return text
-
-@flow
-def main():
-    label(text="dropped")
-    return label(text="kept")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        stderr = _unwrapped(result.stderr)
+        stderr = unwrapped(run_ok("run", "workflow.py").stderr)
         assert "not reachable from the flow return value" in stderr
         # The fix doctor offers is shown too, not just the symptom (F9).
         assert "Return its result from the flow" in stderr
@@ -905,27 +497,10 @@ def main():
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_a_flow_whose_every_call_was_dropped_fails(self, dry_run: bool) -> None:
         """N1: a flow that forgot to return its only call must not pass with nothing run."""
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def label(text: str) -> str:
-    return text
-
-@flow
-def main():
-    label(text="dropped")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        args = ("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
-        result = _run_cli(*args, cwd=Path.cwd())
-
+        write("workflow.py", _DROPPED_FLOW.format(tail=""))
+        result = run_cli("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
         assert result.returncode == 1
-        output = _unwrapped(result.stdout + result.stderr)
+        output = unwrapped(result.stdout + result.stderr)
         assert "label() is not reachable from the flow return value" in output
         assert "No task would run" in output
         assert "Return the result of each call the flow needs" in output
@@ -935,42 +510,45 @@ def main():
         self, dry_run: bool
     ) -> None:
         """#341: the dropped-call warning explains the `file` input's "must exist" error."""
-        Path("workflow.py").write_text(
+        write(
+            "workflow.py",
             """
-from pathlib import Path
-from ginkgo import Out, file, flow, task
+            from pathlib import Path
+            from ginkgo import Out, file, flow, task
 
-@task()
-def produce(out: Out[file]) -> None:
-    Path(out).write_text("x")
+            @task()
+            def produce(out: Out[file]) -> None:
+                Path(out).write_text("x")
 
-@task()
-def consume(p: file) -> str:
-    return Path(p).read_text()
+            @task()
+            def consume(p: file) -> str:
+                return Path(p).read_text()
 
-@flow
-def main():
-    produce(out="p.txt")
-    return consume(p="p.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                produce(out="p.txt")
+                return consume(p="p.txt")
+            """,
         )
-
-        args = ("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
-        result = _run_cli(*args, cwd=Path.cwd())
-
+        result = run_cli("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
         assert result.returncode == 1
-        stderr = _unwrapped(result.stderr)
+        stderr = unwrapped(result.stderr)
         warning = stderr.index("produce() is not reachable from the flow return value")
-        error = stderr.index("must exist and be a file")
-        assert warning < error
+        assert warning < stderr.index("must exist and be a file")
 
-    @pytest.mark.parametrize("dry_run", [False, True])
-    def test_run_rejects_a_returned_partial_call(self, dry_run: bool) -> None:
-        """#332: a call missing a required argument must not run green with zero tasks."""
-        Path("workflow.py").write_text(
-            """
+    @pytest.mark.parametrize(
+        ("body", "args", "code"),
+        [
+            # #332: a returned partial call must not run green with zero tasks.
+            ('return join(left="a")', (), 1),
+            ('return join(left="a")', ("--dry-run",), 1),
+            ('join(left="a")\n    return join(left="a", right="b")', (), 0),
+        ],
+    )
+    def test_a_partial_call_is_named(self, body: str, args: tuple, code: int) -> None:
+        write(
+            "workflow.py",
+            f"""
 from ginkgo import flow, task
 
 @task()
@@ -979,136 +557,101 @@ def join(left: str, right: str) -> str:
 
 @flow
 def main():
-    return join(left="a")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+    {body}
+""",
         )
-
-        args = ("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
-        result = _run_cli(*args, cwd=Path.cwd())
-
-        assert result.returncode == 1
-        output = _unwrapped(result.stdout + result.stderr)
-        assert "join() is missing required argument(s): right" in output
-
-    def test_run_warns_about_a_discarded_partial_call(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def join(left: str, right: str) -> str:
-    return left + right
-
-@flow
-def main():
-    join(left="a")
-    return join(left="a", right="b")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+        result = run_cli("run", "workflow.py", *args)
+        assert result.returncode == code
+        assert "join() is missing required argument(s): right" in unwrapped(
+            result.stdout + result.stderr
         )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "join() is missing required argument(s): right" in _unwrapped(result.stderr)
 
     def test_run_dry_run_groups_waves_and_expands_fanout(self) -> None:
-        Path("workflow.py").write_text(
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def prepare() -> str:
-    return "ready"
+            @task()
+            def prepare() -> str:
+                return "ready"
 
-@task()
-def analyse(base: str, sample: str) -> str:
-    return f"{base}:{sample}"
+            @task()
+            def analyse(base: str, sample: str) -> str:
+                return f"{base}:{sample}"
 
-@flow
-def main():
-    base = prepare()
-    return analyse(base=base).map(sample=["alpha", "beta", "gamma"])
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return analyse(base=prepare()).map(sample=["alpha", "beta", "gamma"])
+            """,
         )
-
-        result = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Dry run" in result.stdout
-        assert "4 tasks" in result.stdout
-        assert "Wave 1" in result.stdout
-        assert "Wave 2" in result.stdout
-        assert "• prepare " in result.stdout
+        out = run_ok("run", "workflow.py", "--dry-run").stdout
+        for phrase in (
+            "Dry run",
+            "4 tasks",
+            "Wave 1",
+            "Wave 2",
+            "• prepare ",
+            "no tasks executed",
+        ):
+            assert phrase in out
         for sample in ("alpha", "beta", "gamma"):
-            assert f"analyse[{sample}]" in result.stdout
-        # The leaf task's cache state is determinable; fan-out branches
-        # downstream of a will-run task are not.
-        assert "[will run: no prior entry]" in result.stdout
-        assert "[unknown: after upstream]" in result.stdout
-        assert "? [unknown: after upstream]  an upstream task runs first" in result.stdout
-        assert "no tasks executed" in result.stdout
+            assert f"analyse[{sample}]" in out
+        # The leaf's cache state is determinable; branches downstream of it are not.
+        assert "[will run: no prior entry]" in out
+        assert "? [unknown: after upstream]  an upstream task runs first" in out
 
-    def test_run_dry_run_reports_cached_tasks_after_a_real_run(self) -> None:
-        Path("workflow.py").write_text(
+    def test_inspect_and_a_dry_run_after_a_real_run(self) -> None:
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def upstream() -> int:
-    return 21
+            @task()
+            def upstream() -> int:
+                return 21
 
-@task()
-def downstream(value: int) -> int:
-    return value * 2
+            @task()
+            def downstream(value: int) -> int:
+                return value * 2
 
-@flow
-def main():
-    return downstream(value=upstream())
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return downstream(value=upstream())
+            """,
         )
+        payload = json.loads(run_ok("inspect", "workflow", "workflow.py").stdout)
+        assert (payload["task_count"], payload["edge_count"]) == (2, 1)
+        assert {task["task_name"] for task in payload["tasks"]} == {"upstream", "downstream"}
 
-        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert first.returncode == 0, first.stderr
-
-        preview = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
-        assert preview.returncode == 0, preview.stderr
-        assert "all cached" in preview.stdout
-        assert preview.stdout.count("[cached]") == 2
-        assert "[will run]" not in preview.stdout
+        run_ok("run", "workflow.py")
+        preview = run_ok("run", "workflow.py", "--dry-run").stdout
+        assert "all cached" in preview and preview.count("[cached]") == 2
+        assert "[will run]" not in preview
 
     def test_run_dry_run_fails_for_invalid_workflow(self) -> None:
-        Path("invalid_workflow.py").write_text(
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def first() -> str:
-    return "first"
+            @task()
+            def first() -> str:
+                return "first"
 
-@task()
-def second() -> str:
-    return "second"
+            @task()
+            def second() -> str:
+                return "second"
 
-@flow
-def main():
-    left = first()
-    right = second()
-    left.args["value"] = right
-    right.args["value"] = left
-    return left
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                left, right = first(), second()
+                left.args["value"] = right
+                right.args["value"] = left
+                return left
+            """,
         )
-
-        result = _run_cli("run", "invalid_workflow.py", "--dry-run", cwd=Path.cwd())
+        result = run_cli("run", "workflow.py", "--dry-run")
         assert result.returncode == 1
         assert "Detected cycle in workflow graph" in result.stderr
         assert "Run directory:" not in result.stdout
@@ -1118,11 +661,7 @@ _TEMPLATE_ROOT = REPO_ROOT / "src" / "ginkgo" / "templates" / "init" / "base"
 
 
 def _template_ginkgo_symbols() -> set[str]:
-    """Return every name the scaffold templates reach for on the ginkgo package.
-
-    Covers both ``from ginkgo import ...`` and attribute access on an imported
-    ``ginkgo``, which is how the templates use ``config`` and ``param``.
-    """
+    """Return every name the scaffold templates reach for on the ginkgo package."""
     symbols: set[str] = set()
     for path in sorted(_TEMPLATE_ROOT.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -1138,16 +677,10 @@ def _template_ginkgo_symbols() -> set[str]:
 
 
 def _third_party_imports(*, project_dir: Path) -> set[str]:
-    """Return the root module names a scaffolded project imports from outside the stdlib.
-
-    Covers every Python source, the starter marimo notebook among them, since a
-    notebook task's body executes in the same environment as the CLI. Relative
-    imports are skipped by the extraction, so the project's own
-    packages do not appear.
+    """Return the root modules a scaffolded project imports from outside the stdlib.
 
     Extraction is shared with ``ginkgo.envs.interpreter``, which asks the same
-    question of a user's project at runtime, so the two cannot drift on what
-    counts as an import.
+    question of a user's project at runtime, so the two cannot drift.
     """
     sources = [path.read_text(encoding="utf-8") for path in sorted(project_dir.rglob("*.py"))]
     roots = {root for text in sources for root in source_import_roots(text=text)}
@@ -1156,165 +689,85 @@ def _third_party_imports(*, project_dir: Path) -> set[str]:
 
 class TestCliInit:
     def test_template_walk_skips_bytecode_caches(self, tmp_path: Path) -> None:
-        (tmp_path / "workflow" / "__pycache__").mkdir(parents=True)
-        (tmp_path / "workflow" / "flow.py").write_text("", encoding="utf-8")
+        write(tmp_path / "workflow" / "flow.py")
+        (tmp_path / "workflow" / "__pycache__").mkdir()
         (tmp_path / "workflow" / "__pycache__" / "flow.cpython-312.pyc").write_bytes(b"")
         (tmp_path / "stray.pyc").write_bytes(b"")
-
-        files = [str(relative) for _, relative in _iter_template_files(tmp_path)]
-
-        assert files == ["workflow/flow.py"]
+        assert [str(rel) for _, rel in _iter_template_files(tmp_path)] == ["workflow/flow.py"]
 
     def test_init_creates_project_scaffold(self) -> None:
-        result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo init demo-project" in result.stdout
-        assert "✓ Initialized project scaffold at" in result.stdout
-        assert "Created:" in result.stdout
-        assert "workflow/flow.py" in result.stdout
-        assert "README.md" in result.stdout
-        assert "ginkgo run --dry-run" in result.stdout
+        out = run_ok("init", "demo-project").stdout
+        for phrase in (
+            "🌿 ginkgo init demo-project",
+            "✓ Initialized project scaffold at",
+            "Created:",
+            "workflow/flow.py",
+            "README.md",
+            "ginkgo run --dry-run",
+        ):
+            assert phrase in out
 
-        project_dir = Path("demo-project")
-        assert (project_dir / "pixi.toml").is_file()
-        assert (project_dir / "ginkgo.toml").is_file()
-        assert (project_dir / "README.md").is_file()
-        assert (project_dir / "workflow" / "__init__.py").is_file()
-        assert (project_dir / "workflow" / "flow.py").is_file()
-        assert (project_dir / "workflow" / "modules" / "prep.py").is_file()
-        assert (project_dir / "workflow" / "modules" / "analysis.py").is_file()
-        assert (project_dir / "workflow" / "modules" / "reporting.py").is_file()
-        assert (project_dir / "workflow" / "envs" / "analysis_tools" / "pixi.toml").is_file()
-        assert (project_dir / "workflow" / "scripts" / "build_brief.py").is_file()
-        assert (project_dir / "workflow" / "notebooks" / "overview.py").is_file()
-        assert not (project_dir / "demo_project").exists()
-        assert (project_dir / "skills" / "index.md").is_file()
-        assert (project_dir / "skills" / "commands.md").is_file()
-        assert (project_dir / "skills" / "project.md").is_file()
-        assert (project_dir / "skills" / "workflow-patterns.md").is_file()
-        assert (project_dir / "skills" / "local.md").is_file()
-        assert (project_dir / "tests" / "workflows" / "smoke.py").is_file()
-        assert not (project_dir / "agents.ginkgo.md").exists()
-        assert not (project_dir / "__init__.py").exists()
+        project = Path("demo-project")
+        for relative in (
+            "ginkgo.toml",
+            "workflow/__init__.py",
+            "workflow/modules/prep.py",
+            "workflow/envs/analysis_tools/pixi.toml",
+            "workflow/scripts/build_brief.py",
+            "skills/project.md",
+            "skills/local.md",
+            "tests/workflows/smoke.py",
+        ):
+            assert (project / relative).is_file(), relative
+        for absent in ("demo_project", "agents.ginkgo.md", "__init__.py"):
+            assert not (project / absent).exists()
 
-        workflow_text = (project_dir / "workflow" / "flow.py").read_text(encoding="utf-8")
-        readme_text = (project_dir / "README.md").read_text(encoding="utf-8")
-        skills_index_text = (project_dir / "skills" / "index.md").read_text(encoding="utf-8")
-        commands_text = (project_dir / "skills" / "commands.md").read_text(encoding="utf-8")
-        patterns_text = (project_dir / "skills" / "workflow-patterns.md").read_text(
-            encoding="utf-8"
-        )
-        assert "@flow" in workflow_text
-        assert "from .modules.analysis import" in workflow_text
-        assert "expand(" in workflow_text
-        assert "ginkgo run --agent-output" in readme_text
-        assert "workflow/flow.py" in readme_text
-        assert "See `skills/index.md`" in readme_text
-        assert "This project uses Ginkgo" in skills_index_text
-        assert "`project.md`:" in skills_index_text
-        assert "JSONL runtime events" in commands_text
-        assert '@task(kind="shell")' in patterns_text
-        assert "gs://bucket/reads.bam" in patterns_text
+        def text(relative: str) -> str:
+            return (project / relative).read_text(encoding="utf-8")
 
-    def test_init_pixi_manifest_declares_what_the_workflow_needs(self) -> None:
-        """The scaffolded manifest must install everything the scaffold imports.
+        assert "@flow" in text("workflow/flow.py")
+        assert "from .modules.analysis import" in text("workflow/flow.py")
+        assert "expand(" in text("workflow/flow.py")
+        assert "ginkgo run --agent-output" in text("README.md")
+        assert "See `skills/index.md`" in text("README.md")
+        assert "This project uses Ginkgo" in text("skills/index.md")
+        assert "JSONL runtime events" in text("skills/commands.md")
+        assert '@task(kind="shell")' in text("skills/workflow-patterns.md")
+        assert "gs://bucket/reads.bam" in text("skills/workflow-patterns.md")
+        assert "skills/index.md" in text("AGENTS.md")
+        # The marimo notebook reads each argument of the task that renders it.
+        assert 'args.get("summary-path")' in text("workflow/notebooks/overview.py")
+        assert 'args.get("run-label")' in text("workflow/notebooks/overview.py")
 
-        Python tasks execute in the interpreter the CLI runs from and cannot
-        declare ``env=``, so ``ginkgo`` itself and every third-party import in a
-        Python or notebook task body has to be declared here.
-        """
-        result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        project_dir = Path("demo-project")
-        manifest = tomllib.loads((project_dir / "pixi.toml").read_text(encoding="utf-8"))
-        # Distributions are spelt with dashes, the modules they install with
-        # underscores (ginkgo-notebook / ginkgo_notebook).
+        # The manifest installs everything the scaffold imports: Python and
+        # notebook task bodies run in the CLI's interpreter and cannot declare env=.
+        manifest = tomllib.loads(text("pixi.toml"))
         declared = {
             name.replace("-", "_")
             for name in set(manifest["dependencies"]) | set(manifest["pypi-dependencies"])
         }
-
         assert manifest["workspace"]["name"] == "demo-project"
-        assert "ginkgo" in declared
-        # The scaffold's script task names a Pixi environment.
-        assert "ginkgo_pixi" in declared
-        assert _third_party_imports(project_dir=project_dir) <= declared
+        assert {"ginkgo", "ginkgo_pixi"} <= declared
+        assert _third_party_imports(project_dir=project) <= declared
         assert manifest["tasks"]["run"] == "ginkgo run"
-
-    def test_init_tracks_the_ginkgo_branch_the_lock_will_pin(self) -> None:
-        """The manifest names ginkgo's branch, and the lock records the commit.
-
-        A commit in the manifest is a second, hand-maintained record of which
-        ginkgo the project runs, and it is the one that goes stale (#284). A
-        branch delegates that record to ``pixi.lock``, which ``pixi install``
-        resolves to one concrete commit and which the scaffolded ``.gitignore``
-        deliberately does not ignore.
-        """
-        result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        manifest = tomllib.loads((Path("demo-project") / "pixi.toml").read_text(encoding="utf-8"))
+        # #284: the manifest tracks a branch; the committed pixi.lock pins the commit.
         requirement = manifest["pypi-dependencies"]["ginkgo"]
-
-        assert requirement["git"] == GINKGO_REPO_URL
-        assert requirement["branch"] == GINKGO_BRANCH
+        assert (requirement["git"], requirement["branch"]) == (GINKGO_REPO_URL, GINKGO_BRANCH)
         assert "rev" not in requirement and "tag" not in requirement
-
-    def test_init_gitignore_keeps_the_lock_and_drops_the_generated_paths(self) -> None:
-        """The scaffold's reproducibility now rests on a committed ``pixi.lock``.
-
-        The manifest tracks a branch, so the lock is the only record of which
-        ginkgo commit the project runs. A scaffold that ignored it, or that
-        shipped no ``.gitignore`` and let a user reach for a stock Python one,
-        would lose that record.
-        """
-        result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
         patterns = {
             line.strip()
-            for line in (Path("demo-project") / ".gitignore")
-            .read_text(encoding="utf-8")
-            .splitlines()
+            for line in text(".gitignore").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         }
-
         assert {".pixi/", ".ginkgo/", "results/", "logs/", "__pycache__/"} <= patterns
         assert not any("lock" in pattern for pattern in patterns)
 
     def test_templates_only_use_ginkgo_names_this_source_exports(self) -> None:
-        """The templates must run against the ginkgo a scaffold will install.
-
-        The manifest tracks ``main``, so a scaffolded project installs whatever
-        ``main`` is. This is what keeps ``main`` from ever being a commit that
-        scaffolds a project which installs cleanly and then fails at run time —
-        the same guarantee the old fallback-pin test gave against a fixed
-        commit, now made against the working tree, before such a commit can
-        land.
-        """
+        """A scaffolded project installs ginkgo from `main`, so its templates must run on it."""
         required = _template_ginkgo_symbols()
         assert required, "no ginkgo symbols found in the templates — the scan is broken"
-
         missing = sorted(name for name in required if not hasattr(ginkgo, name))
-        assert not missing, (
-            f"the starter templates use ginkgo names this source does not export: {missing}. "
-            "A scaffolded project installs ginkgo from `main`, so merging this would "
-            "scaffold projects that install cleanly and then fail at run time."
-        )
-
-    def test_init_notebook_reads_the_notebook_tasks_arguments(self) -> None:
-        """The marimo notebook reads each argument of the task that renders it."""
-        result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        source = (Path("demo-project") / "workflow" / "notebooks" / "overview.py").read_text(
-            encoding="utf-8"
-        )
-        # The notebook task's signature in workflow/modules/reporting.py, as
-        # mo.cli_args() spells it.
-        assert 'args.get("summary-path")' in source
-        assert 'args.get("run-label")' in source
+        assert not missing, f"the starter templates use names ginkgo does not export: {missing}"
 
     @pytest.mark.integration
     def test_init_scaffold_runs_end_to_end(self) -> None:
@@ -1324,394 +777,226 @@ class TestCliInit:
         # NC-5: the starter needs no container runtime, only pixi.
         if shutil.which("pixi") is None:
             pytest.skip("running the scaffold end to end needs pixi")
-
-        init_result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert init_result.returncode == 0, init_result.stderr
-
-        project_dir = Path("demo-project").resolve()
-        run_result = _run_cli("run", cwd=project_dir)
-        assert run_result.returncode == 0, run_result.stderr
-        assert "Rendered pages (1)" in run_result.stdout
+        run_ok("init", "demo-project")
+        # A real process: the scaffold needs the installed plugins, not the test registry.
+        result = subprocess.run(
+            [sys.executable, "-m", "ginkgo.cli", "run"],
+            cwd=Path("demo-project").resolve(),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Rendered pages (1)" in result.stdout
 
     def test_init_into_the_current_directory_omits_the_cd_step(self) -> None:
-        """There is nowhere to cd to when the project root is already the cwd."""
-        result = _run_cli("init", ".", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "Next steps: run ginkgo run --dry-run" in result.stdout
-        assert "Next steps: cd" not in result.stdout
+        out = run_ok("init", ".").stdout
+        assert "Next steps: run ginkgo run --dry-run" in out
+        assert "Next steps: cd" not in out
 
     def test_init_can_skip_skills(self) -> None:
-        result = _run_cli("init", "demo-project", "--no-skills", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
+        run_ok("init", "demo-project", "--no-skills")
+        assert not Path("demo-project/skills").exists()
+        assert not Path("demo-project/AGENTS.md").exists()
 
-        project_dir = Path("demo-project")
-        assert not (project_dir / "skills").exists()
-        assert not (project_dir / "AGENTS.md").exists()
+    def test_skills_only_adds_skills_to_an_existing_project(self) -> None:
+        write("demo-project/workflow/flow.py", "workflow\n")
+        write("demo-project/AGENTS.md", "ours\n")
+        run_ok("init", "demo-project", "--skills-only")
+        assert Path("demo-project/skills/index.md").is_file()
+        assert not Path("demo-project/README.md").exists()
+        assert Path("demo-project/AGENTS.md").read_text(encoding="utf-8") == "ours\n"
 
-    def test_init_points_agents_at_the_skills(self) -> None:
-        result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        assert "skills/index.md" in Path("demo-project", "AGENTS.md").read_text(encoding="utf-8")
-
-    def test_init_leaves_an_existing_agents_file_alone(self) -> None:
-        project_dir = Path("demo-project")
-        project_dir.mkdir()
-        (project_dir / "AGENTS.md").write_text("ours\n", encoding="utf-8")
-
-        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        assert (project_dir / "AGENTS.md").read_text(encoding="utf-8") == "ours\n"
-
-    def test_init_can_create_skills_only_for_existing_project(self) -> None:
-        project_dir = Path("demo-project")
-        package_dir = project_dir / "workflow"
-        (package_dir / "modules").mkdir(parents=True)
-        (project_dir / "tests" / "workflows").mkdir(parents=True)
-        (package_dir / "flow.py").write_text("workflow\n", encoding="utf-8")
-
-        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert (project_dir / "skills" / "index.md").is_file()
-        assert not (project_dir / "README.md").exists()
-
-    def test_init_skills_only_refuses_to_overwrite_without_force(self) -> None:
-        project_dir = Path("demo-project")
-        skills_dir = project_dir / "skills"
-        skills_dir.mkdir(parents=True)
-        (skills_dir / "index.md").write_text("existing\n", encoding="utf-8")
-
-        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
+    @pytest.mark.parametrize(
+        ("existing", "args"),
+        [("skills/index.md", ("--skills-only",)), ("workflow/flow.py", ())],
+    )
+    def test_init_refuses_to_overwrite_without_force(self, existing: str, args: tuple) -> None:
+        path = write(Path("demo-project") / existing, "existing\n")
+        result = run_cli("init", "demo-project", *args)
         assert result.returncode == 1
         assert "✖ Refusing to overwrite existing scaffold files without --force:" in result.stderr
-        assert (skills_dir / "index.md").read_text(encoding="utf-8") == "existing\n"
+        assert path.read_text(encoding="utf-8") == "existing\n"
 
     def test_init_rejects_incompatible_skills_flags(self) -> None:
-        result = _run_cli("init", "demo-project", "--skills-only", "--no-skills", cwd=Path.cwd())
+        result = run_cli("init", "demo-project", "--skills-only", "--no-skills")
         assert result.returncode == 1
         assert "✖ Cannot combine --no-skills with --skills-only." in result.stderr
 
-    def test_init_refuses_to_overwrite_without_force(self) -> None:
-        project_dir = Path("demo-project")
-        project_dir.mkdir()
-        package_dir = project_dir / "workflow"
-        package_dir.mkdir()
-        (package_dir / "flow.py").write_text("existing\n", encoding="utf-8")
-
-        result = _run_cli("init", "demo-project", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "✖ Refusing to overwrite existing scaffold files without --force:" in result.stderr
-        assert (package_dir / "flow.py").read_text(encoding="utf-8") == "existing\n"
-
 
 class TestCliWorkflowDiscovery:
-    _WORKFLOW_SOURCE = (
-        """
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-        + "\n"
+    @pytest.mark.parametrize(
+        ("path", "args", "shown"),
+        [
+            ("workflow/flow.py", (), r"workflow/flow\.py \(auto-discovered\)"),
+            # Discovery keys on the file name, not the directory it sits in.
+            ("analysis/flow.py", (), r"analysis/flow\.py \(auto-discovered\)"),
+            ("anything.py", ("anything.py",), r"anything\.py"),
+        ],
     )
-
-    def test_run_autodiscovers_canonical_package_workflow(self) -> None:
-        package_dir = Path("workflow")
-        package_dir.mkdir()
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "flow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
-
-        result = _run_cli("run", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert re.search(
-            r"🌿 ginkgo run workflow/flow\.py \(auto-discovered\) "
-            r"\([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
-            result.stdout,
-        )
-        assert "✓ succeeded" in result.stdout
-
-    def test_run_autodiscovers_any_directory_name(self) -> None:
-        """Discovery keys on the file name, not the directory it sits in."""
-        package_dir = Path("analysis")
-        package_dir.mkdir()
-        (package_dir / "flow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
-
-        result = _run_cli("run", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
+    def test_run_finds_the_workflow(self, path: str, args: tuple, shown: str) -> None:
+        write(path, SIMPLE_FLOW)
+        result = run_ok("run", *args)
+        assert re.search(RUN_HEADER.format(shown), result.stdout)
         assert "✓ succeeded" in result.stdout
 
     def test_run_reports_what_discovery_looked_for_when_nothing_matches(self) -> None:
-        Path("workflow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
-
-        result = _run_cli("run", cwd=Path.cwd())
+        write("workflow.py", SIMPLE_FLOW)
+        result = run_cli("run")
         assert result.returncode == 1
-        stderr = _unwrapped(result.stderr)
+        stderr = unwrapped(result.stderr)
         assert "no flow.py was found" in stderr
-        assert "Create workflow/flow.py" in stderr
-        assert "pass an explicit path" in stderr
-
-    def test_explicit_path_accepts_any_file_name(self) -> None:
-        Path("anything.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
-
-        result = _run_cli("run", "anything.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "✓ succeeded" in result.stdout
+        assert "Create workflow/flow.py" in stderr and "pass an explicit path" in stderr
 
 
 class TestCliOutputModes:
-    def test_run_verbose_surfaces_verbose_mode_in_summary(self) -> None:
-        Path("workflow.py").write_text(
+    def test_run_verbose_on_one_core_with_a_memory_budget(self) -> None:
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            import time
+            from ginkgo import flow, task
 
-@task()
-def produce() -> str:
-    return "ok"
+            @task()
+            def produce() -> str:
+                time.sleep(1.2)  # long enough for the resource sampler to take a sample
+                return "ok"
 
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return produce()
+            """,
         )
-
-        result = _run_cli("run", "workflow.py", "--verbose", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert re.search(
-            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
-            result.stdout,
-        )
-        assert "Run Summary" not in result.stdout
-        assert re.search(r"Running locally on \d+ Cores", result.stdout)
-        assert "🧭 Verbose mode:" in result.stdout
-        assert "config overlays=0" in result.stdout
-        assert "🗂 Run directory:" in result.stdout
-        assert "produce" in result.stdout
-        assert "1/1 complete" in result.stdout
-
-    def test_run_uses_singular_core_label_for_one_core(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", "--cores", "1", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Running locally on 1 core" in result.stdout
-
-    def test_run_surfaces_memory_budget_and_resource_summary(self) -> None:
-        Path("workflow.py").write_text(
-            """
-import time
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    time.sleep(1.2)
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", "--memory", "32", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "🧠 Memory budget: 32 GiB" in result.stdout
-        assert "CPU avg " in result.stdout
-        assert "RSS avg " in result.stdout
-
-        run_dir = _extract_run_dir(result.stdout)
-        manifest = _manifest(run_dir)
+        out = run_ok("run", "workflow.py", "--verbose", "--cores", "1", "--memory", "32").stdout
+        assert re.search(RUN_HEADER.format(r"workflow\.py"), out)
+        for phrase in (
+            "Running locally on 1 core",
+            "🧭 Verbose mode:",
+            "config overlays=0",
+            "🗂 Run directory:",
+            "1/1 complete",
+            "🧠 Memory budget: 32 GiB",
+            "CPU avg ",
+            "RSS avg ",
+        ):
+            assert phrase in out
+        assert "Run Summary" not in out
+        manifest = manifest_of(run_dir_of(out))
         assert manifest["memory"] == 32
         assert manifest["resources"]["status"] == "completed"
         assert manifest["resources"]["sample_count"] >= 1
 
 
 class TestCliMappedLabels:
-    def test_map_tasks_use_first_parameter_value_as_runtime_label(self) -> None:
-        Path("workflow.py").write_text(
+    def test_fan_outs_label_each_branch_by_its_arguments(self) -> None:
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def fastq_stats(sample_id: str, read_count: int) -> str:
-    return f"{sample_id}:{read_count}"
+            @task()
+            def stats(sample_id: str, read_count: int) -> str:
+                return f"{sample_id}:{read_count}"
 
-@flow
-def main():
-    return fastq_stats().map(
-        sample_id=["sample_a", "sample_b"],
-        read_count=[10, 20],
-    )
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @task()
+            def train(sample: str, lr: float) -> str:
+                return f"{sample}:{lr}"
+
+            @task()
+            def tune(sample: str, lr: float, epochs: int) -> str:
+                return f"{sample}:{lr}:{epochs}"
+
+            @flow
+            def main():
+                return [
+                    stats().map(sample_id=["sample_a", "sample_b"], read_count=[10, 20]),
+                    train().product_map(sample=["a", "b"], lr=[0.01, 0.1]),
+                    tune().map(sample=["s"]).product_map(lr=[0.01, 0.1], epochs=[10, 50]),
+                ]
+            """,
         )
+        out = run_ok("run", "workflow.py").stdout
+        assert "stats[sample_a]" in out and "stats[sample_b]" in out
+        assert "stats[2]" not in out
+        for sample in ("a", "b"):
+            for lr in ("0.01", "0.1"):
+                assert f"train[sample={sample},lr={lr}]" in out
+                assert f"tune[s,lr={lr},epochs=10]" in out
+        assert "10/10 complete" in out
 
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "fastq_stats[sample_a]" in result.stdout
-        assert "fastq_stats[sample_b]" in result.stdout
-        assert "fastq_stats[2]" not in result.stdout
-        assert "2/2 complete" in result.stdout
-
-    def test_product_map_tasks_use_named_parameter_grid_runtime_labels(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def train(sample: str, lr: float) -> str:
-    return f"{sample}:{lr}"
-
-@flow
-def main():
-    return train().product_map(
-        sample=["sample_a", "sample_b"],
-        lr=[0.01, 0.1],
-    )
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "train[sample=sample_a,lr=0.01]" in result.stdout
-        assert "train[sample=sample_a,lr=0.1]" in result.stdout
-        assert "train[sample=sample_b,lr=0.01]" in result.stdout
-        assert "train[sample=sample_b,lr=0.1]" in result.stdout
-        assert "4/4 complete" in result.stdout
-
-    def test_map_then_product_map_composes_runtime_labels(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def train(sample: str, lr: float, epochs: int) -> str:
-    return f"{sample}:{lr}:{epochs}"
-
-@flow
-def main():
-    return train().map(sample=["sample_a"]).product_map(
-        lr=[0.01, 0.1],
-        epochs=[10, 50],
-    )
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "train[sample_a,lr=0.01,epochs=10]" in result.stdout
-        assert "train[sample_a,lr=0.01,epochs=50]" in result.stdout
-        assert "train[sample_a,lr=0.1,epochs=10]" in result.stdout
-        assert "train[sample_a,lr=0.1,epochs=50]" in result.stdout
+        listed = run_ok("cache", "ls").stdout
+        assert "Label" in listed
+        assert sorted(re.findall(r"stats\[\w+\]", listed)) == [
+            "stats[sample_a]",
+            "stats[sample_b]",
+        ]
 
     def test_dynamic_children_are_recorded_under_their_live_labels(self) -> None:
-        Path("workflow.py").write_text(
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def child(x: str) -> str:
-    return x
+            @task()
+            def child(x: str) -> str:
+                return x
 
-@task()
-def spawn() -> object:
-    return [child(x="a"), child(x="b"), child(x="c")]
+            @task()
+            def spawn() -> object:
+                return [child(x="a"), child(x="b"), child(x="c")]
 
-@flow
-def main():
-    return spawn()
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return spawn()
+            """,
         )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
+        result = run_ok("run", "workflow.py")
         live_labels = re.findall(r"│ (child(?:\[\w\])?) +│", result.stdout)
         assert live_labels == ["child[a]", "child[b]", "child[c]"]
 
-        run_id = _extract_run_dir(result.stdout).name
-        shown = _run_cli("runs", "show", run_id, cwd=Path.cwd())
-        assert shown.returncode == 0, shown.stderr
-        assert re.findall(r"│ (child(?:\[\w\])?) +│", shown.stdout) == live_labels
-
-        history = _run_cli("history", "child[b]", "--json", cwd=Path.cwd())
-        assert history.returncode == 0, history.stderr
-        rows = json.loads(history.stdout)
+        shown = run_ok("runs", "show", run_dir_of(result.stdout).name).stdout
+        assert re.findall(r"│ (child(?:\[\w\])?) +│", shown) == live_labels
+        rows = json.loads(run_ok("history", "child[b]", "--json").stdout)
         # The spawning task is node 0, so the second child is node 2.
         assert [(row["task_id"], row["display_label"]) for row in rows] == [
             ("task_0002", "child[b]")
         ]
 
     def test_branches_the_run_never_prepared_keep_their_labels(self) -> None:
-        Path("workflow.py").write_text(
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def boom() -> str:
-    raise ValueError("upstream broke")
+            @task()
+            def boom() -> str:
+                raise ValueError("upstream broke")
 
-@task()
-def consume(up: str, region: str) -> str:
-    return f"{up}:{region}"
+            @task()
+            def consume(up: str, region: str) -> str:
+                return f"{up}:{region}"
 
-@flow
-def main():
-    return consume(up=boom()).map(region=["north", "south"])
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return consume(up=boom()).map(region=["north", "south"])
+            """,
         )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        result = run_cli("run", "workflow.py")
         assert result.returncode == 1
-        run_id = _extract_run_dir(result.stdout + result.stderr).name
-
-        shown = _run_cli("runs", "show", run_id, cwd=Path.cwd())
-        assert shown.returncode == 0, shown.stderr
-        assert "consume[north]" in shown.stdout
-        assert "consume[south]" in shown.stdout
+        shown = run_ok("runs", "show", run_dir_of(result.stdout + result.stderr).name).stdout
+        assert "consume[north]" in shown and "consume[south]" in shown
 
 
 class TestCliGridSweepOutputPaths:
     """End-to-end cover for the grid sweep of issue #198."""
 
-    _TASK = """
+    def _write_workflow(self, fan_out: str) -> None:
+        write(
+            "workflow.py",
+            f"""
 import json
 from pathlib import Path
-
-from ginkgo import file, flow, task
-from ginkgo import expand, per_branch
+from ginkgo import expand, file, flow, per_branch, task
 
 TEMPS = [300, 400]
 DENS = [0.01, 0.02]
@@ -1719,84 +1004,69 @@ DENS = [0.01, 0.02]
 @task()
 def simulate(temperature: float, defect_density: float, output_path: str) -> file:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(output_path).write_text(
-        json.dumps({"t": temperature, "d": defect_density}), encoding="utf-8"
-    )
+    Path(output_path).write_text(json.dumps({{"t": temperature, "d": defect_density}}))
     return file(output_path)
-"""
 
-    def _write_workflow(self, fan_out: str) -> None:
-        Path("workflow.py").write_text(
-            self._TASK
-            + "\n@flow\ndef main():\n    return simulate().product_map(\n"
-            + "        temperature=TEMPS,\n        defect_density=DENS,\n"
-            + f"        output_path={fan_out},\n    )\n",
-            encoding="utf-8",
+@flow
+def main():
+    return simulate().product_map(temperature=TEMPS, defect_density=DENS, output_path={fan_out})
+""",
         )
 
     def test_expand_output_paths_fail_loudly_instead_of_mislabelling_files(self) -> None:
         self._write_workflow('expand("results/{t}_{d}.json", t=TEMPS, d=DENS)')
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
+        result = run_cli("run", "workflow.py")
         assert result.returncode != 0
-        combined = result.stdout + result.stderr
-        assert "output_path" in combined
-        assert "per_branch" in combined
+        assert "output_path" in result.stdout + result.stderr
+        assert "per_branch" in result.stdout + result.stderr
         assert not Path("results").exists()
 
     def test_per_branch_output_paths_write_one_matching_file_per_cell(self) -> None:
         self._write_workflow('per_branch("results/{temperature}_{defect_density}.json")')
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "4 tasks executed" in result.stdout
-        written = sorted(path.name for path in Path("results").iterdir())
-        assert written == [
+        assert "4 tasks executed" in run_ok("run", "workflow.py").stdout
+        written = sorted(Path("results").iterdir())
+        assert [path.name for path in written] == [
             "300_0.01.json",
             "300_0.02.json",
             "400_0.01.json",
             "400_0.02.json",
         ]
-        for path in Path("results").iterdir():
+        for path in written:
             payload = json.loads(path.read_text(encoding="utf-8"))
             assert path.name == f"{payload['t']}_{payload['d']}.json"
 
 
-class TestCliSpinnerSelection:
-    def test_time_of_day_spinner_uses_earth_in_day_and_moon_at_night(self) -> None:
-        assert _time_of_day_spinner(datetime(2026, 3, 12, 9, 0, 0)) == "earth"
-        assert _time_of_day_spinner(datetime(2026, 3, 12, 22, 0, 0)) == "moon"
+def test_renderer_label_helpers() -> None:
+    assert _time_of_day_spinner(datetime(2026, 3, 12, 9, 0, 0)) == "earth"
+    assert _time_of_day_spinner(datetime(2026, 3, 12, 22, 0, 0)) == "moon"
+    assert (_core_unit_label(1), _core_unit_label(2)) == ("core", "Cores")
+    assert environment_label(None) == "local"
+    # Core serves no bare names, so there is no backend label to prefix.
+    assert environment_label("bioinfo_tools") == "bioinfo_tools"
+    assert environment_label("docker://ubuntu:24.04") == "docker://ubuntu:24.04"
+
+    truncated = _truncate_task_label(
+        "extremely_long_alignment_and_qc_summary_task_name[12]", max_width=24
+    )
+    assert truncated.startswith("extrem") and truncated.endswith("name[12]")
+    assert len(truncated) <= 24
 
 
-class TestCliLabelTruncation:
-    def test_truncate_task_label_preserves_suffix_and_fanout_index(self) -> None:
-        label = "extremely_long_alignment_and_qc_summary_task_name[12]"
-        truncated = _truncate_task_label(label, max_width=24)
-        assert truncated.endswith("name[12]")
-        assert truncated.startswith("extrem")
-        assert len(truncated) <= 24
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        ({"waiting": 4}, lambda plain: plain == " " * 8),
+        ({"running": 2, "staging": 1, "cached": 1}, lambda plain: "█" in plain),
+    ],
+)
+def test_grouped_progress_bar_segments(counts: dict, expected) -> None:
+    console = Console(width=80, record=True)
+    bar = _MultiStateBar(counts=Counter(counts), total=4, width=8)
+    (rendered,) = list(bar.__rich_console__(console, console.options))
+    assert expected(rendered.plain)
 
 
-class TestCliEnvironmentLabels:
-    def test_environment_label_formats_local_and_bare_names(self) -> None:
-        assert environment_label(None) == "local"
-        # Core serves no bare names, so there is no backend label to prefix.
-        assert environment_label("bioinfo_tools") == "bioinfo_tools"
-        assert environment_label("docker://ubuntu:24.04") == "docker://ubuntu:24.04"
-
-
-class TestCliCoreLabels:
-    def test_core_unit_label_handles_singular_and_plural(self) -> None:
-        assert _core_unit_label(1) == "core"
-        assert _core_unit_label(2) == "Cores"
-
-
-class TestCliSecrets:
-    def test_secrets_list_and_validate(self, monkeypatch) -> None:
-        Path("workflow.py").write_text(
-            """
+_SECRET_FLOW = """
 from ginkgo import flow, secret, task
 
 @task()
@@ -1806,331 +1076,97 @@ def echo_token(token: str) -> str:
 @flow
 def main():
     return echo_token(token=secret("API_TOKEN"))
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        listed = _run_cli("secrets", "list", "workflow.py", cwd=Path.cwd())
-        assert listed.returncode == 0, listed.stderr
-        assert "env:API_TOKEN" in listed.stdout
-
-        monkeypatch.delenv("API_TOKEN", raising=False)
-        missing = _run_cli("secrets", "validate", "workflow.py", cwd=Path.cwd())
-        assert missing.returncode == 1
-        assert "env:API_TOKEN" in missing.stdout
-
-        monkeypatch.setenv("API_TOKEN", "ok")
-        validated = _run_cli("secrets", "validate", "workflow.py", cwd=Path.cwd())
-        assert validated.returncode == 0, validated.stderr
-        assert "env:API_TOKEN" in validated.stdout
-
-    def test_doctor_reports_missing_secret(self, monkeypatch) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, secret, task
-
-@task()
-def echo_token(token: str) -> str:
-    return token
-
-@flow
-def main():
-    return echo_token(token=secret("MISSING_TOKEN"))
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.delenv("MISSING_TOKEN", raising=False)
-        result = _run_cli("doctor", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "Missing secrets: env:MISSING_TOKEN" in result.stderr
+"""
 
 
-class TestCliGroupedProgressBars:
-    def test_grouped_bar_renders_waiting_as_empty_space(self) -> None:
-        console = Console(width=80, record=True)
-        bar = _MultiStateBar(counts=Counter({"waiting": 4}), total=4, width=8)
+def test_secrets_list_and_validate(monkeypatch: pytest.MonkeyPatch) -> None:
+    write("workflow.py", _SECRET_FLOW)
+    assert "env:API_TOKEN" in run_ok("secrets", "list", "workflow.py").stdout
 
-        rendered = list(bar.__rich_console__(console, console.options))
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    missing = run_cli("secrets", "validate", "workflow.py")
+    assert missing.returncode == 1 and "env:API_TOKEN" in missing.stdout
 
-        assert len(rendered) == 1
-        assert rendered[0].plain == " " * 8
-
-    def test_grouped_bar_uses_slab_fill_for_active_segments(self) -> None:
-        console = Console(width=80, record=True)
-        bar = _MultiStateBar(
-            counts=Counter({"running": 2, "staging": 1, "cached": 1}),
-            total=4,
-            width=8,
-        )
-
-        rendered = list(bar.__rich_console__(console, console.options))
-
-        assert len(rendered) == 1
-        assert "█" in rendered[0].plain
+    monkeypatch.setenv("API_TOKEN", "ok")
+    assert "env:API_TOKEN" in run_ok("secrets", "validate", "workflow.py").stdout
 
 
 class TestCliAgentAndInspection:
-    def test_run_agent_emits_jsonl_events(self) -> None:
-        Path("workflow.py").write_text(
+    def test_run_agent_verbose_emits_jsonl_events_and_task_logs(self) -> None:
+        write(
+            "workflow.py",
             """
-from ginkgo import flow, task
+            from ginkgo import flow, task
 
-@task()
-def produce() -> str:
-    return "ok"
+            @task()
+            def produce() -> str:
+                print("streamed stdout line")
+                return "ok"
 
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
+            @flow
+            def main():
+                return produce()
+            """,
         )
-
-        result = _run_cli("run", "workflow.py", "--agent-output", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
+        result = run_ok("run", "workflow.py", "--agent-output", "--verbose")
         events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-        event_types = {event["event"] for event in events}
-        assert "run_started" in event_types
-        assert "run_validated" in event_types
-        assert "task_started" in event_types
-        assert "task_completed" in event_types
-        assert "run_completed" in event_types
-
-    def test_run_agent_verbose_emits_task_log_events(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    print("streamed stdout line")
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
+        assert {
+            "run_started",
+            "run_validated",
+            "task_started",
+            "task_completed",
+            "run_completed",
+        } <= {event["event"] for event in events}
+        logs = [event for event in events if event["event"] == "task_log"]
+        assert any(
+            event["stream"] == "stdout" and "streamed stdout line" in event["chunk"]
+            for event in logs
         )
 
-        result = _run_cli("run", "workflow.py", "--agent-output", "--verbose", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-        task_logs = [event for event in events if event["event"] == "task_log"]
-        assert task_logs
-        assert any(event["stream"] == "stdout" for event in task_logs)
-        assert any("streamed stdout line" in event["chunk"] for event in task_logs)
+    def test_cache_explain_takes_a_positional_a_flag_or_the_latest_run(self) -> None:
+        source = """
+            from ginkgo import flow, task
 
-    def test_inspect_workflow_returns_static_graph_json(self) -> None:
-        Path("workflow.py").write_text(
+            @task(version="{version}")
+            def produce(value: str) -> str:
+                return value
+
+            @flow
+            def main():
+                return produce(value="a")
             """
-from ginkgo import flow, task
+        write("workflow.py", source.format(version="v1"))
+        run_ok("run", "workflow.py")
+        write("workflow.py", source.format(version="v2"))
+        run_id = run_dir_of(run_ok("run", "workflow.py").stdout).name
 
-@task()
-def one() -> str:
-    return "one"
-
-@task()
-def two(value: str) -> str:
-    return value
-
-@flow
-def main():
-    return two(value=one())
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("inspect", "workflow", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["task_count"] == 2
-        assert payload["edge_count"] == 1
-        assert {task["task_name"] for task in payload["tasks"]} == {"one", "two"}
-
-    def test_debug_json_and_inspect_run_return_machine_readable_failure_data(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def explode(value: str) -> str:
-    raise RuntimeError(f"boom:{value}")
-
-@flow
-def main():
-    return explode(value="sample")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert run.returncode == 1
-        run_dir = _extract_run_dir(run.stderr)
-
-        debug = _run_cli("debug", run_dir.name, "--json", cwd=Path.cwd())
-        assert debug.returncode == 0, debug.stderr
-        debug_payload = json.loads(debug.stdout)
-        assert debug_payload["status"] == "failed"
-        assert debug_payload["failures"][0]["task_name"] == "explode"
-
-        shown = _run_cli("runs", "show", run_dir.name, "--json", cwd=Path.cwd())
-        assert shown.returncode == 0, shown.stderr
-        payload = json.loads(shown.stdout)
-        assert payload["status"] == "failed"
-        assert payload["tasks"][0]["failure"]["kind"] == "user_code_error"
-
-    def test_doctor_json_reports_machine_readable_diagnostics(self, monkeypatch) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, secret, task
-
-@task()
-def echo_token(token: str) -> str:
-    return token
-
-@flow
-def main():
-    return echo_token(token=secret("MISSING_TOKEN"))
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.delenv("MISSING_TOKEN", raising=False)
-        result = _run_cli("doctor", "workflow.py", "--json", cwd=Path.cwd())
-        assert result.returncode == 1
-        payload = json.loads(result.stdout)
-        assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "missing_secret"
-
-    def test_cache_explain_reports_rerun_reason(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task(version="v1")
-def produce(value: str) -> str:
-    return value
-
-@flow
-def main():
-    return produce(value="a")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert first.returncode == 0, first.stderr
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task(version="v2")
-def produce(value: str) -> str:
-    return value
-
-@flow
-def main():
-    return produce(value="a")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        second = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert second.returncode == 0, second.stderr
-        run_dir = _extract_run_dir(second.stdout)
-
-        explain = _run_cli("cache", "explain", "--run", run_dir.name, "--json", cwd=Path.cwd())
-        assert explain.returncode == 0, explain.stderr
-        payload = json.loads(explain.stdout)
-        assert payload["tasks"][0]["reason"] in {
+        positional = json.loads(run_ok("cache", "explain", run_id, "--json").stdout)
+        assert positional["run_id"] == run_id
+        assert positional["tasks"][0]["reason"] in {
             "version_bump",
             "cache_key_changed",
             "source_hash_changed",
         }
+        flag = json.loads(run_ok("cache", "explain", "--run", run_id, "--json").stdout)
+        assert flag == positional
+        assert json.loads(run_ok("cache", "explain", "--json").stdout) == positional
 
-    def test_cache_explain_accepts_positional_or_run_flag(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert run.returncode == 0, run.stderr
-        run_dir = _extract_run_dir(run.stdout)
-
-        positional = _run_cli("cache", "explain", run_dir.name, "--json", cwd=Path.cwd())
-        assert positional.returncode == 0, positional.stderr
-        assert json.loads(positional.stdout)["run_id"] == run_dir.name
-
-        flag = _run_cli("cache", "explain", "--run", run_dir.name, "--json", cwd=Path.cwd())
-        assert flag.returncode == 0, flag.stderr
-        assert json.loads(flag.stdout) == json.loads(positional.stdout)
-
-    def test_cache_explain_rejects_conflicting_run_ids(self) -> None:
-        result = _run_cli("cache", "explain", "run-a", "--run", "run-b", cwd=Path.cwd())
-        assert result.returncode == 2
-        assert "Conflicting run ids" in result.stderr
-
-    def test_cache_explain_accepts_agreeing_run_ids(self) -> None:
-        """Both forms naming the same run is not a usage error, only a missing run."""
-        result = _run_cli("cache", "explain", "run-a", "--run", "run-a", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "Run not found: run-a" in result.stderr
-
-    def test_cache_explain_defaults_to_the_latest_run(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert first.returncode == 0, first.stderr
-        second = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert second.returncode == 0, second.stderr
-        run_dir = _extract_run_dir(second.stdout)
-
-        explain = _run_cli("cache", "explain", "--json", cwd=Path.cwd())
-        assert explain.returncode == 0, explain.stderr
-        assert json.loads(explain.stdout)["run_id"] == run_dir.name
-
-    def test_cache_explain_without_runs_reports_no_runs(self) -> None:
-        result = _run_cli("cache", "explain", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "No runs recorded" in result.stderr
+    @pytest.mark.parametrize(
+        ("args", "code", "message"),
+        [
+            (("run-a", "--run", "run-b"), 2, "Conflicting run ids"),
+            # Both forms naming the same run is not a usage error, only a missing run.
+            (("run-a", "--run", "run-a"), 1, "Run not found: run-a"),
+            ((), 1, "No runs recorded"),
+        ],
+    )
+    def test_cache_explain_rejections(self, args: tuple, code: int, message: str) -> None:
+        result = run_cli("cache", "explain", *args)
+        assert result.returncode == code
+        assert message in result.stderr
 
 
-_PARAM_WORKFLOW = (
-    """
+_PARAM_WORKFLOW = """
 import ginkgo
 from pathlib import Path
 from ginkgo import file, flow, task
@@ -2141,22 +1177,17 @@ label = ginkgo.param("label", default="base", help="Run label")
 @task()
 def write_it(n: int, tag: str, output_path: str) -> file:
     out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(f"{tag}:{n}", encoding="utf-8")
     return out
 
 @flow
 def main():
     return write_it(n=n_reps, tag=label, output_path="result.txt")
-""".strip()
-    + "\n"
-)
-
+"""
 
 # Reads the parameter from a module global inside the task body, which a worker
 # subprocess only sees correctly if the run's parameters cross the boundary.
-_GLOBAL_PARAM_WORKFLOW = (
-    """
+_GLOBAL_PARAM_WORKFLOW = """
 import ginkgo
 from pathlib import Path
 from ginkgo import file, flow, task
@@ -2166,20 +1197,15 @@ tag = ginkgo.param("tag", default="DEFAULT")
 @task()
 def write_global(output_path: str) -> file:
     out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(f"tag={tag}", encoding="utf-8")
     return out
 
 @flow
 def main():
     return write_global(output_path="result.txt")
-""".strip()
-    + "\n"
-)
+"""
 
-
-_REQUIRED_PARAM_WORKFLOW = (
-    """
+_REQUIRED_PARAM_WORKFLOW = """
 import ginkgo
 from pathlib import Path
 from ginkgo import file, flow, task
@@ -2195,449 +1221,312 @@ def write_region(r: str, output_path: str) -> file:
 @flow
 def main():
     return write_region(r=region, output_path="result.txt")
-""".strip()
-    + "\n"
-)
+"""
+
+_CONFIG = '[params]\nn_reps = 9\nlabel = "from-config"\n'
+
+
+def _result() -> str:
+    return Path("result.txt").read_text(encoding="utf-8")
 
 
 class TestCliWorkflowParams:
-    def test_cli_flag_supplies_declared_parameter(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli(
-            "run", "workflow.py", "--n-reps", "24", "--label", "wide", cwd=Path.cwd()
-        )
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "wide:24"
-
-    def test_defaults_used_when_nothing_supplied(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "base:3"
-
-    def test_cli_beats_config_which_beats_default(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        Path("ginkgo.toml").write_text(
-            '[params]\nn_reps = 9\nlabel = "from-config"\n', encoding="utf-8"
-        )
-
-        from_config = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert from_config.returncode == 0, from_config.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "from-config:9"
-
-        from_cli = _run_cli("run", "workflow.py", "--n-reps", "99", cwd=Path.cwd())
-        assert from_cli.returncode == 0, from_cli.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "from-config:99"
-
-    def test_params_and_sources_recorded_in_provenance(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        Path("ginkgo.toml").write_text('[params]\nlabel = "cfg"\n', encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--n-reps", "7", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        manifest = _manifest(_extract_run_dir(result.stdout))
-        assert manifest["params"]["n_reps"] == 7
-        assert manifest["params"]["label"] == "cfg"
-        assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
-
-    def test_unknown_flag_is_rejected_and_lists_declared_parameters(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--nope", "1", cwd=Path.cwd())
-        assert result.returncode == 1
-        combined = result.stdout + result.stderr
-        assert "unrecognized arguments: --nope 1" in combined
-        assert "--n-reps" in combined and "--label" in combined
-
-    def test_negative_parameter_value_is_not_read_as_a_flag(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--n-reps", "-2", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "base:-2"
-
-    def test_abbreviated_ginkgo_flag_is_rejected(self) -> None:
-        """Abbreviations are unsupported, and must not be read as parameters."""
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--job", "1", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "--job" in result.stdout + result.stderr
-
-    def test_type_error_names_the_parameter(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--n-reps", "many", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "Cannot read 'many' as int for parameter 'n_reps'" in result.stdout + result.stderr
-
-    def test_required_parameter_missing_fails_before_any_task_runs(self) -> None:
-        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "is required but was not supplied" in result.stdout + result.stderr
-        assert not Path("result.txt").exists()
-
-    def test_required_parameter_supplied_runs(self) -> None:
-        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--region", "2L:1-100", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "2L:1-100"
-
-    def test_worker_sees_cli_value_read_from_a_module_global(self) -> None:
-        Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--tag", "FROM_CLI", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "tag=FROM_CLI"
-
-    def test_parameter_passed_as_task_argument_invalidates_cache(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        first = _run_cli("run", "workflow.py", "--n-reps", "1", cwd=Path.cwd())
-        assert first.returncode == 0, first.stderr
-        second = _run_cli("run", "workflow.py", "--n-reps", "2", cwd=Path.cwd())
-        assert second.returncode == 0, second.stderr
-        assert "1 tasks executed, 0 cached" in second.stdout
-        assert Path("result.txt").read_text(encoding="utf-8") == "base:2"
-
-    def test_inline_equals_and_repeated_values(self) -> None:
-        Path("workflow.py").write_text(
-            """
-import ginkgo
-from pathlib import Path
-from ginkgo import file, flow, task
-
-items = ginkgo.param("items", multiple=True, default=())
-
-@task()
-def write_items(values: tuple, output_path: str) -> file:
-    out = Path(output_path)
-    out.write_text(",".join(values), encoding="utf-8")
-    return out
-
-@flow
-def main():
-    return write_items(values=items, output_path="result.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        result = _run_cli("run", "workflow.py", "--items=a", "--items", "b", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "a,b"
-
-    def test_run_help_lists_declared_parameters(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "parameters declared by workflow.py" in result.stdout
-        assert "--n-reps INT" in result.stdout
-        assert "Number of replicates" in result.stdout
-        assert "--label STR" in result.stdout
-
-    def test_run_help_shows_the_config_value_as_the_default(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        Path("ginkgo.toml").write_text("[params]\nn_reps = 7\n", encoding="utf-8")
-        Path("extra.toml").write_text('[params]\nlabel = "override"\n', encoding="utf-8")
-
-        result = _run_cli("run", "workflow.py", "--config", "extra.toml", "--help", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "Number of replicates (default: 7, from ginkgo.toml)" in result.stdout
-        assert "Run label (default: 'override', from extra.toml)" in result.stdout
-
-    def test_run_help_names_the_auto_discovered_workflow(self) -> None:
-        Path("flow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-
-        result = _run_cli("run", "--help", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "parameters declared by flow.py (auto-discovered):" in result.stdout
-        assert "--n-reps INT" in result.stdout
-
-    def test_run_help_keeps_bracketed_words_in_the_usage_text(self) -> None:
-        result = _run_cli("run", "--help", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        text = _unwrapped(result.stdout)
-        assert "[workflow]" in text
-        assert "[remote.executors]" in text
-        assert "[remote.k8s]" in text
-
-    def test_run_help_prints_bracketed_parameter_help_verbatim(self) -> None:
-        Path("workflow.py").write_text(
-            """
-import ginkgo
-from ginkgo import flow, task
-
-n = ginkgo.param("n", type=int, default=1, help="number [/x] of [bold] things")
-tag = ginkgo.param("tag", default="[red]")
-
-@task()
-def echo(n: int, tag: str) -> str:
-    return f"{tag}{n}"
-
-@flow
-def main():
-    return echo(n=n, tag=tag)
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "number [/x] of [bold] things" in result.stdout
-        assert "(default: '[red]')" in result.stdout
-
-    def test_run_help_still_shows_usage_for_unimportable_workflow(self) -> None:
-        Path("workflow.py").write_text("import nonexistent_module_xyz\n", encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
-        assert result.returncode == 0
-        assert "--dry-run" in result.stdout
-        assert "Could not import workflow.py" in result.stdout
-
-    def test_other_commands_still_reject_unknown_flags(self) -> None:
-        result = _run_cli("cache", "ls", "--bogus", cwd=Path.cwd())
-        assert result.returncode == 2
-        assert "unrecognized arguments: --bogus" in result.stderr
-
-    def test_other_commands_suggest_the_flag_a_typo_meant(self) -> None:
-        result = _run_cli("runs", "ls", "--limt", "5", cwd=Path.cwd())
-        assert result.returncode == 2
-        assert "--limt: did you mean --limit?" in result.stderr
+    @pytest.mark.parametrize(
+        ("path", "config", "args", "expected"),
+        [
+            ("workflow.py", None, ("workflow.py", "--n-reps", "24", "--label", "wide"), "wide:24"),
+            ("workflow.py", None, ("workflow.py",), "base:3"),
+            ("workflow.py", _CONFIG, ("workflow.py",), "from-config:9"),
+            ("workflow.py", _CONFIG, ("workflow.py", "--n-reps", "99"), "from-config:99"),
+            ("workflow.py", None, ("workflow.py", "--n-reps", "-2"), "base:-2"),
+            # A parameter value must not be captured by the optional workflow positional.
+            ("flow.py", None, ("--label", "discovered"), "discovered:3"),
+        ],
+    )
+    def test_parameter_values_cli_over_config_over_default(
+        self, path: str, config: str | None, args: tuple, expected: str
+    ) -> None:
+        write(path, _PARAM_WORKFLOW)
+        if config is not None:
+            write("ginkgo.toml", config)
+        result = run_ok("run", *args)
+        assert _result() == expected
+        assert "from a module global" not in result.stdout + result.stderr
 
     @pytest.mark.parametrize(
-        ("typo", "meant"), [("--dryrun", "--dry-run"), ("--n-rep", "--n-reps")]
+        ("args", "message"),
+        [
+            (("--nope", "1"), "unrecognized arguments: --nope 1"),
+            # Abbreviations are unsupported, and must not be read as parameters.
+            (("--job", "1"), "--job"),
+            (("--n-reps", "many"), "Cannot read 'many' as int for parameter 'n_reps'"),
+            (("--dryrun",), "--dryrun: did you mean --dry-run?"),
+            (("--n-rep",), "--n-rep: did you mean --n-reps?"),
+        ],
     )
-    def test_run_suggests_the_flag_or_parameter_a_typo_meant(self, typo: str, meant: str) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", typo, cwd=Path.cwd())
+    def test_a_bad_parameter_flag_is_refused(self, args: tuple, message: str) -> None:
+        write("workflow.py", _PARAM_WORKFLOW)
+        result = run_cli("run", "workflow.py", *args)
         assert result.returncode == 1
-        assert f"{typo}: did you mean {meant}?" in result.stdout + result.stderr
+        assert message in result.stdout + result.stderr
+        assert not Path("result.txt").exists()
 
-    def test_inspect_workflow_exposes_declared_parameters(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("inspect", "workflow", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        by_name = {item["name"]: item for item in payload["params"]}
-        assert by_name["n_reps"]["type"] == "int"
-        assert by_name["n_reps"]["default"] == 3
-        assert by_name["n_reps"]["flag"] == "--n-reps"
-        assert by_name["label"]["help"] == "Run label"
+    def test_params_and_sources_recorded_in_provenance(self) -> None:
+        write("workflow.py", _PARAM_WORKFLOW)
+        write("ginkgo.toml", '[params]\nlabel = "cfg"\n')
+        manifest = manifest_of(run_dir_of(run_ok("run", "workflow.py", "--n-reps", "7").stdout))
+        assert manifest["params"] == {"n_reps": 7, "label": "cfg"}
+        assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
 
-    def test_inspect_workflow_tolerates_unsupplied_required_parameter(self) -> None:
-        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("inspect", "workflow", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
+    def test_required_parameter(self) -> None:
+        write("workflow.py", _REQUIRED_PARAM_WORKFLOW)
+        missing = run_cli("run", "workflow.py")
+        assert missing.returncode == 1
+        assert "is required but was not supplied" in missing.stdout + missing.stderr
+        assert not Path("result.txt").exists()
+
+        run_ok("run", "workflow.py", "--region", "2L:1-100")
+        assert _result() == "2L:1-100"
+
+        # Inspecting or checking a workflow does not need the value.
+        payload = json.loads(run_ok("inspect", "workflow", "workflow.py").stdout)
         assert payload["task_count"] == 1
-        assert payload["params"][0]["required"] is True
-        assert payload["params"][0]["supplied"] is False
-
-    def test_doctor_tolerates_unsupplied_required_parameter(self) -> None:
-        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("doctor", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-    def test_config_override_layers_over_project_config(self) -> None:
-        """A base key absent from every override must survive the merge."""
-        Path("ginkgo.toml").write_text(
-            'kept = "from-base"\nreplaced = "from-base"\n', encoding="utf-8"
+        assert (payload["params"][0]["required"], payload["params"][0]["supplied"]) == (
+            True,
+            False,
         )
-        Path("override.toml").write_text('replaced = "from-override"\n', encoding="utf-8")
-        Path("workflow.py").write_text(
-            """
-import ginkgo
-from pathlib import Path
-from ginkgo import file, flow, task
+        run_ok("doctor", "workflow.py")
 
-cfg = ginkgo.config("ginkgo.toml")
-
-@task()
-def write_both(kept: str, replaced: str, output_path: str) -> file:
-    out = Path(output_path)
-    out.write_text(f"{kept}/{replaced}", encoding="utf-8")
-    return out
-
-@flow
-def main():
-    return write_both(
-        kept=cfg["kept"], replaced=cfg["replaced"], output_path="result.txt"
-    )
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "from-base/from-override"
-
-    def test_config_override_does_not_excuse_a_missing_base_file(self) -> None:
-        """--config supplies values, not the file the workflow asked for."""
-        Path("override.toml").write_text('replaced = "from-override"\n', encoding="utf-8")
-        Path("workflow.py").write_text(
-            """
-import ginkgo
-from pathlib import Path
-from ginkgo import file, flow, task
-
-cfg = ginkgo.config("typo.toml")
-
-@task()
-def write_it(replaced: str, output_path: str) -> file:
-    out = Path(output_path)
-    out.write_text(replaced, encoding="utf-8")
-    return out
-
-@flow
-def main():
-    return write_it(replaced=cfg["replaced"], output_path="result.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "typo.toml" in result.stdout + result.stderr
-
-    def test_mistyped_config_key_reports_the_file_keys_and_location(self) -> None:
-        """The report must name the section and the keys, and keep the file:line."""
-        Path("ginkgo.toml").write_text(
-            "[qc]\nmin_length = 50\nmin_quality = 20\n", encoding="utf-8"
-        )
-        Path("workflow.py").write_text(
-            """
-import ginkgo
-from pathlib import Path
-from ginkgo import file, flow, task
-
-cfg = ginkgo.config("ginkgo.toml")
-
-@task()
-def write_it(value: int, output_path: str) -> file:
-    out = Path(output_path)
-    out.write_text(str(value), encoding="utf-8")
-    return out
-
-@flow
-def main():
-    return write_it(value=cfg["qc"]["min_lenght"], output_path="result.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 1
-        output = _unwrapped(result.stdout + result.stderr)
-        assert "'min_lenght' is not a key in [qc] of ginkgo.toml" in output
-        assert "Available: min_length, min_quality" in output
-        assert "ConfigKeyError at" in output
-        assert "workflow.py:15 in main" in output
-        assert "Traceback" not in output
-
-    def test_autodiscovered_workflow_accepts_parameter_flags(self) -> None:
-        """A parameter value must not be captured by the optional workflow positional."""
-        Path("flow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "--label", "discovered", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "discovered:3"
-
-    def test_recorded_params_are_the_effective_values_only(self) -> None:
-        """The raw [params] table must not sit beside the values that superseded it."""
-        Path("workflow.py").write_text(
-            """
-import ginkgo
-from pathlib import Path
-from ginkgo import file, flow, task
-
-cfg = ginkgo.config("ginkgo.toml")
-label = ginkgo.param("label", default="base")
-
-@task()
-def write_it(tag: str, other: str, output_path: str) -> file:
-    out = Path(output_path)
-    out.write_text(f"{tag}/{other}", encoding="utf-8")
-    return out
-
-@flow
-def main():
-    return write_it(tag=label, other=cfg["other"], output_path="result.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        Path("ginkgo.toml").write_text(
-            'other = "kept"\n\n[params]\nlabel = "stale"\n\n[secrets.dotenv]\nenabled = false\n',
-            encoding="utf-8",
-        )
-        result = _run_cli("run", "workflow.py", "--label", "effective", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-
-        params = _manifest(_extract_run_dir(result.stdout))["params"]
-        assert params["label"] == "effective"
-        assert params["other"] == "kept"
-        # Neither the raw [params] table nor ginkgo's own tables are parameters.
-        assert "params" not in params
-        assert "secrets" not in params
-
-    def test_run_warns_when_a_task_body_reads_a_parameter_global(self) -> None:
-        Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--tag", "XYZ", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        # Rich wraps the warning, so compare against whitespace-normalised output.
-        combined = " ".join((result.stdout + result.stderr).split())
+    def test_a_parameter_read_from_a_module_global(self) -> None:
+        write("workflow.py", _GLOBAL_PARAM_WORKFLOW)
+        result = run_ok("run", "workflow.py", "--tag", "FROM_CLI")
+        # The worker sees the CLI value, and the run warns about the pattern.
+        assert _result() == "tag=FROM_CLI"
+        combined = unwrapped(result.stdout + result.stderr)
         assert "reads parameter 'tag' from a module global" in combined
         assert "Pass it as an argument instead." in combined
 
-    def test_run_does_not_warn_when_a_parameter_is_passed_as_an_argument(self) -> None:
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("run", "workflow.py", "--n-reps", "5", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "from a module global" not in result.stdout + result.stderr
-
-    def test_doctor_reports_a_global_read_as_a_warning_and_still_passes(self) -> None:
-        Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")
-        result = _run_cli("doctor", "workflow.py", "--json", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
+        payload = json.loads(run_ok("doctor", "workflow.py", "--json").stdout)
         assert payload["ok"] is True
         codes = {(item["severity"], item["code"]) for item in payload["diagnostics"]}
         assert ("warning", "param_read_from_global") in codes
 
-    def test_config_override_layers_the_params_table(self) -> None:
-        """An override setting one parameter must not drop the others in the base table."""
-        Path("workflow.py").write_text(
+    def test_parameter_passed_as_task_argument_invalidates_cache(self) -> None:
+        write("workflow.py", _PARAM_WORKFLOW)
+        run_ok("run", "workflow.py", "--n-reps", "1")
+        assert "1 tasks executed, 0 cached" in run_ok("run", "workflow.py", "--n-reps", "2").stdout
+        assert _result() == "base:2"
+
+    def test_inline_equals_and_repeated_values(self) -> None:
+        write(
+            "workflow.py",
             """
+            import ginkgo
+            from pathlib import Path
+            from ginkgo import file, flow, task
+
+            items = ginkgo.param("items", multiple=True, default=())
+
+            @task()
+            def write_items(values: tuple, output_path: str) -> file:
+                Path(output_path).write_text(",".join(values), encoding="utf-8")
+                return Path(output_path)
+
+            @flow
+            def main():
+                return write_items(values=items, output_path="result.txt")
+            """,
+        )
+        run_ok("run", "workflow.py", "--items=a", "--items", "b")
+        assert _result() == "a,b"
+
+    def test_run_help_lists_parameters_with_their_effective_defaults(self) -> None:
+        write("workflow.py", _PARAM_WORKFLOW)
+        write("ginkgo.toml", "[params]\nn_reps = 7\n")
+        write("extra.toml", '[params]\nlabel = "override"\n')
+        out = run_ok("run", "workflow.py", "--config", "extra.toml", "--help").stdout
+        assert "parameters declared by workflow.py" in out
+        assert "--n-reps INT" in out and "--label STR" in out
+        assert "Number of replicates (default: 7, from ginkgo.toml)" in out
+        assert "Run label (default: 'override', from extra.toml)" in out
+
+        write("flow.py", _PARAM_WORKFLOW)
+        out = run_ok("run", "--help").stdout
+        assert "parameters declared by flow.py (auto-discovered):" in out
+        assert "--n-reps INT" in out
+
+        # An unimportable workflow still gets the usage text.
+        write("broken.py", "import nonexistent_module_xyz\n")
+        out = run_ok("run", "broken.py", "--help").stdout
+        assert "--dry-run" in out and "Could not import broken.py" in out
+
+    def test_run_help_keeps_bracketed_text_verbatim(self) -> None:
+        text = unwrapped(run_ok("run", "--help").stdout)
+        assert "[workflow]" in text and "[remote.executors]" in text and "[remote.k8s]" in text
+
+        write(
+            "workflow.py",
+            """
+            import ginkgo
+            from ginkgo import flow, task
+
+            n = ginkgo.param("n", type=int, default=1, help="number [/x] of [bold] things")
+            tag = ginkgo.param("tag", default="[red]")
+
+            @task()
+            def echo(n: int, tag: str) -> str:
+                return f"{tag}{n}"
+
+            @flow
+            def main():
+                return echo(n=n, tag=tag)
+            """,
+        )
+        out = run_ok("run", "workflow.py", "--help").stdout
+        assert "number [/x] of [bold] things" in out and "(default: '[red]')" in out
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            (("cache", "ls", "--bogus"), "unrecognized arguments: --bogus"),
+            (("runs", "ls", "--limt", "5"), "--limt: did you mean --limit?"),
+        ],
+    )
+    def test_other_commands_still_reject_unknown_flags(self, args: tuple, message: str) -> None:
+        result = run_cli(*args)
+        assert result.returncode == 2
+        assert message in result.stderr
+
+    def test_inspect_workflow_exposes_declared_parameters(self) -> None:
+        write("workflow.py", _PARAM_WORKFLOW)
+        payload = json.loads(run_ok("inspect", "workflow", "workflow.py").stdout)
+        n_reps, label = sorted(payload["params"], key=lambda item: item["name"] != "n_reps")
+        assert (n_reps["type"], n_reps["default"], n_reps["flag"]) == ("int", 3, "--n-reps")
+        assert label["help"] == "Run label"
+
+    @pytest.mark.parametrize(
+        ("base", "override", "expected"),
+        [
+            # A base key absent from every override must survive the merge.
+            ('kept = "base"\nreplaced = "base"\n', 'replaced = "override"\n', "base/override"),
+            # An override setting one parameter must not drop the others in [params].
+            (
+                '[params]\nkept = "base"\nreplaced = "base"\n',
+                '[params]\nreplaced = "override"\n',
+                "base/override",
+            ),
+        ],
+    )
+    def test_config_override_layers_over_project_config(
+        self, base: str, override: str, expected: str
+    ) -> None:
+        write("ginkgo.toml", base)
+        write("override.toml", override)
+        source = "cfg[{0!r}]" if not base.startswith("[params]") else "ginkgo.param({0!r})"
+        write(
+            "workflow.py",
+            f"""
 import ginkgo
 from pathlib import Path
 from ginkgo import file, flow, task
 
-a = ginkgo.param("a", type=int, default=-1)
-b = ginkgo.param("b", type=int, default=-1)
+cfg = ginkgo.config("ginkgo.toml")
+kept = {source.format("kept")}
+replaced = {source.format("replaced")}
 
 @task()
-def write_both(x: int, y: int, output_path: str) -> file:
-    out = Path(output_path)
-    out.write_text(f"a={x} b={y}", encoding="utf-8")
-    return out
+def write_both(kept: str, replaced: str, output_path: str) -> file:
+    Path(output_path).write_text(f"{{kept}}/{{replaced}}", encoding="utf-8")
+    return Path(output_path)
 
 @flow
 def main():
-    return write_both(x=a, y=b, output_path="result.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
+    return write_both(kept=kept, replaced=replaced, output_path="result.txt")
+""",
         )
-        Path("ginkgo.toml").write_text("[params]\na = 1\nb = 2\n", encoding="utf-8")
-        Path("override.toml").write_text("[params]\na = 9\n", encoding="utf-8")
+        run_ok("run", "workflow.py", "--config", "override.toml")
+        assert _result() == expected
 
-        result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert Path("result.txt").read_text(encoding="utf-8") == "a=9 b=2"
+    @pytest.mark.parametrize(
+        ("config", "lookup", "args", "phrases"),
+        [
+            # --config supplies values, not the file the workflow asked for.
+            ("typo.toml", '["replaced"]', ("--config", "override.toml"), ["typo.toml"]),
+            # The report names the section and the keys, and keeps the file:line.
+            (
+                "ginkgo.toml",
+                '["qc"]["min_lenght"]',
+                (),
+                [
+                    "'min_lenght' is not a key in [qc] of ginkgo.toml",
+                    "Available: min_length, min_quality",
+                    "ConfigKeyError at",
+                    "workflow.py:12 in main",
+                ],
+            ),
+        ],
+    )
+    def test_a_config_lookup_that_cannot_succeed_is_reported(
+        self, config: str, lookup: str, args: tuple, phrases: list[str]
+    ) -> None:
+        write("ginkgo.toml", "[qc]\nmin_length = 50\nmin_quality = 20\n")
+        write("override.toml", 'replaced = "from-override"\n')
+        write(
+            "workflow.py",
+            f"""
+import ginkgo
+from ginkgo import flow, task
+
+cfg = ginkgo.config("{config}")
+
+@task()
+def echo(value: str) -> str:
+    return value
+
+@flow
+def main():
+    return echo(value=cfg{lookup})
+""",
+        )
+        result = run_cli("run", "workflow.py", *args)
+        assert result.returncode == 1
+        output = unwrapped(result.stdout + result.stderr)
+        assert all(phrase in output for phrase in phrases)
+        assert "Traceback" not in output
+
+    def test_recorded_params_are_the_effective_values_only(self) -> None:
+        """The raw [params] table must not sit beside the values that superseded it."""
+        write(
+            "workflow.py",
+            """
+            import ginkgo
+            from ginkgo import flow, task
+
+            cfg = ginkgo.config("ginkgo.toml")
+            label = ginkgo.param("label", default="base")
+
+            @task()
+            def echo(tag: str, other: str) -> str:
+                return f"{tag}/{other}"
+
+            @flow
+            def main():
+                return echo(tag=label, other=cfg["other"])
+            """,
+        )
+        write(
+            "ginkgo.toml",
+            'other = "kept"\n\n[params]\nlabel = "stale"\n\n[secrets.dotenv]\nenabled = false\n',
+        )
+        result = run_ok("run", "workflow.py", "--label", "effective")
+        params = manifest_of(run_dir_of(result.stdout))["params"]
+        assert (params["label"], params["other"]) == ("effective", "kept")
+        # Neither the raw [params] table nor ginkgo's own tables are parameters.
+        assert "params" not in params and "secrets" not in params
 
 
-_FAILURE_POLICY_WORKFLOW = (
-    """
+_FAILURE_POLICY_WORKFLOW = """
 from pathlib import Path
-
 from ginkgo import flow, task
 
 @task(on_failure="ignore")
@@ -2654,13 +1543,9 @@ def analyse(sample: str) -> str:
 @flow
 def main():
     return [analyse(sample=load(sample=name)) for name in ("good", "bad")]
-""".strip()
-    + "\n"
-)
+"""
 
-
-_FAIL_FAST_WORKFLOW = (
-    """
+_FAIL_FAST_WORKFLOW = """
 from ginkgo import flow, task
 
 @task()
@@ -2674,154 +1559,103 @@ def analyse(sample: str) -> str:
 @flow
 def main():
     return analyse(sample=load(sample="bad"))
-""".strip()
-    + "\n"
-)
+"""
 
 
-_FANOUT_FAILURE_WORKFLOW = (
-    """
-from ginkgo import flow, task
-
-@task()
-def clean(region: str) -> str:
-    raise ValueError("malformed region")
-
-@flow
-def main():
-    return clean().map(region=["north", "south", "east"])
-""".strip()
-    + "\n"
-)
-
-
-_WRITES_STR_INPUT_WORKFLOW = (
-    """
-from pathlib import Path
-
-from ginkgo import flow, task
-
-@task()
-def append(log_path: str) -> str:
-    Path(log_path).write_text("line", encoding="utf-8")
-    return log_path
-
-@flow
-def main():
-    return append(log_path="run.log")
-""".strip()
-    + "\n"
-)
-
-
-class TestFailureOutputReadability:
+class TestFailureOutput:
     def test_identical_branch_failures_share_one_panel(self) -> None:
-        Path("workflow.py").write_text(_FANOUT_FAILURE_WORKFLOW, encoding="utf-8")
+        write(
+            "workflow.py",
+            """
+            from ginkgo import flow, task
 
+            @task()
+            def clean(region: str) -> str:
+                raise ValueError("malformed region")
+
+            @flow
+            def main():
+                return clean().map(region=["north", "south", "east"])
+            """,
+        )
         # One slot per branch, so all three fail whatever the CPU count.
-        result = _run_cli("run", "workflow.py", "--jobs", "3", cwd=Path.cwd())
-
+        result = run_cli("run", "workflow.py", "--jobs", "3")
         assert result.returncode == 1
         assert result.stdout.count("Failure Details:") == 1
-        assert "(×3)" in result.stdout
-        assert "Exit code" not in result.stdout
+        assert "(×3)" in result.stdout and "Exit code" not in result.stdout
 
-    def test_the_log_path_is_printed_whole_when_piped(self) -> None:
-        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
+    def test_a_fatal_failure_exits_one_and_logs_from_the_users_frame(self) -> None:
+        write("workflow.py", _FAIL_FAST_WORKFLOW)
+        result = run_cli("run", "workflow.py")
         assert result.returncode == 1
-        run_dir = _extract_run_dir(result.stderr)
-        (log_path,) = (run_dir / "logs").glob("*load*stderr.log")
+        assert "malformed input" in result.stdout + result.stderr
+
+        (log_path,) = (run_dir_of(result.stderr) / "logs").glob("*load*stderr.log")
+        # Piped output prints the log path whole.
         assert str(log_path) in result.stdout
-
-    def test_the_logged_traceback_starts_at_the_users_frame(self) -> None:
-        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
-        assert result.returncode == 1
-        run_dir = _extract_run_dir(result.stderr)
-        (log_path,) = (run_dir / "logs").glob("*load*stderr.log")
         frames = [
             line
             for line in log_path.read_text(encoding="utf-8").splitlines()
             if line.lstrip().startswith("File ")
         ]
-        assert frames
-        assert "workflow.py" in frames[0]
+        assert frames and "workflow.py" in frames[0]
         assert not any("ginkgo/runtime/worker.py" in frame for frame in frames)
 
     def test_a_task_notice_names_the_task_and_the_parameter(self) -> None:
-        Path("workflow.py").write_text(_WRITES_STR_INPUT_WORKFLOW, encoding="utf-8")
-        Path("run.log").write_text("", encoding="utf-8")
+        write(
+            "workflow.py",
+            """
+            from pathlib import Path
+            from ginkgo import flow, task
 
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+            @task()
+            def append(log_path: str) -> str:
+                Path(log_path).write_text("line", encoding="utf-8")
+                return log_path
 
-        assert result.returncode == 0, result.stderr
-        text = _unwrapped(result.stdout)
-        assert "append: wrote " in text
-        assert "(parameter 'log_path')" in text
+            @flow
+            def main():
+                return append(log_path="run.log")
+            """,
+        )
+        write("run.log")
+        text = unwrapped(run_ok("run", "workflow.py").stdout)
+        assert "append: wrote " in text and "(parameter 'log_path')" in text
         assert "Annotate 'log_path' `Out[file]`" in text
 
-
-class TestCliFailurePolicy:
     def test_an_ignored_failure_exits_three_and_reports_the_skips(self) -> None:
-        Path("workflow.py").write_text(_FAILURE_POLICY_WORKFLOW, encoding="utf-8")
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
+        write("workflow.py", _FAILURE_POLICY_WORKFLOW)
+        result = run_cli("run", "workflow.py")
         assert result.returncode == 3, result.stderr
         assert Path("good.done").exists()
         combined = result.stdout + result.stderr
-        assert "1 failed (1 ignored), 1 skipped" in combined
-        assert "Failed, run continued (1)" in combined
-        assert "Left unrun by a failure (1)" in combined
-        assert "blocked by load" in combined
+        for phrase in (
+            "1 failed (1 ignored), 1 skipped",
+            "Failed, run continued (1)",
+            "Left unrun by a failure (1)",
+            "blocked by load",
+        ):
+            assert phrase in combined
+
+        run_dir = run_dir_of(combined)
+        manifest = manifest_of(run_dir)
+        tasks = manifest["tasks"].values()
+        assert manifest["status"] == "failed"
+        assert Counter(task["status"] for task in tasks) == Counter(
+            {"succeeded": 2, "failed": 1, "skipped": 1}
+        )
+        skipped = next(task for task in tasks if task["status"] == "skipped")
+        ignored = next(task for task in tasks if task["status"] == "failed")
+        assert skipped["skipped_because"]["task_name"].endswith(".load")
+        assert ignored["ignored"] is True
+
+        debug = run_ok("debug", run_dir.name).stdout
+        assert "the run continued past this failure" in debug
 
     def test_keep_going_is_a_ginkgo_flag_not_a_workflow_parameter(self) -> None:
-        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
-
-        result = _run_cli("run", "workflow.py", "--keep-going", cwd=Path.cwd())
-
+        write("workflow.py", _FAIL_FAST_WORKFLOW)
+        result = run_cli("run", "workflow.py", "--keep-going")
         assert result.returncode == 3, result.stderr
         combined = result.stdout + result.stderr
         assert "unrecognized arguments" not in combined
         assert "1 failed (1 ignored), 1 skipped" in combined
-
-    def test_debug_says_which_failure_the_policy_let_pass(self) -> None:
-        Path("workflow.py").write_text(_FAILURE_POLICY_WORKFLOW, encoding="utf-8")
-
-        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert run.returncode == 3, run.stderr
-        run_dir = _extract_run_dir(run.stdout + run.stderr)
-
-        debug = _run_cli("debug", run_dir.name, cwd=Path.cwd())
-
-        assert debug.returncode == 0, debug.stderr
-        assert "the run continued past this failure" in debug.stdout
-
-    def test_a_fatal_failure_still_exits_one(self) -> None:
-        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
-        assert result.returncode == 1
-        assert "malformed input" in result.stdout + result.stderr
-
-    def test_the_manifest_records_what_was_skipped_and_ignored(self) -> None:
-        Path("workflow.py").write_text(_FAILURE_POLICY_WORKFLOW, encoding="utf-8")
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 3, result.stderr
-
-        run_dir = _extract_run_dir(result.stdout + result.stderr)
-        manifest = _manifest(run_dir)
-        statuses = Counter(task["status"] for task in manifest["tasks"].values())
-        assert manifest["status"] == "failed"
-        assert statuses == Counter({"succeeded": 2, "failed": 1, "skipped": 1})
-        skipped = next(task for task in manifest["tasks"].values() if task["status"] == "skipped")
-        ignored = next(task for task in manifest["tasks"].values() if task["status"] == "failed")
-        assert skipped["skipped_because"]["task_name"].endswith(".load")
-        assert ignored["ignored"] is True

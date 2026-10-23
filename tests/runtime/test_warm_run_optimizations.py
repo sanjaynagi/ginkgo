@@ -8,7 +8,6 @@ Layer 4: --trust-mtimes stat-index fast path
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +16,8 @@ from ginkgo.core.remote import remote_file
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_file
 from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.events import TaskCacheHit
 from tests.conftest import EventCollector
 
 
@@ -30,61 +31,26 @@ def _index(tmp_path: Path) -> CacheIndex:
 # ---------------------------------------------------------------------------
 
 
-class TestHashMemo:
-    """Per-run hash memoization for files and directories."""
+def test_hash_memo_remembers_and_notices_change(tmp_path: Path) -> None:
+    f = tmp_path / "data.txt"
+    f.write_text("v1")
+    d = tmp_path / "dir"
+    d.mkdir()
+    (d / "a.txt").write_text("a")
+    memo = HashMemo()
 
-    def test_file_hash_is_memoized(self, tmp_path: Path) -> None:
-        f = tmp_path / "data.txt"
-        f.write_text("hello")
-        memo = HashMemo()
+    file_digest, dir_digest = memo.hash_file(f), memo.hash_directory(d)
+    assert file_digest == memo.hash_file(f) == hash_file(f)
+    assert dir_digest == memo.hash_directory(d)
 
-        digest1 = memo.hash_file(f)
-        digest2 = memo.hash_file(f)
-        assert digest1 == digest2
-        assert digest1 == hash_file(f)
+    # A size change moves the stat fingerprint without waiting on mtime resolution.
+    f.write_text("version2")
+    (d / "a.txt").write_text("modified")
+    assert memo.hash_file(f) != file_digest
+    assert memo.hash_directory(d) != dir_digest
 
-    def test_file_hash_updates_on_content_change(self, tmp_path: Path) -> None:
-        f = tmp_path / "data.txt"
-        f.write_text("version1")
-        memo = HashMemo()
-
-        digest1 = memo.hash_file(f)
-        # Sleep briefly to ensure mtime changes.
-        time.sleep(0.05)
-        f.write_text("version2")
-        digest2 = memo.hash_file(f)
-        assert digest1 != digest2
-
-    def test_put_file_injects_known_digest(self, tmp_path: Path) -> None:
-        f = tmp_path / "data.txt"
-        f.write_text("content")
-        memo = HashMemo()
-
-        memo.put_file(f, "injected_digest")
-        assert memo.hash_file(f) == "injected_digest"
-
-    def test_directory_hash_is_memoized(self, tmp_path: Path) -> None:
-        d = tmp_path / "dir"
-        d.mkdir()
-        (d / "a.txt").write_text("a")
-        (d / "b.txt").write_text("b")
-        memo = HashMemo()
-
-        digest1 = memo.hash_directory(d)
-        digest2 = memo.hash_directory(d)
-        assert digest1 == digest2
-
-    def test_directory_hash_changes_on_file_modification(self, tmp_path: Path) -> None:
-        d = tmp_path / "dir"
-        d.mkdir()
-        (d / "a.txt").write_text("original")
-        memo = HashMemo()
-
-        digest1 = memo.hash_directory(d)
-        time.sleep(0.05)
-        (d / "a.txt").write_text("modified")
-        digest2 = memo.hash_directory(d)
-        assert digest1 != digest2
+    memo.put_file(f, "injected_digest")
+    assert memo.hash_file(f) == "injected_digest"
 
 
 class TestPersistedDigests:
@@ -117,8 +83,7 @@ class TestPersistedDigests:
             cold = HashMemo(index=index)
             digest = cold.hash_directory(folder)
 
-        time.sleep(0.05)
-        (folder / "part-000.bin").write_bytes(b"y" * 4096)
+        (folder / "part-000.bin").write_bytes(b"y" * 4097)
 
         with _index(tmp_path) as index:
             warm = HashMemo(index=index)
@@ -143,55 +108,20 @@ class TestPersistedDigests:
 # ---------------------------------------------------------------------------
 
 
-class TestMaterializations:
-    """Stat-gated output validation."""
+def test_materializations_match_only_the_recorded_untouched_path(tmp_path: Path) -> None:
+    """Stat-gated output validation, persisted across index instances."""
+    f = tmp_path / "output.txt"
+    f.write_text("data")
 
-    def test_record_and_check(self, tmp_path: Path) -> None:
-        f = tmp_path / "output.txt"
-        f.write_text("data")
-
-        with _index(tmp_path) as index:
-            index.record_materialization(path=f, artifact_id="abc123")
-            assert index.materialization_matches(path=f, artifact_id="abc123") is True
-
-    def test_check_fails_on_wrong_artifact_id(self, tmp_path: Path) -> None:
-        f = tmp_path / "output.txt"
-        f.write_text("data")
-
-        with _index(tmp_path) as index:
-            index.record_materialization(path=f, artifact_id="abc123")
-            assert index.materialization_matches(path=f, artifact_id="wrong_id") is False
-
-    def test_check_fails_after_file_modification(self, tmp_path: Path) -> None:
-        f = tmp_path / "output.txt"
-        f.write_text("original")
-
-        with _index(tmp_path) as index:
-            index.record_materialization(path=f, artifact_id="abc123")
-
-            time.sleep(0.05)
-            f.write_text("tampered")
-            assert index.materialization_matches(path=f, artifact_id="abc123") is False
-
-    def test_persistence_across_instances(self, tmp_path: Path) -> None:
-        f = tmp_path / "output.txt"
-        f.write_text("data")
-
-        with _index(tmp_path) as first:
-            first.record_materialization(path=f, artifact_id="abc123")
-        with _index(tmp_path) as second:
-            assert second.materialization_matches(path=f, artifact_id="abc123") is True
-
-    def test_a_deleted_path_no_longer_matches(self, tmp_path: Path) -> None:
-        f = tmp_path / "output.txt"
-        f.write_text("data")
-
-        with _index(tmp_path) as first:
-            first.record_materialization(path=f, artifact_id="abc123")
-
+    with _index(tmp_path) as first:
+        first.record_materialization(path=f, artifact_id="abc123")
+        assert first.materialization_matches(path=f, artifact_id="wrong_id") is False
+    with _index(tmp_path) as second:
+        assert second.materialization_matches(path=f, artifact_id="abc123") is True
+        f.write_text("tampered!")
+        assert second.materialization_matches(path=f, artifact_id="abc123") is False
         f.unlink()
-        with _index(tmp_path) as second:
-            assert second.materialization_matches(path=f, artifact_id="abc123") is False
+        assert second.materialization_matches(path=f, artifact_id="abc123") is False
 
 
 # ---------------------------------------------------------------------------
@@ -234,41 +164,26 @@ def read_versioned_remote_file(*, path: file) -> str:
 
 
 class TestWarmRunIntegration:
-    """End-to-end test that layers 1-3 work together."""
+    def test_a_warm_run_hits_every_task_without_dispatch_or_env_preparation(
+        self, tmp_path: Path
+    ) -> None:
+        output = str(tmp_path / "output.txt")
+        assert evaluate(consume_file(input_file=produce_file(output_path=output))) == 7
 
-    def test_warm_run_caches_all_tasks(self, tmp_path: Path) -> None:
-        """A second run should hit cache for all tasks."""
-        output = tmp_path / "output.txt"
-
-        # Cold run.
-        result1 = evaluate(consume_file(input_file=produce_file(output_path=str(output))))
-        assert result1 == 7  # len("content")
-
-        # Warm run.
         collector = EventCollector()
-        result2 = evaluate(
-            consume_file(input_file=produce_file(output_path=str(output))),
-            event_bus=collector.bus,
-        )
-        assert result2 == 7
+        warm = ConcurrentEvaluator(event_bus=collector.bus)
+        refuse = MagicMock(side_effect=AssertionError("a warm cached DAG must not run work"))
+        warm._start_task_execution = refuse  # type: ignore[method-assign]
+        warm._prepare_task_environment = refuse  # type: ignore[method-assign]
 
-        # On warm run, both tasks should be cached.
-        from ginkgo.runtime.events import TaskCacheHit
+        assert warm.evaluate(consume_file(input_file=produce_file(output_path=output))) == 7
+        assert len([e for e in collector.events if isinstance(e, TaskCacheHit)]) == 2
+        refuse.assert_not_called()
 
-        # The DAG has exactly two tasks; both must be cache hits (no more).
-        cache_hits = [e for e in collector.events if isinstance(e, TaskCacheHit)]
-        assert len(cache_hits) == 2
-
-    def test_file_hash_memoization_reduces_reads(self, tmp_path: Path) -> None:
-        """A file consumed by multiple tasks is hashed from disk only once."""
+    def test_a_file_read_by_two_tasks_is_hashed_once(self, tmp_path: Path) -> None:
         import ginkgo.runtime.caching.hash_memo as hash_memo_module
 
-        output = tmp_path / "shared.txt"
-        shared = make_shared(output_path=str(output))
-
-        # Spy on the raw disk-hashing primitive that HashMemo invokes only on a
-        # cache miss. Two readers share one input, so memoization must collapse
-        # the work to a single read of that path.
+        shared = make_shared(output_path=str(tmp_path / "shared.txt"))
         real_hash_file = hash_memo_module.hash_file
         hashed_paths: list[str] = []
 
@@ -279,48 +194,8 @@ class TestWarmRunIntegration:
         with patch.object(hash_memo_module, "hash_file", side_effect=recording_hash_file):
             result = evaluate((reader_a(input_file=shared), reader_b(input_file=shared)))
 
-        assert result[0] == 11  # len("shared data")
-        assert result[1] == 22
-        shared_reads = sum(1 for p in hashed_paths if p.endswith("shared.txt"))
-        assert shared_reads == 1
-
-    def test_warm_run_completes_cached_dag_before_dispatch(self, tmp_path: Path) -> None:
-        """A fully cached DAG should not enter task execution on the warm run."""
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
-
-        output = tmp_path / "output.txt"
-
-        expr1 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator1 = ConcurrentEvaluator()
-        assert evaluator1.evaluate(expr1) == 7
-
-        expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = ConcurrentEvaluator()
-        evaluator2._start_task_execution = MagicMock(  # type: ignore[method-assign]
-            side_effect=AssertionError("warm cached DAG should not dispatch task execution")
-        )
-
-        assert evaluator2.evaluate(expr2) == 7
-        evaluator2._start_task_execution.assert_not_called()
-
-    def test_warm_run_skips_environment_preparation(self, tmp_path: Path) -> None:
-        """A warm cache hit should not prepare task environments."""
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
-
-        output = tmp_path / "output.txt"
-
-        expr1 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator1 = ConcurrentEvaluator()
-        assert evaluator1.evaluate(expr1) == 7
-
-        expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = ConcurrentEvaluator()
-        evaluator2._prepare_task_environment = MagicMock(  # type: ignore[method-assign]
-            side_effect=AssertionError("warm cached task should not prepare environments")
-        )
-
-        assert evaluator2.evaluate(expr2) == 7
-        evaluator2._prepare_task_environment.assert_not_called()
+        assert result == (11, 22)
+        assert sum(1 for p in hashed_paths if p.endswith("shared.txt")) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -331,38 +206,22 @@ class TestWarmRunIntegration:
 class TestTrustMtimes:
     """Stat-index fast path for --trust-mtimes mode."""
 
-    def test_stat_index_round_trip(self, tmp_path: Path) -> None:
-        """A stat fingerprint recorded by one run is found by the next."""
-        with _index(tmp_path) as index:
-            index.record_stat_index(stat_key="stat_abc", cache_key="content_xyz")
-
-        with _index(tmp_path) as reopened:
-            assert reopened.stat_index_lookup("stat_abc") == "content_xyz"
-
     def test_trust_mtimes_warm_run(self, tmp_path: Path) -> None:
-        """A --trust-mtimes warm run should hit cache via stat index."""
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
+        output = str(tmp_path / "output.txt")
+        assert (
+            ConcurrentEvaluator().evaluate(
+                consume_file(input_file=produce_file(output_path=output))
+            )
+            == 7
+        )
 
-        output = tmp_path / "output.txt"
-
-        # Cold run (builds stat index).
-        expr1 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator1 = ConcurrentEvaluator()
-        result1 = evaluator1.evaluate(expr1)
-        assert result1 == 7
-
-        # Warm run with trust_mtimes.
         collector = EventCollector()
-        expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = ConcurrentEvaluator(trust_mtimes=True, event_bus=collector.bus)
-        result2 = evaluator2.evaluate(expr2)
-        assert result2 == 7
-
+        warm = ConcurrentEvaluator(trust_mtimes=True, event_bus=collector.bus)
+        assert warm.evaluate(consume_file(input_file=produce_file(output_path=output))) == 7
         assert collector.cached()
 
     def test_versioned_remote_input_warm_run_skips_staging(self, tmp_path: Path) -> None:
         """Pinned remote inputs can hit cache without staging on the warm run."""
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         class _FakeStagingCache:
             def __init__(self, *, root: Path, fail: bool = False) -> None:

@@ -8,12 +8,15 @@ an unchanged one is served from the cache with its outputs restored.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
-PYTHON = Path(sys.executable)
+import pytest
+
+from tests.cli.conftest import write as _write
+from tests.conftest import run_cli
 
 SCRIPT = """\
 import argparse, pathlib
@@ -88,19 +91,31 @@ def farsh(x: str, out: Out[file]):
 """
 
 
-def _write(path: str, text: str) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(textwrap.dedent(text), encoding="utf-8")
+@pytest.fixture(autouse=True)
+def _forget_project_modules():
+    """Drop the helper modules a run imported, so the next test imports its own."""
+    yield
+    for name in [name for name in sys.modules if name.split(".")[0] in {"other", "lib"}]:
+        del sys.modules[name]
 
 
-def _run(*args: str) -> dict[str, list[str]]:
-    """Run ``ginkgo run`` and return each task's completion statuses by base name."""
-    result = subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", "run", *args, "--agent-output"],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
+def _run(*args: str, fresh: bool = False) -> dict[str, list[str]]:
+    """Run ``ginkgo run`` and return each task's completion statuses by base name.
+
+    *fresh* runs it in a new interpreter, as a user's next ``ginkgo run`` is:
+    needed when the test edits a module the previous run imported.
+    """
+    argv = ("run", *args, "--agent-output")
+    if fresh:
+        # An edit within the same second that keeps the file's size leaves the
+        # previous run's .pyc looking current, and Python would run old code.
+        for cache_dir in Path.cwd().rglob("__pycache__"):
+            shutil.rmtree(cache_dir)
+        result = subprocess.run(
+            [sys.executable, "-m", "ginkgo.cli", *argv], text=True, capture_output=True
+        )
+    else:
+        result = run_cli(*argv)
     assert result.returncode == 0, result.stdout + result.stderr
     statuses: dict[str, list[str]] = {}
     for line in result.stdout.splitlines():
@@ -131,12 +146,7 @@ def test_unchanged_dynamic_children_stay_cached_and_are_recorded() -> None:
     _run("flow.py")
 
     assert _run("flow.py") == ALL_CACHED
-    history = subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", "history", "readchild", "--json"],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+    history = run_cli("history", "readchild", "--json")
     assert [row["cached"] for row in json.loads(history.stdout)] == [True, False]
 
 
@@ -149,7 +159,7 @@ def test_a_cached_parent_re_runs_each_stale_child_and_only_those() -> None:
     _write("scr.py", SCRIPT.format(tag="V2"))
     _write("data.txt", "two")
     _write("lib/far.py", FAR.format(tag="V2"))
-    statuses = _run("flow.py")
+    statuses = _run("flow.py", fresh=True)
 
     assert statuses == {
         "pa": ["cached"],
@@ -210,21 +220,17 @@ def test_nested_dynamic_expansion_replays_at_every_level() -> None:
 
         S = Path(__file__).resolve().parent / "scr.py"
 
-
         @task("script")
         def leaf(x: str, out: Out[file]):
             return script(S)
-
 
         @task()
         def middle(x: str) -> file:
             return leaf(x=x, out="leaf.txt")
 
-
         @task()
         def top(x: str) -> file:
             return middle(x=x)
-
 
         @flow
         def main():
@@ -246,11 +252,9 @@ def test_checkpoint_parent_returns_children_reading_its_own_output_folder() -> N
 
         from ginkgo import Out, file, flow, folder, task
 
-
         @task()
         def count(src: file) -> int:
             return len(Path(src).read_text())
-
 
         @task()
         def split(split_dir: Out[folder]) -> list:
@@ -262,7 +266,6 @@ def test_checkpoint_parent_returns_children_reading_its_own_output_folder() -> N
                 p.write_text("x" * (i + 1))
                 out.append(count(src=str(p)))
             return out
-
 
         @flow
         def main():
@@ -292,16 +295,13 @@ def test_rerun_skips_the_cache_for_the_named_task_only() -> None:
 SCORES = """\
 from ginkgo import flow, task
 
-
 @task()
 def score(name: str) -> str:
     return name.upper()
 
-
 @task()
 def score_all(names: list[str]) -> list:
     return [score(name=name) for name in names]
-
 
 @flow
 def main():
@@ -318,17 +318,7 @@ def test_rerun_names_a_returned_call_by_its_label() -> None:
         "score": ["cached", "success"],
     }
 
-
-def test_rerun_of_a_name_no_task_carries_is_a_usage_error() -> None:
-    _write("flow.py", SCORES)
-
-    result = subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", "run", "flow.py", "--rerun", "nosuch"],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-
+    result = run_cli("run", "flow.py", "--rerun", "nosuch")
     assert result.returncode == 2
     assert "--rerun nosuch names no task" in result.stderr
 
@@ -336,11 +326,9 @@ def test_rerun_of_a_name_no_task_carries_is_a_usage_error() -> None:
 STATIC_SCORES = """\
 from ginkgo import flow, task
 
-
 @task()
 def score(name: str) -> str:
     return name.upper()
-
 
 @flow
 def main():
@@ -352,12 +340,7 @@ def test_rerun_of_a_label_no_call_carries_is_a_usage_error() -> None:
     """MG5-4: a defined task with a branch that is not in the run."""
     _write("flow.py", STATIC_SCORES)
 
-    result = subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", "run", "flow.py", "--dry-run", "--rerun", "score[zed]"],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
+    result = run_cli("run", "flow.py", "--dry-run", "--rerun", "score[zed]")
 
     assert result.returncode == 2
     assert "--rerun score[zed] names no call of score in this run" in result.stderr

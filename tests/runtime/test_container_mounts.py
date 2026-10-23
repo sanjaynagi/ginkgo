@@ -1,14 +1,14 @@
-"""Tests for container bind-mount resolution and environment forwarding."""
+"""Tests for container bind-mount resolution, user flags and environment forwarding."""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
+from ginkgo import Out, task
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.envs.container import ContainerBackend, container_backend_from_config
 from ginkgo.envs.mounts import (
@@ -27,54 +27,55 @@ from ginkgo.runtime.task_runners.shell import (
 )
 
 
+def _argv(tmp_path: Path, *, env_vars=(), **backend) -> list[str]:
+    backend.setdefault("user", "root")
+    return ContainerBackend(project_root=tmp_path, **backend).exec_argv(
+        env="docker://img:1", cmd="ls", env_vars=env_vars
+    )
+
+
+def _pairs(argv: list[str], flag: str) -> list[str]:
+    return [argv[i + 1] for i, part in enumerate(argv) if part == flag]
+
+
 # ------------------------------------------------------------------
 # Mount specifications
 # ------------------------------------------------------------------
 
 
-class TestParseExtraMount:
-    def test_bare_path_defaults_to_read_only(self):
-        assert parse_extra_mount("/scratch") == Mount(
-            host_path=Path("/scratch"),
-            container_path=Path("/scratch"),
-            mode="ro",
-            origin="configured",
-        )
+def test_a_bare_extra_mount_is_read_only_and_configured() -> None:
+    # The origin is what stops a derived mount widening a user's "ro".
+    assert parse_extra_mount("/scratch") == Mount(
+        host_path=Path("/scratch"), container_path=Path("/scratch"), mode="ro", origin="configured"
+    )
 
-    def test_mode_suffix(self):
-        assert parse_extra_mount("/scratch:rw").mode == "rw"
 
-    def test_distinct_container_path(self):
-        parsed = parse_extra_mount("/opt/refs:/refs:ro")
-        assert parsed.host_path == Path("/opt/refs")
-        assert parsed.container_path == Path("/refs")
+@pytest.mark.parametrize(
+    ("spec", "container_path", "mode"),
+    [
+        ("/scratch:rw", "/scratch", "rw"),
+        ("/opt/refs:/refs:ro", "/refs", "ro"),
+        ("/opt/refs:/refs", "/refs", "ro"),
+    ],
+)
+def test_extra_mount_fields(spec: str, container_path: str, mode: str) -> None:
+    parsed = parse_extra_mount(spec)
+    assert (parsed.container_path, parsed.mode) == (Path(container_path), mode)
 
-    def test_two_fields_without_mode_is_a_remap(self):
-        parsed = parse_extra_mount("/opt/refs:/refs")
-        assert parsed.container_path == Path("/refs")
-        assert parsed.mode == "ro"
 
-    def test_unknown_mode_raises(self):
-        with pytest.raises(ValueError, match="Invalid container mount mode"):
-            parse_extra_mount("/scratch:/mnt:write")
-
-    def test_empty_spec_raises(self):
-        with pytest.raises(ValueError, match="Empty container mount"):
-            parse_extra_mount("")
-
-    def test_ambiguous_second_field_raises(self):
-        # Neither a mode nor an absolute path: mounting at a relative container
-        # path or guessing the mode would both be silent wrongness.
-        with pytest.raises(ValueError, match="neither a mode"):
-            parse_extra_mount("/scratch:nope")
-
-    def test_too_many_fields_raises(self):
-        with pytest.raises(ValueError, match="Invalid container mount specification"):
-            parse_extra_mount("/a:/b:rw:extra")
-
-    def test_config_entries_are_marked_configured(self):
-        # The origin is what stops a derived mount widening a user's "ro".
-        assert parse_extra_mount("/scratch:ro").origin == "configured"
+@pytest.mark.parametrize(
+    ("spec", "match"),
+    [
+        ("/scratch:/mnt:write", "Invalid container mount mode"),
+        ("", "Empty container mount"),
+        # Neither a mode nor an absolute path: both guesses would be silently wrong.
+        ("/scratch:nope", "neither a mode"),
+        ("/a:/b:rw:extra", "Invalid container mount specification"),
+    ],
+)
+def test_malformed_extra_mounts_are_refused(spec: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        parse_extra_mount(spec)
 
 
 # ------------------------------------------------------------------
@@ -82,140 +83,108 @@ class TestParseExtraMount:
 # ------------------------------------------------------------------
 
 
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    path = tmp_path / "project"
+    path.mkdir()
+    return path
+
+
 class TestResolveMounts:
-    def test_path_inside_project_is_dropped(self, tmp_path: Path):
-        inside = tmp_path / "data" / "reads.fastq"
-        inside.parent.mkdir()
+    def test_paths_inside_the_project_are_dropped_and_outside_kept(self, tmp_path, project):
+        inside = project / "reads.fastq"
         inside.write_text("@r\n")
-
-        assert resolve_mounts(project_root=tmp_path, mounts=[mount(inside)]) == []
-
-    def test_path_outside_project_is_kept(self, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
         outside = tmp_path / "data"
         outside.mkdir()
 
-        resolved = resolve_mounts(project_root=project, mounts=[mount(outside)])
+        resolved = resolve_mounts(project_root=project, mounts=[mount(inside), mount(outside)])
         assert [item.host_path for item in resolved] == [outside]
 
-    def test_symlink_mounts_real_path_at_declared_path(self, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
+    def test_symlink_mounts_real_path_at_declared_path(self, tmp_path, project):
         real = tmp_path / "store"
         real.mkdir()
         link = project / "store"
         link.symlink_to(real)
 
         (resolved,) = resolve_mounts(project_root=project, mounts=[mount(link)])
-        # The command dereferences the link, so the real path must be what is
-        # mounted -- but at the path the command actually names.
-        assert resolved.host_path == real
-        assert resolved.container_path == link
+        # The command dereferences the link, so the real path is what is
+        # mounted, at the path the command names.
+        assert (resolved.host_path, resolved.container_path) == (real, link)
 
-    def test_descendant_collapses_into_same_mode_ancestor(self, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
+    def test_descendants_collapse_into_a_same_mode_ancestor_only(self, tmp_path, project):
         parent = tmp_path / "data"
-        child = parent / "reads.fastq"
-        parent.mkdir()
-        child.write_text("@r\n")
+        (parent / "out").mkdir(parents=True)
+        (parent / "reads.fastq").write_text("@r\n")
 
-        resolved = resolve_mounts(project_root=project, mounts=[mount(parent), mount(child)])
-        assert [item.host_path for item in resolved] == [parent]
-
-    def test_descendant_of_different_mode_is_kept(self, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
-        parent = tmp_path / "data"
-        child = parent / "out"
-        child.mkdir(parents=True)
-
-        resolved = resolve_mounts(
-            project_root=project, mounts=[mount(parent), mount(child, mode="rw")]
+        collapsed = resolve_mounts(
+            project_root=project, mounts=[mount(parent), mount(parent / "reads.fastq")]
         )
-        assert {(item.host_path, item.mode) for item in resolved} == {
+        assert [item.host_path for item in collapsed] == [parent]
+        kept = resolve_mounts(
+            project_root=project, mounts=[mount(parent), mount(parent / "out", mode="rw")]
+        )
+        assert {(item.host_path, item.mode) for item in kept} == {
             (parent, "ro"),
-            (child, "rw"),
+            (parent / "out", "rw"),
         }
 
-    def test_read_write_wins_for_the_same_path(self, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
+    def test_read_write_wins_for_the_same_path(self, tmp_path, project):
         shared = tmp_path / "shared"
         shared.mkdir()
-
         resolved = resolve_mounts(
             project_root=project, mounts=[mount(shared), mount(shared, mode="rw")]
         )
         assert [item.mode for item in resolved] == ["rw"]
 
-    def test_absent_declared_path_is_skipped(self, tmp_path: Path):
+    def test_an_absent_path_is_skipped_if_declared_and_refused_if_configured(
+        self, tmp_path, project
+    ):
         # Mounting it would make the runtime create the host path; the command
         # that needs it gives the better error.
-        project = tmp_path / "project"
-        project.mkdir()
-        assert resolve_mounts(project_root=project, mounts=[mount(tmp_path / "gone")]) == []
-
-    def test_absent_configured_path_raises(self, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
+        gone = tmp_path / "gone"
+        assert resolve_mounts(project_root=project, mounts=[mount(gone)]) == []
         with pytest.raises(MissingMountError, match="does not exist"):
-            resolve_mounts(
-                project_root=project, mounts=[parse_extra_mount(str(tmp_path / "gone"))]
-            )
+            resolve_mounts(project_root=project, mounts=[parse_extra_mount(str(gone))])
 
-    def test_filesystem_root_is_refused(self, tmp_path: Path):
-        with pytest.raises(UnsafeMountError, match="filesystem root"):
-            resolve_mounts(project_root=tmp_path, mounts=[mount("/")])
-
-    def test_system_directory_is_refused(self, tmp_path: Path):
-        with pytest.raises(UnsafeMountError, match="system directory"):
-            resolve_mounts(project_root=tmp_path, mounts=[mount("/etc")])
-
-    def test_system_directory_is_refused_under_its_resolved_name(self, tmp_path: Path):
-        # On macOS /etc resolves to /private/etc; checking only one spelling let
-        # the other through.
-        target = "/private/etc" if Path("/private/etc").exists() else "/etc"
-        with pytest.raises(UnsafeMountError, match="system directory"):
+    @pytest.mark.parametrize(
+        ("target", "match"),
+        [
+            ("/", "filesystem root"),
+            ("/etc", "system directory"),
+            # On macOS /etc resolves to /private/etc; both spellings are refused.
+            ("/private/etc" if Path("/private/etc").exists() else "/etc", "system directory"),
+            # $HOME would hand the image ~/.ssh and ~/.aws along with an output.
+            (str(Path.home()), "home directory"),
+        ],
+    )
+    def test_unsafe_paths_are_refused(self, tmp_path, target: str, match: str):
+        with pytest.raises(UnsafeMountError, match=match):
             resolve_mounts(project_root=tmp_path, mounts=[mount(target, mode="rw")])
 
-    def test_home_directory_is_refused(self, tmp_path: Path):
-        # An output written straight into $HOME would otherwise hand the image
-        # ~/.ssh and ~/.aws along with it.
-        with pytest.raises(UnsafeMountError, match="home directory"):
-            resolve_mounts(project_root=tmp_path, mounts=[mount(Path.home(), mode="rw")])
-
-    def test_non_system_data_root_is_allowed(self, tmp_path: Path):
-        # A data root of its own is exactly what these mounts are for.
-        data = tmp_path / "data"
-        data.mkdir()
-        (resolved,) = resolve_mounts(project_root=tmp_path / "project", mounts=[mount(data)])
-        assert resolved.host_path == data
-
-    def test_configured_read_only_is_not_widened_by_a_derived_output(self, tmp_path: Path):
+    def test_configured_read_only_is_not_widened_by_a_derived_output(self, tmp_path, project):
         refs = tmp_path / "refs"
         refs.mkdir()
         with pytest.raises(MountModeConflictError, match="read-only"):
             resolve_mounts(
-                project_root=tmp_path / "project",
+                project_root=project,
                 mounts=[parse_extra_mount(f"{refs}:ro"), mount(refs, mode="rw")],
             )
 
-    def test_symlinked_project_root_does_not_shadow_its_own_contents(self, tmp_path: Path):
-        # The backend resolves project_root, so a project reached through a
-        # symlink must not get every input mounted a second time, read-only,
-        # over the read-write project mount.
+    def test_a_symlinked_project_root_is_resolved_once(self, tmp_path: Path):
+        # Otherwise every input inside the project is mounted a second time,
+        # read-only, over the read-write project mount.
         real = tmp_path / "real_project"
         (real / "data").mkdir(parents=True)
         (real / "data" / "in.txt").write_text("x\n")
         link = tmp_path / "project"
         link.symlink_to(real)
 
-        resolved = resolve_mounts(
-            project_root=link.resolve(), mounts=[mount(real / "data" / "in.txt")]
+        backend = ContainerBackend(project_root=link, user="root")
+        assert backend.project_root == real
+        assert f"{real}:{real}" in backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert (
+            resolve_mounts(project_root=link.resolve(), mounts=[mount(real / "data/in.txt")]) == []
         )
-        assert resolved == []
 
 
 # ------------------------------------------------------------------
@@ -223,172 +192,128 @@ class TestResolveMounts:
 # ------------------------------------------------------------------
 
 
-@dataclass
-class _FakeTaskDef:
-    type_hints: dict[str, Any] = field(default_factory=dict)
-    output_params: frozenset = field(default_factory=frozenset)
-    export_thread_env: bool = False
-    threads: int = 1
+@task(kind="shell")
+def reads_inputs(reads: file, refs: folder, sample: str, threads: int) -> file:
+    raise AssertionError("never runs")
 
 
-@dataclass
-class _FakeNode:
-    task_def: _FakeTaskDef
-    resolved_args: dict[str, Any] = field(default_factory=dict)
+@task(kind="shell")
+def reads_many(reads: list[file], index: file | None, work: tmp_dir) -> file:
+    raise AssertionError("never runs")
+
+
+@task(kind="shell")
+def writes_bam(bam: Out[file]) -> file:
+    raise AssertionError("never runs")
+
+
+@task(kind="shell", export_thread_env=True)
+def exports_threads() -> file:
+    raise AssertionError("never runs")
+
+
+def _mounts(task_def, **resolved_args) -> set[tuple[Path, str]]:
+    node = SimpleNamespace(task_def=task_def, resolved_args=resolved_args)
+    return {(item.host_path, item.mode) for item in declared_input_mounts(node=node)}
 
 
 class TestDeclaredInputMounts:
-    def test_path_shaped_arguments_are_mounted_read_only(self, tmp_path: Path):
-        reads = tmp_path / "reads.fastq"
-        reads.write_text("@r\n")
+    def test_path_inputs_mount_read_only_and_others_are_ignored(self, tmp_path: Path):
+        reference = tmp_path / "ref" / "ref.fa"
+        reference.parent.mkdir()
+        reference.write_text(">chr1\n")
         refs = tmp_path / "refs"
         refs.mkdir()
 
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"reads": file, "refs": folder}),
-            resolved_args={"reads": file(str(reads)), "refs": folder(str(refs))},
-        )
-        mounts = declared_input_mounts(node=node)
-        # A file mounts its directory, so an index sitting beside it is visible;
-        # a folder mounts itself.
-        assert {(item.host_path, item.mode) for item in mounts} == {
-            (reads.parent, "ro"),
-            (refs, "ro"),
-        }
+        # A file mounts its directory, so an index beside it (ref.fa.fai) is
+        # visible; a folder mounts itself; plain values mount nothing.
+        assert _mounts(
+            reads_inputs,
+            reads=file(str(reference)),
+            refs=folder(str(refs)),
+            sample=str(tmp_path),
+            threads=4,
+        ) == {(reference.parent, "ro"), (refs, "ro")}
 
-    def test_a_sibling_index_of_a_file_input_is_visible(self, tmp_path: Path):
-        reference = tmp_path / "refs" / "ref.fa"
-        reference.parent.mkdir()
-        reference.write_text(">chr1\n")
-        index = reference.with_suffix(".fa.fai")
-        index.write_text("chr1\t1\n")
-
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"reference": file}),
-            resolved_args={"reference": file(str(reference))},
-        )
-        (item,) = declared_input_mounts(node=node)
-        # Mounting the file alone would make an index that exists on the host
-        # invisible to the tool that needs it.
-        assert item.host_path == reference.parent
-        assert index.parent == item.host_path
-
-    def test_scratch_directory_is_mounted_read_write(self, tmp_path: Path):
+    def test_nested_optional_and_scratch_values(self, tmp_path: Path):
+        first, second = tmp_path / "a.fastq", tmp_path / "b.fastq"
+        for path in (first, second):
+            path.write_text("@r\n")
         scratch = tmp_path / "scratch"
         scratch.mkdir()
 
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"work": tmp_dir}),
-            resolved_args={"work": tmp_dir(str(scratch))},
-        )
-        assert [item.mode for item in declared_input_mounts(node=node)] == ["rw"]
-
-    def test_nested_and_optional_values(self, tmp_path: Path):
-        first = tmp_path / "a.fastq"
-        second = tmp_path / "b.fastq"
-        for path in (first, second):
-            path.write_text("@r\n")
-
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"reads": list[file], "index": file | None}),
-            resolved_args={
-                "reads": [file(str(first)), file(str(second))],
-                "index": None,
-            },
-        )
-        assert {item.host_path for item in declared_input_mounts(node=node)} == {tmp_path}
-
-    def test_non_path_arguments_are_ignored(self, tmp_path: Path):
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"sample": str, "threads": int}),
-            resolved_args={"sample": str(tmp_path), "threads": 4},
-        )
-        assert declared_input_mounts(node=node) == []
+        assert _mounts(
+            reads_many,
+            reads=[file(str(first)), file(str(second))],
+            index=None,
+            work=tmp_dir(str(scratch)),
+        ) == {(tmp_path, "ro"), (scratch, "rw")}
 
     def test_missing_input_is_skipped(self, tmp_path: Path):
-        # Mounting it would make the runtime create the host path; the command
-        # that needs it gives the better error.
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"reads": file}),
-            resolved_args={"reads": file(str(tmp_path / "absent.fastq"))},
-        )
-        assert declared_input_mounts(node=node) == []
+        assert _mounts(reads_inputs, reads=file(str(tmp_path / "absent.fastq"))) == set()
 
-    def test_out_parameter_mounts_its_parent_read_write(self, tmp_path: Path):
+    @pytest.mark.parametrize("exists", [False, True])
+    def test_an_out_parameter_mounts_its_parent_read_write(self, tmp_path: Path, exists: bool):
+        # Unlike a read input, a not-yet-written output still has to be mounted.
         bam = tmp_path / "results" / "out.bam"
-        # Declared but not written yet — mounting still has to happen so the
-        # task can create it, unlike a read input that is skipped.
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"bam": file}, output_params=frozenset({"bam"})),
-            resolved_args={"bam": str(bam)},
-        )
-        (item,) = declared_input_mounts(node=node)
-        assert item.host_path == bam.parent
-        assert item.mode == "rw"
-
-    def test_out_parameter_pointing_at_an_existing_file_mounts_read_write(self, tmp_path: Path):
-        bam = tmp_path / "out.bam"
-        bam.write_text("data")
-        node = _FakeNode(
-            task_def=_FakeTaskDef(type_hints={"bam": file}, output_params=frozenset({"bam"})),
-            resolved_args={"bam": str(bam)},
-        )
-        (item,) = declared_input_mounts(node=node)
-        assert item.host_path == bam.parent
-        assert item.mode == "rw"
+        if exists:
+            bam.parent.mkdir()
+            bam.write_text("data")
+        assert _mounts(writes_bam, bam=str(bam)) == {(bam.parent, "rw")}
 
 
-class TestDeclaredOutputMounts:
-    def test_output_mounts_its_parent_read_write(self, tmp_path: Path):
-        output = tmp_path / "results" / "out.txt"
-
-        mounts = declared_output_mounts(output=str(output))
-        assert {(item.host_path, item.mode) for item in mounts} == {(output.parent, "rw")}
-
-    def test_no_output_declares_no_mounts(self):
-        assert declared_output_mounts(output=None) == []
-
-    def test_multiple_outputs(self, tmp_path: Path):
-        first = tmp_path / "one" / "a.txt"
-        second = tmp_path / "two" / "b.txt"
-
-        mounts = declared_output_mounts(output=[str(first), str(second)])
-        assert {item.host_path for item in mounts} == {first.parent, second.parent}
+def test_declared_outputs_mount_their_parents_read_write(tmp_path: Path):
+    first, second = tmp_path / "one" / "a.txt", tmp_path / "two" / "b.txt"
+    mounts = declared_output_mounts(output=[str(first), str(second)])
+    assert {(item.host_path, item.mode) for item in mounts} == {
+        (first.parent, "rw"),
+        (second.parent, "rw"),
+    }
+    assert declared_output_mounts(output=None) == []
 
 
 # ------------------------------------------------------------------
-# Environment forwarding
+# Environment forwarding and user selection
 # ------------------------------------------------------------------
 
 
-class TestComputedEnvVarNames:
-    def test_thread_count_is_always_forwarded(self):
-        assert computed_env_var_names(task_def=_FakeTaskDef()) == ("GINKGO_THREADS",)
+def test_thread_variables_are_forwarded_by_name_only(tmp_path: Path):
+    assert computed_env_var_names(task_def=writes_bam) == ("GINKGO_THREADS",)
+    names = computed_env_var_names(task_def=exports_threads)
+    assert {"OMP_NUM_THREADS", "GINKGO_THREADS"} <= set(names)
 
-    def test_thread_env_adds_blas_variables(self):
-        names = computed_env_var_names(task_def=_FakeTaskDef(export_thread_env=True))
-        assert "OMP_NUM_THREADS" in names
-        assert "GINKGO_THREADS" in names
+    argv = _argv(tmp_path, env_vars=["GINKGO_THREADS", "OMP_NUM_THREADS"])
+    # A bare -e NAME resolves from the client's own environment, so no value
+    # reaches the host process table.
+    assert _pairs(argv, "-e") == ["GINKGO_THREADS", "OMP_NUM_THREADS"]
+    assert "-e" not in _argv(tmp_path)
 
 
-class TestContainerEnvForwarding:
-    def test_names_are_forwarded_without_values(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, user="root")
-        argv = backend.exec_argv(
-            env="docker://img:1",
-            cmd="tool --threads ${GINKGO_THREADS}",
-            env_vars=["GINKGO_THREADS", "OMP_NUM_THREADS"],
-        )
-        # A bare -e NAME resolves from the client's own environment, so no
-        # value reaches the host process table.
-        assert argv.count("-e") == 2
-        assert "GINKGO_THREADS" in argv
-        assert not any(part.startswith("GINKGO_THREADS=") for part in argv)
+@pytest.mark.parametrize(
+    ("backend", "user_flag"),
+    [
+        ({"runtime": "docker", "user": "auto"}, f"{os.getuid()}:{os.getgid()}"),
+        # Rootless Podman already maps root to the invoking user; -u would map
+        # into the subordinate range and leave outputs the user cannot delete.
+        ({"runtime": "podman", "user": "auto"}, None),
+        ({"runtime": "podman", "user": "1000:1000"}, "1000:1000"),
+        ({"user": "root"}, None),
+    ],
+)
+def test_the_container_user(tmp_path: Path, backend: dict, user_flag: str | None):
+    argv = _argv(tmp_path, **backend)
+    assert _pairs(argv, "-u") == ([user_flag] if user_flag else [])
 
-    def test_forwarding_is_opt_in_per_call(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, user="root")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert "-e" not in argv
+
+def test_an_explicit_uid_gets_a_home_beside_forwarded_names(tmp_path: Path):
+    # A uid with no passwd entry has no $HOME, which images that resolve it fail on.
+    argv = _argv(tmp_path, user="1000:1000", env_vars=["GINKGO_THREADS"])
+    assert _pairs(argv, "-e") == ["HOME=/tmp", "GINKGO_THREADS"]
+
+
+def test_an_invalid_user_is_refused(tmp_path: Path):
+    with pytest.raises(ValueError, match="Invalid \\[container\\] user"):
+        _argv(tmp_path, user="nobody")
 
 
 # ------------------------------------------------------------------
@@ -397,71 +322,51 @@ class TestContainerEnvForwarding:
 
 
 class TestContainerBackendFromConfig:
-    def test_defaults_without_a_table(self, tmp_path: Path):
-        backend = container_backend_from_config(project_root=tmp_path, config={})
-        assert backend.runtime == "docker"
-        assert backend.pull_policy == "if-not-present"
-        assert backend.user == "auto"
-        assert backend.shell == "bash"
-        assert backend.auto_mount is True
-        assert backend.extra_mounts == ()
-
-    def test_reads_every_setting(self, tmp_path: Path):
-        backend = container_backend_from_config(
-            project_root=tmp_path,
-            config={
-                "container": {
-                    "runtime": "podman",
-                    "pull_policy": "always",
-                    "user": "root",
-                    "shell": "sh",
-                    "auto_mount": False,
-                    "extra_mounts": ["/scratch:rw"],
-                }
-            },
+    def test_defaults_and_every_setting(self, tmp_path: Path):
+        default = container_backend_from_config(project_root=tmp_path, config={})
+        assert (default.runtime, default.pull_policy, default.user, default.shell) == (
+            "docker",
+            "if-not-present",
+            "auto",
+            "bash",
         )
-        assert backend.runtime == "podman"
-        assert backend.pull_policy == "always"
-        assert backend.user == "root"
-        assert backend.shell == "sh"
-        assert backend.auto_mount is False
-        assert backend.extra_mounts == ("/scratch:rw",)
+        assert default.auto_mount is True and default.extra_mounts == ()
 
-    def test_single_extra_mount_string(self, tmp_path: Path):
-        backend = container_backend_from_config(
+        table = {
+            "runtime": "podman",
+            "pull_policy": "always",
+            "user": "root",
+            "shell": "sh",
+            "auto_mount": False,
+            "extra_mounts": ["/scratch:rw"],
+        }
+        backend = container_backend_from_config(project_root=tmp_path, config={"container": table})
+        assert {key: getattr(backend, key) for key in table} == {
+            **table,
+            "extra_mounts": ("/scratch:rw",),
+        }
+        single = container_backend_from_config(
             project_root=tmp_path, config={"container": {"extra_mounts": "/scratch"}}
         )
-        assert backend.extra_mounts == ("/scratch",)
+        assert single.extra_mounts == ("/scratch",)
 
-    def test_non_mapping_table_raises(self, tmp_path: Path):
-        with pytest.raises(ValueError, match=r"\[container\] must be a table"):
-            container_backend_from_config(project_root=tmp_path, config={"container": "docker"})
-
-    def test_unknown_key_raises(self, tmp_path: Path):
-        # A typo must not leave the run quietly on defaults.
-        with pytest.raises(ValueError, match="unknown keys"):
-            container_backend_from_config(
-                project_root=tmp_path, config={"container": {"extra_mount": ["/a"]}}
-            )
-
-    def test_string_where_a_bool_belongs_raises(self, tmp_path: Path):
-        # bool("false") is True, so coercing would invert what the file says.
-        with pytest.raises(ValueError, match="must be true or false"):
-            container_backend_from_config(
-                project_root=tmp_path, config={"container": {"auto_mount": "false"}}
-            )
-
-    def test_non_string_setting_raises(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="runtime must be a string"):
-            container_backend_from_config(
-                project_root=tmp_path, config={"container": {"runtime": 7}}
-            )
-
-    def test_non_list_extra_mounts_raises(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="extra_mounts must be a list"):
-            container_backend_from_config(
-                project_root=tmp_path, config={"container": {"extra_mounts": 7}}
-            )
+    @pytest.mark.parametrize(
+        ("table", "match"),
+        [
+            ("docker", r"\[container\] must be a table"),
+            # A typo must not leave the run quietly on defaults.
+            ({"extra_mount": ["/a"]}, "unknown keys"),
+            # bool("false") is True, so coercing would invert what the file says.
+            ({"auto_mount": "false"}, "must be true or false"),
+            ({"runtime": 7}, "runtime must be a string"),
+            ({"extra_mounts": 7}, "extra_mounts must be a list"),
+            ({"pull_policy": "nevr"}, r"\[container\] pull_policy must be one of"),
+            ({"runtime": "dockr"}, r"\[container\] runtime must be one of"),
+        ],
+    )
+    def test_bad_settings_are_refused(self, tmp_path: Path, table, match: str):
+        with pytest.raises(ValueError, match=match):
+            container_backend_from_config(project_root=tmp_path, config={"container": table})
 
     def test_validate_envs_rejects_a_malformed_mount_spec(self, tmp_path: Path):
         backend = container_backend_from_config(
@@ -475,147 +380,43 @@ class TestContainerBackendFromConfig:
 # Failure diagnosis
 # ------------------------------------------------------------------
 
-
-class TestUserSelection:
-    def test_docker_auto_pins_the_invoking_uid(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, runtime="docker")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert argv[argv.index("-u") + 1] == f"{os.getuid()}:{os.getgid()}"
-
-    def test_podman_auto_passes_no_user_flag(self, tmp_path: Path):
-        # Rootless Podman already maps the container's root to the invoking
-        # user. Passing -u there maps into the *subordinate* uid range instead,
-        # leaving outputs owned by a uid the user cannot chmod or delete --
-        # worse than doing nothing.
-        backend = ContainerBackend(project_root=tmp_path, runtime="podman")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert "-u" not in argv
-
-    def test_explicit_uid_is_honoured_on_podman_too(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, runtime="podman", user="1000:1000")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert argv[argv.index("-u") + 1] == "1000:1000"
-
-    def test_root_passes_no_user_flag(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, user="root")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert "-u" not in argv
-        assert "-e" not in argv
-
-    def test_a_home_is_supplied_alongside_an_explicit_uid(self, tmp_path: Path):
-        # A uid with no passwd entry has no home either, and images that resolve
-        # $HOME fail on that rather than on anything the task did.
-        backend = ContainerBackend(project_root=tmp_path, user="1000:1000")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        pairs = [(argv[i], argv[i + 1]) for i, part in enumerate(argv) if part == "-e"]
-        assert ("-e", "HOME=/tmp") in pairs
-
-    def test_forwarded_names_do_not_disturb_the_home_flag(self, tmp_path: Path):
-        # The two uses of -e must coexist; asserting on the *first* -e only
-        # looks like it tests this.
-        backend = ContainerBackend(project_root=tmp_path, user="1000:1000")
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls", env_vars=["GINKGO_THREADS"])
-        pairs = [(argv[i], argv[i + 1]) for i, part in enumerate(argv) if part == "-e"]
-        assert ("-e", "HOME=/tmp") in pairs
-        assert ("-e", "GINKGO_THREADS") in pairs
+_BASH_MISSING = 'exec: "bash": executable file not found in $PATH'
 
 
-class TestExecFailureHint:
-    def test_names_a_missing_shell(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        hint = backend.exec_failure_hint(
-            env="docker://alpine:3.20",
-            exit_code=127,
-            output='exec: "bash": executable file not found in $PATH',
-        )
-        assert hint is not None
-        assert "alpine:3.20" in hint
-        assert "[container] shell" in hint
-        assert 'shell = "sh"' in hint
+def test_a_missing_shell_is_named_with_the_setting_to_change(tmp_path: Path):
+    hint = ContainerBackend(project_root=tmp_path).exec_failure_hint(
+        env="docker://alpine:3.20", exit_code=127, output=_BASH_MISSING
+    )
+    assert hint is not None
+    for phrase in ("alpine:3.20", "[container] shell", 'shell = "sh"'):
+        assert phrase in hint
 
-    def test_silent_on_a_crlf_script(self, tmp_path: Path):
-        # A shell that started and then failed on a line-ending problem says
-        # "No such file or directory" too. Sending its author to the shell
-        # setting would cost them more time than saying nothing.
-        backend = ContainerBackend(project_root=tmp_path)
-        assert (
-            backend.exec_failure_hint(
-                env="docker://img:1",
-                exit_code=126,
-                output=(
-                    "bash: ./run.sh: /usr/bin/python3\r: bad interpreter: "
-                    "No such file or directory"
-                ),
-            )
-            is None
-        )
-
-    def test_silent_on_a_missing_input_file(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        assert (
-            backend.exec_failure_hint(
-                env="docker://img:1",
-                exit_code=127,
-                output="bash: /data/missing.fastq: No such file or directory",
-            )
-            is None
-        )
-
-    def test_shell_name_is_matched_as_a_token(self, tmp_path: Path):
-        # "sh" is a substring of "bash"; a substring test fired here and then
-        # advised setting shell to the value it already had.
-        backend = ContainerBackend(project_root=tmp_path, shell="sh")
-        assert (
-            backend.exec_failure_hint(
-                env="docker://img:1",
-                exit_code=127,
-                output='exec: "bash": executable file not found in $PATH',
-            )
-            is None
-        )
-
-    def test_suggests_a_shell_other_than_the_configured_one(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, shell="sh")
-        hint = backend.exec_failure_hint(
-            env="docker://distroless:latest",
-            exit_code=127,
-            output='exec: "sh": executable file not found in $PATH',
-        )
-        assert hint is not None
-        assert 'shell = "sh"' not in hint
-
-    def test_silent_on_an_ordinary_tool_failure(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        assert (
-            backend.exec_failure_hint(
-                env="docker://img:1", exit_code=1, output="samtools: no such reference"
-            )
-            is None
-        )
-
-    def test_silent_when_the_shell_is_not_what_failed(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        assert (
-            backend.exec_failure_hint(
-                env="docker://img:1",
-                exit_code=127,
-                output="minimap2: command not found",
-            )
-            is None
-        )
+    # It never suggests the shell already configured.
+    hint = ContainerBackend(project_root=tmp_path, shell="sh").exec_failure_hint(
+        env="docker://distroless:latest",
+        exit_code=127,
+        output='exec: "sh": executable file not found in $PATH',
+    )
+    assert hint is not None and 'shell = "sh"' not in hint
 
 
-class TestProjectRootResolution:
-    def test_project_root_is_resolved_once(self, tmp_path: Path):
-        real = tmp_path / "real_project"
-        real.mkdir()
-        link = tmp_path / "project"
-        link.symlink_to(real)
-
-        backend = ContainerBackend(project_root=link, user="root")
-        # The path mounted and the path mounts are compared against have to be
-        # the same one, or every declared input gets a second read-only mount
-        # laid over the read-write project mount.
-        assert backend.project_root == real
-        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert f"{real}:{real}" in argv
+@pytest.mark.parametrize(
+    ("shell", "exit_code", "output"),
+    [
+        # A shell that started, then failed on CRLF line endings, says
+        # "No such file or directory" too; sending its author to the shell
+        # setting would cost them more than silence.
+        ("bash", 126, "bash: ./run.sh: /usr/bin/python3\r: bad interpreter: No such file"),
+        ("bash", 127, "bash: /data/missing.fastq: No such file or directory"),
+        # "sh" is a substring of "bash": it must match as a token.
+        ("sh", 127, _BASH_MISSING),
+        ("bash", 1, "samtools: no such reference"),
+        ("bash", 127, "minimap2: command not found"),
+    ],
+    ids=["crlf", "missing-input", "substring", "tool-failure", "tool-not-found"],
+)
+def test_no_hint_when_the_shell_is_not_what_failed(tmp_path, shell, exit_code, output):
+    backend = ContainerBackend(project_root=tmp_path, shell=shell)
+    assert (
+        backend.exec_failure_hint(env="docker://img:1", exit_code=exit_code, output=output) is None
+    )

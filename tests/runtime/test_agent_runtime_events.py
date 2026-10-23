@@ -3,22 +3,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
-
-PYTHON = Path(sys.executable)
-
-
-def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", *args],
-        cwd=cwd,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
+from tests.conftest import run_cli
 
 
 def test_run_agent_verbose_emits_task_log_events(tmp_path: Path) -> None:
@@ -39,7 +26,7 @@ def main():
         encoding="utf-8",
     )
 
-    result = _run_cli("run", "workflow.py", "--agent-output", "--verbose", cwd=tmp_path)
+    result = run_cli("run", "workflow.py", "--agent-output", "--verbose", cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     task_logs = [event for event in events if event["event"] == "task_log"]
@@ -72,7 +59,7 @@ def main():
         encoding="utf-8",
     )
 
-    result = _run_cli("run", "workflow.py", "--keep-going", "--agent-output", cwd=tmp_path)
+    result = run_cli("run", "workflow.py", "--keep-going", "--agent-output", cwd=tmp_path)
 
     assert result.returncode == 3, result.stderr
     events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]

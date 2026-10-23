@@ -1,7 +1,8 @@
-"""Integration tests for cache integrity and working-tree materialization."""
+"""Source hashing, cache invalidation, and restoring outputs from the cache."""
 
 import importlib
 import linecache
+import shutil
 import stat
 import sys
 import textwrap
@@ -10,365 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
-from ginkgo.runtime.caching.index import CacheIndex
-from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo import Out, evaluate, file, folder, shell, task, untracked
 from ginkgo.cli.commands.cache import _remove_tree
 from ginkgo.core import source_hash
 from ginkgo.core.task import TaskDef
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
+from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
+from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from tests.conftest import EventCollector
-
-
-# ---------------------------------------------------------------------------
-# Source hashing
-# ---------------------------------------------------------------------------
-
-
-class TestSourceHash:
-    def test_source_hash_is_stable(self):
-        @task()
-        def stable_fn(x: int) -> int:
-            return x + 1
-
-        assert stable_fn.source_hash == stable_fn.source_hash
-
-    def test_different_bodies_produce_different_hashes(self):
-        @task()
-        def fn_a(x: int) -> int:
-            return x + 1
-
-        @task()
-        def fn_b(x: int) -> int:
-            return x + 2
-
-        assert fn_a.source_hash != fn_b.source_hash
-
-    def test_resource_declarations_do_not_change_the_hash(self):
-        """Resources are not cache-relevant, so decorator text must not be hashed."""
-
-        def declare_lean():
-            @task(threads=1)
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        def declare_generous():
-            @task(threads=8, memory="16Gi", retries=3)
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        assert declare_lean().source_hash == declare_generous().source_hash
-
-    def test_multi_line_decorator_is_filtered_the_same_way(self):
-        """A resource kwarg spanning several lines leaves no trace in the hash."""
-
-        def declare_inline():
-            @task(threads=1)
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        def declare_wrapped():
-            @task(
-                threads=1,
-                memory="4Gi",
-            )
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        assert declare_inline().source_hash == declare_wrapped().source_hash
-
-    def test_resourceless_decorator_hashes_like_its_resourced_twin(self):
-        """Deleting every resource kwarg leaves the bare ``@task()`` call behind."""
-
-        def declare_bare():
-            @task()
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        def declare_resourced():
-            @task(threads=4)
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        assert declare_bare().source_hash == declare_resourced().source_hash
-
-    def test_env_argument_still_changes_the_hash(self):
-        """Only the resource-only arguments are filtered; ``env`` stays."""
-
-        def declare_local():
-            @task(threads=4)
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        def declare_foreign():
-            @task(threads=4, env="flye")
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        assert declare_local().source_hash != declare_foreign().source_hash
-
-    def test_body_change_still_changes_the_hash(self):
-        """Filtering resource kwargs must not blunt invalidation on a body edit."""
-
-        def declare_original():
-            @task(threads=1)
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        def declare_edited():
-            @task(threads=1)
-            def compute(x: int) -> int:
-                return x + 2
-
-            return compute
-
-        assert declare_original().source_hash != declare_edited().source_hash
-
-    def test_comment_change_still_changes_the_hash(self):
-        """The definition's original bytes are hashed, comments included."""
-
-        def declare_uncommented():
-            @task()
-            def compute(x: int) -> int:
-                return x + 1
-
-            return compute
-
-        def declare_commented():
-            @task()
-            def compute(x: int) -> int:
-                # Bump by one.
-                return x + 1
-
-            return compute
-
-        assert declare_uncommented().source_hash != declare_commented().source_hash
-
-    def test_async_definition_is_filtered_like_any_other(self):
-        source = textwrap.dedent("""\
-            @task(threads=8)
-            async def compute(x: int) -> int:
-                return x + 1
-        """)
-        assert source_hash._without_resource_kwargs(source) == (
-            "@task()\nasync def compute(x: int) -> int:\n    return x + 1\n"
-        )
-
-    @pytest.mark.parametrize(
-        ("source", "expected"),
-        [
-            pytest.param(
-                '@task("shell", threads=8, env="flye")\ndef c():\n    pass\n',
-                '@task("shell", env="flye")\ndef c():\n    pass\n',
-                id="positional-kind-and-env-survive",
-            ),
-            pytest.param(
-                '@task(\n    threads=8,\n    memory="4Gi",\n)\ndef c():\n    pass\n',
-                "@task()\ndef c():\n    pass\n",
-                id="multi-line-call-with-trailing-comma",
-            ),
-            pytest.param(
-                "@task(retry_on=(ValueError, KeyError), version=2)\ndef c():\n    pass\n",
-                "@task(version=2)\ndef c():\n    pass\n",
-                id="complex-value-expression",
-            ),
-            pytest.param(
-                "@task(threads=8, **extra)\ndef c():\n    pass\n",
-                "@task(**extra)\ndef c():\n    pass\n",
-                id="double-star-argument-survives",
-            ),
-            pytest.param(
-                "@ginkgo.task(threads=8)\n@other(threads=8)\ndef c():\n    pass\n",
-                "@ginkgo.task()\n@other(threads=8)\ndef c():\n    pass\n",
-                id="attribute-spelling-only",
-            ),
-            pytest.param(
-                '@task(threads=8)\ndef c():\n    return "é"  # threads=8\n',
-                '@task()\ndef c():\n    return "é"  # threads=8\n',
-                id="non-ascii-offsets-and-comment-text",
-            ),
-            pytest.param("@task\ndef c():\n    pass\n", "@task\ndef c():\n    pass\n", id="bare"),
-        ],
-    )
-    def test_resource_kwargs_are_deleted_from_task_calls(self, source, expected):
-        assert source_hash._without_resource_kwargs(source) == expected
-
-    def test_unparseable_source_falls_back_unchanged(self):
-        source = "@task(threads=8)\ndef compute(x: int) ->\n"
-        assert source_hash._without_resource_kwargs(source) == source
-
-    def test_nested_task_with_column_zero_string_falls_back_to_raw_source(self):
-        """``textwrap.dedent`` cannot flatten this, so the raw text is hashed."""
-
-        def declare(threads: int):
-            if threads == 1:
-
-                @task(threads=1)
-                def compute() -> str:
-                    return """
-banner
-"""
-            else:
-
-                @task(threads=8)
-                def compute() -> str:
-                    return """
-banner
-"""
-
-            return compute
-
-        # Over-invalidation, not a crash: the definition text keeps its kwargs.
-        assert declare(1).source_hash != declare(8).source_hash
-
-    def test_unsourceable_function_raises_at_registration(self):
-        # Functions created via exec() have no inspectable source.
-        ns: dict = {}
-        exec("def dynamic_fn(x): return x", ns)
-        with pytest.raises(ValueError, match="Cannot extract source"):
-            TaskDef(fn=ns["dynamic_fn"])
-
-    def test_unparseable_helper_in_import_closure_raises_at_registration(self, tmp_path):
-        """A helper that fails to parse must fail loudly, not truncate the closure."""
-        module_dir = tmp_path / "pkg"
-        module_dir.mkdir()
-        (module_dir / "__init__.py").write_text("")
-        (module_dir / "tasks.py").write_text(
-            textwrap.dedent("""\
-                from . import helpers
-
-                def compute(x: int) -> int:
-                    return helpers.compute(x)
-            """),
-            encoding="utf-8",
-        )
-        helpers_path = module_dir / "helpers.py"
-        helpers_path.write_text(
-            "def compute(x: int) -> int:\n    return x + 1\n", encoding="utf-8"
-        )
-
-        import importlib
-        import sys
-
-        sys.path.insert(0, str(tmp_path))
-        try:
-            tasks = importlib.import_module("pkg.tasks")
-
-            # Break the already-imported helper on disk, as during a mid-edit.
-            helpers_path.write_text("def compute(x: int) ->\n", encoding="utf-8")
-
-            with pytest.raises(ValueError, match="Cannot parse imports of module 'pkg.helpers'"):
-                TaskDef(fn=tasks.compute)
-        finally:
-            sys.path.remove(str(tmp_path))
-            sys.modules.pop("pkg.helpers", None)
-            sys.modules.pop("pkg.tasks", None)
-            sys.modules.pop("pkg", None)
-
-    def test_function_local_import_not_yet_run_joins_the_closure(self, tmp_path, monkeypatch):
-        """The closure follows import statements, not what ``sys.modules`` holds."""
-        _write_module(
-            tmp_path / "lazy_tasks.py",
-            """\
-            def compute(x: int) -> int:
-                from lazy_helpers import scale
-                return scale(x)
-            """,
-        )
-        _write_module(tmp_path / "lazy_helpers.py", "def scale(x): return x * 2\n")
-        monkeypatch.delitem(sys.modules, "lazy_helpers", raising=False)
-        with _imported_from(tmp_path, "lazy_tasks") as tasks:
-            assert "lazy_helpers" not in sys.modules
-            assert set(source_hash._local_import_closure(tasks)) == {
-                "lazy_tasks",
-                "lazy_helpers",
-            }
-
-    def test_environment_inside_project_stays_out_of_the_closure(self, tmp_path, monkeypatch):
-        """An env nested in the project root must not pull installed modules in."""
-        module_dir = tmp_path / "pkg"
-        module_dir.mkdir()
-        (module_dir / "__init__.py").write_text("")
-        (module_dir / "tasks.py").write_text(
-            textwrap.dedent("""\
-                import vendorlib
-
-                from . import helpers
-
-                def compute(x: int) -> int:
-                    return vendorlib.scale(helpers.compute(x))
-            """),
-            encoding="utf-8",
-        )
-        (module_dir / "helpers.py").write_text(
-            "def compute(x: int) -> int:\n    return x + 1\n", encoding="utf-8"
-        )
-        env_dir = tmp_path / ".venv"
-        site_dir = env_dir / "lib"
-        site_dir.mkdir(parents=True)
-        (site_dir / "vendorlib.py").write_text(
-            "def scale(x: int) -> int:\n    return x * 2\n", encoding="utf-8"
-        )
-
-        import importlib
-        import sys
-
-        sys.path.insert(0, str(site_dir))
-        sys.path.insert(0, str(tmp_path))
-        try:
-            tasks = importlib.import_module("pkg.tasks")
-
-            monkeypatch.setattr(source_hash, "_installed_roots", lambda: ())
-            unfiltered = source_hash._local_import_closure(tasks)
-            assert "vendorlib" in unfiltered
-
-            monkeypatch.setattr(source_hash, "_installed_roots", lambda: (env_dir,))
-            assert set(source_hash._local_import_closure(tasks)) == {
-                "pkg",
-                "pkg.tasks",
-                "pkg.helpers",
-            }
-        finally:
-            sys.path.remove(str(tmp_path))
-            sys.path.remove(str(site_dir))
-            sys.modules.pop("vendorlib", None)
-            sys.modules.pop("pkg.helpers", None)
-            sys.modules.pop("pkg.tasks", None)
-            sys.modules.pop("pkg", None)
-
-
-@contextmanager
-def _imported_from(install_root: Path, name: str):
-    """Import ``name`` from ``install_root``, then unload it and its siblings."""
-    sys.path.insert(0, str(install_root))
-    try:
-        yield importlib.import_module(name)
-    finally:
-        sys.path.remove(str(install_root))
-        for loaded in list(sys.modules):
-            module = sys.modules[loaded]
-            path = getattr(module, "__file__", None)
-            if path is not None and Path(path).is_relative_to(install_root):
-                sys.modules.pop(loaded, None)
 
 
 def _write_module(path: Path, body: str) -> None:
@@ -376,462 +27,376 @@ def _write_module(path: Path, body: str) -> None:
     path.write_text(textwrap.dedent(body), encoding="utf-8")
 
 
-class TestInstalledTaskModuleClosure:
-    """A task module living in site-packages is bounded by its own package."""
-
-    def test_own_helpers_stay_in_closure_and_other_distributions_stay_out(
-        self, tmp_path, monkeypatch
-    ):
-        install_root = tmp_path / "site-packages"
-        _write_module(install_root / "mypkg" / "__init__.py", "")
-        _write_module(
-            install_root / "mypkg" / "tasks.py",
-            """\
-            import vendorlib
-
-            from . import helpers
-
-            def compute(x: int) -> int:
-                return vendorlib.scale(helpers.compute(x))
-            """,
-        )
-        _write_module(
-            install_root / "mypkg" / "helpers.py",
-            "def compute(x: int) -> int:\n    return x + 1\n",
-        )
-        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
-
-        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
-        with _imported_from(install_root, "mypkg.tasks") as tasks:
-            assert set(source_hash._local_import_closure(tasks)) == {
-                "mypkg",
-                "mypkg.tasks",
-                "mypkg.helpers",
-            }
-
-    def test_namespace_portion_bounds_at_the_own_regular_package(self, tmp_path, monkeypatch):
-        """Sibling portions of a shared namespace belong to other distributions."""
-        install_root = tmp_path / "site-packages"
-        _write_module(install_root / "ns" / "inner" / "__init__.py", "")
-        _write_module(
-            install_root / "ns" / "inner" / "tasks.py",
-            """\
-            from ns import other
-
-            from . import helpers
-
-            def compute(x: int) -> int:
-                return other.scale(helpers.compute(x))
-            """,
-        )
-        _write_module(
-            install_root / "ns" / "inner" / "helpers.py",
-            "def compute(x: int) -> int:\n    return x + 1\n",
-        )
-        _write_module(
-            install_root / "ns" / "other" / "__init__.py", "def scale(x): return x * 2\n"
-        )
-
-        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
-        with _imported_from(install_root, "ns.inner.tasks") as tasks:
-            assert set(source_hash._local_import_closure(tasks)) == {
-                "ns.inner",
-                "ns.inner.tasks",
-                "ns.inner.helpers",
-            }
-
-    def test_changed_helper_changes_the_hash(self, tmp_path, monkeypatch):
-        """The point of the closure: an installed helper still invalidates."""
-        install_root = tmp_path / "site-packages"
-        _write_module(install_root / "mypkg" / "__init__.py", "")
-        _write_module(
-            install_root / "mypkg" / "tasks.py",
-            """\
-            from . import helpers
-
-            def compute(x: int) -> int:
-                return helpers.compute(x)
-            """,
-        )
-        helpers_path = install_root / "mypkg" / "helpers.py"
-        _write_module(helpers_path, "def compute(x: int) -> int:\n    return x + 1\n")
-
-        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
-        with _imported_from(install_root, "mypkg.tasks") as tasks:
-            before = source_hash.compute_source_hash(tasks.compute)
-            helpers_path.write_text(
-                "def compute(x: int) -> int:\n    return x + 100\n", encoding="utf-8"
-            )
-            assert source_hash.compute_source_hash(tasks.compute) != before
-
-    def test_init_less_installed_package_still_hashes_its_helpers(self, tmp_path, monkeypatch):
-        """A PEP 420 / stub-only package has no ``__init__.py`` to bound the walk."""
-        install_root = tmp_path / "site-packages"
-        _write_module(
-            install_root / "nspkg" / "tasks.py",
-            """\
-            from nspkg import helpers
-
-            def compute(x: int) -> int:
-                return helpers.compute(x)
-            """,
-        )
-        helpers_path = install_root / "nspkg" / "helpers.py"
-        _write_module(helpers_path, "def compute(x: int) -> int:\n    return x + 1\n")
-
-        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
-        monkeypatch.setattr(source_hash, "_packages_distributions", lambda: {"nspkg": ["nsdist"]})
-        with _imported_from(install_root, "nspkg.tasks") as tasks:
-            before = source_hash.compute_source_hash(tasks.compute)
-            helpers_path.write_text(
-                "def compute(x: int) -> int:\n    return x + 100\n", encoding="utf-8"
-            )
-            assert source_hash.compute_source_hash(tasks.compute) != before
-
-    def test_unresolvable_installed_module_falls_back_to_the_install_root(
-        self, tmp_path, monkeypatch
-    ):
-        """No ``__init__.py`` and no metadata: over-hash rather than narrow silently."""
-        install_root = tmp_path / "site-packages"
-        _write_module(
-            install_root / "solo_tasks.py",
-            """\
-            import vendorlib
-
-            def compute(x: int) -> int:
-                return vendorlib.scale(x)
-            """,
-        )
-        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
-
-        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
-        monkeypatch.setattr(source_hash, "_packages_distributions", dict)
-        with _imported_from(install_root, "solo_tasks") as tasks:
-            assert set(source_hash._local_import_closure(tasks)) == {
-                "solo_tasks",
-                "vendorlib",
-            }
-
-    def test_distribution_confirmed_bare_module_holds_only_itself(self, tmp_path, monkeypatch):
-        """Metadata naming the module as its own top level bounds it to itself."""
-        install_root = tmp_path / "site-packages"
-        _write_module(
-            install_root / "solo_tasks.py",
-            """\
-            import vendorlib
-
-            def compute(x: int) -> int:
-                return vendorlib.scale(x)
-            """,
-        )
-        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
-
-        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
-        monkeypatch.setattr(
-            source_hash, "_packages_distributions", lambda: {"solo_tasks": ["solodist"]}
-        )
-        with _imported_from(install_root, "solo_tasks") as tasks:
-            assert set(source_hash._local_import_closure(tasks)) == {"solo_tasks"}
-
-
-def _hash_module_task(path: Path, body: str, *, module_name: str) -> str:
-    """Write ``body`` to ``path``, import it fresh, and hash its ``compute`` task."""
-    _write_module(path, body)
-    linecache.checkcache()
-    for loaded in [n for n in sys.modules if n == module_name or n.startswith(f"{module_name}.")]:
-        sys.modules.pop(loaded, None)
-    importlib.invalidate_caches()
-    module = importlib.import_module(module_name)
-    return source_hash.compute_source_hash(module.compute.fn)
-
-
-class TestSourceHashEndToEnd:
-    """Hash one real module on disk, rewrite it, hash again."""
-
-    @pytest.fixture
-    def hash_of(self, tmp_path, monkeypatch):
-        monkeypatch.syspath_prepend(str(tmp_path))
-        module_path = tmp_path / "e2e_tasks.py"
-
-        def _hash(body: str) -> str:
-            return _hash_module_task(module_path, body, module_name="e2e_tasks")
-
-        yield _hash
-        sys.modules.pop("e2e_tasks", None)
-
-    def test_resource_edit_leaves_the_hash_untouched(self, hash_of):
-        lean = hash_of("""\
-            from ginkgo import task
-
-            @task(threads=24)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        generous = hash_of("""\
-            from ginkgo import task
-
-            @task(threads=24, memory="16Gi")
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        assert lean == generous
-
-    def test_failure_policy_edit_leaves_the_hash_untouched(self, hash_of):
-        """``on_failure`` decides what a failure stops, never what a task makes."""
-        fail_fast = hash_of("""\
-            from ginkgo import task
-
-            @task(threads=2)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        ignoring = hash_of("""\
-            from ginkgo import task
-
-            @task(threads=2, on_failure="ignore")
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        assert fail_fast == ignoring
-
-    def test_failure_policy_edit_in_the_import_closure_leaves_the_hash_untouched(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        """A helper module's decorator text is filtered like the task's own."""
-        monkeypatch.syspath_prepend(str(tmp_path))
-        helper_path = tmp_path / "policy_helpers.py"
-        task_body = """\
-            import policy_helpers
-            from ginkgo import task
-
-            @task(threads=2)
-            def compute(x: int) -> int:
-                return policy_helpers.widen(x)
-            """
-
-        def _helper(policy: str) -> str:
-            return f"""\
-                from ginkgo import task
-
-                @task(threads=4, on_failure="{policy}")
-                def widen(x: int) -> int:
-                    return x * 2
-                """
-
-        try:
-            _write_module(helper_path, _helper("fail_fast"))
-            fail_fast = _hash_module_task(
-                tmp_path / "policy_tasks.py", task_body, module_name="policy_tasks"
-            )
-            _write_module(helper_path, _helper("ignore"))
-            ignoring = _hash_module_task(
-                tmp_path / "policy_tasks.py", task_body, module_name="policy_tasks"
-            )
-        finally:
-            sys.modules.pop("policy_tasks", None)
-            sys.modules.pop("policy_helpers", None)
-
-        assert fail_fast == ignoring
-
-    def test_kind_edit_changes_the_hash(self, hash_of):
-        python_kind = hash_of("""\
-            from ginkgo import task
-
-            @task(kind="python", threads=2)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        shell_kind = hash_of("""\
-            from ginkgo import task
-
-            @task(kind="shell", threads=2)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        assert python_kind != shell_kind
-
-    def test_body_edit_changes_the_hash(self, hash_of):
-        original = hash_of("""\
-            from ginkgo import task
-
-            @task(threads=2)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        edited = hash_of("""\
-            from ginkgo import task
-
-            @task(threads=2)
-            def compute(x: int) -> int:
-                return x + 2
-            """)
-        assert original != edited
-
-    def test_non_task_decorator_text_still_changes_the_hash(self, hash_of):
-        """Only ``@task`` resource kwargs are filtered; user decorators are opaque."""
-        original = hash_of("""\
-            from ginkgo import task
-
-            def tag(**kwargs):
-                def wrap(fn):
-                    return fn
-                return wrap
-
-            @task(threads=2)
-            @tag(threads=2)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        edited = hash_of("""\
-            from ginkgo import task
-
-            def tag(**kwargs):
-                def wrap(fn):
-                    return fn
-                return wrap
-
-            @task(threads=2)
-            @tag(threads=8)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        assert original != edited
-
-    def test_version_edit_changes_the_hash(self, hash_of):
-        first = hash_of("""\
-            from ginkgo import task
-
-            @task(version=1, threads=2)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        second = hash_of("""\
-            from ginkgo import task
-
-            @task(version=2, threads=2)
-            def compute(x: int) -> int:
-                return x + 1
-            """)
-        assert first != second
-
-
-class TestSourceHashCacheInvalidation:
-    """Verify that modifying a task function body causes a cache miss."""
-
-    def test_modified_source_causes_cache_miss(self, tmp_path):
-        """Write two versions of a task module and verify cache miss on change."""
-        module_dir = tmp_path / "pkg"
-        module_dir.mkdir()
-        (module_dir / "__init__.py").write_text("")
-
-        # Version 1 of the task.
-        v1_source = textwrap.dedent("""\
-            from ginkgo import task
-
-            @task()
-            def compute(x: int) -> int:
-                return x + 1
-        """)
-        (module_dir / "tasks.py").write_text(v1_source)
-
-        import importlib
-        import sys
-
-        sys.path.insert(0, str(tmp_path))
-        try:
-            mod = importlib.import_module("pkg.tasks")
-            result1 = evaluate(mod.compute(x=5))
-            assert result1 == 6
-
-            # Version 2: change the function body.
-            v2_source = textwrap.dedent("""\
-                from ginkgo import task
-
-                @task()
-                def compute(x: int) -> int:
-                    return x + 10
-            """)
-            (module_dir / "tasks.py").write_text(v2_source)
-
-            # Reload the module to pick up the new source.
-            importlib.reload(mod)
-            collector = EventCollector()
-            result2 = evaluate(mod.compute(x=5), event_bus=collector.bus)
-            assert result2 == 15
-
-            # Should have re-executed, not served from cache.
-            assert collector.started()
-            assert not collector.cached()
-        finally:
-            sys.path.remove(str(tmp_path))
-            sys.modules.pop("pkg.tasks", None)
-            sys.modules.pop("pkg", None)
-
-    def test_modified_imported_helper_causes_cache_miss(self, tmp_path):
-        """Changing a transitive local helper invalidates an unchanged task."""
-        module_dir = tmp_path / "pkg"
-        module_dir.mkdir()
-        (module_dir / "__init__.py").write_text("")
-        (module_dir / "tasks.py").write_text(
-            textwrap.dedent("""\
-                from ginkgo import task
-                from . import helpers
-
-                @task()
-                def compute(x: int) -> int:
-                    return helpers.compute(x)
-            """),
-            encoding="utf-8",
-        )
-        (module_dir / "helpers.py").write_text(
-            textwrap.dedent("""\
-                from .transform import adjust
-
-                def compute(x: int) -> int:
-                    return adjust(x)
-            """),
-            encoding="utf-8",
-        )
-        transform_path = module_dir / "transform.py"
-        transform_path.write_text(
-            "def adjust(x: int) -> int:\n    return x + 1\n", encoding="utf-8"
-        )
-
-        import importlib
-        import sys
-
-        sys.path.insert(0, str(tmp_path))
-        try:
-            tasks = importlib.import_module("pkg.tasks")
-            assert evaluate(tasks.compute(x=5)) == 6
-
-            cached = EventCollector()
-            assert evaluate(tasks.compute(x=5), event_bus=cached.bus) == 6
-            assert cached.cached()
-
-            transform_path.write_text(
-                "def adjust(x: int) -> int:\n    return x + 10\n", encoding="utf-8"
-            )
-            importlib.reload(sys.modules["pkg.transform"])
-            importlib.reload(sys.modules["pkg.helpers"])
-            tasks = importlib.reload(tasks)
-
-            collector = EventCollector()
-            assert evaluate(tasks.compute(x=5), event_bus=collector.bus) == 15
-            assert collector.started()
-            assert not collector.cached()
-        finally:
-            sys.path.remove(str(tmp_path))
-            sys.modules.pop("pkg.transform", None)
-            sys.modules.pop("pkg.helpers", None)
-            sys.modules.pop("pkg.tasks", None)
-            sys.modules.pop("pkg", None)
+@contextmanager
+def _imported_from(root: Path, name: str):
+    """Import ``name`` from ``root``, then unload every module loaded from there."""
+    sys.path.insert(0, str(root))
+    try:
+        yield importlib.import_module(name)
+    finally:
+        sys.path.remove(str(root))
+        for loaded, module in list(sys.modules.items()):
+            path = getattr(module, "__file__", None)
+            if path is not None and Path(path).is_relative_to(root):
+                sys.modules.pop(loaded, None)
+
+
+def _closure(module) -> set[str]:
+    return set(source_hash._local_import_closure(module))
 
 
 # ---------------------------------------------------------------------------
-# File output symlinks
+# Source hashing
+# ---------------------------------------------------------------------------
+
+
+def _source(decorator: str, body: str = "return x + 1", prelude: str = "") -> str:
+    return f"from ginkgo import task\n{prelude}\n{decorator}\ndef compute(x: int) -> int:\n    {body}\n"
+
+
+_TAG = "def tag(**kwargs):\n    return lambda fn: fn\n"
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "same"),
+    [
+        pytest.param(
+            _source("@task(threads=1)"),
+            _source('@task(threads=8, memory="16Gi", retries=3)'),
+            True,
+            id="resources-are-not-hashed",
+        ),
+        pytest.param(
+            _source("@task(threads=1)"),
+            _source('@task(\n    threads=1,\n    memory="4Gi",\n)'),
+            True,
+            id="multi-line-decorator",
+        ),
+        pytest.param(_source("@task()"), _source("@task(threads=4)"), True, id="bare-decorator"),
+        pytest.param(
+            _source("@task(threads=2)"),
+            _source('@task(threads=2, on_failure="ignore")'),
+            True,
+            id="failure-policy-is-not-hashed",
+        ),
+        pytest.param(
+            _source("@task(threads=4)"), _source('@task(threads=4, env="flye")'), False, id="env"
+        ),
+        pytest.param(_source("@task()"), _source("@task()", "return x + 2"), False, id="body"),
+        pytest.param(
+            _source("@task()"),
+            _source("@task()", "# Bump by one.\n    return x + 1"),
+            False,
+            id="comment",
+        ),
+        pytest.param(
+            _source('@task(kind="python", threads=2)'),
+            _source('@task(kind="shell", threads=2)'),
+            False,
+            id="kind",
+        ),
+        pytest.param(
+            _source("@task(version=1, threads=2)"),
+            _source("@task(version=2, threads=2)"),
+            False,
+            id="version",
+        ),
+        pytest.param(
+            _source("@task(threads=2)\n@tag(threads=2)", prelude=_TAG),
+            _source("@task(threads=2)\n@tag(threads=8)", prelude=_TAG),
+            False,
+            id="user-decorators-are-opaque",
+        ),
+    ],
+)
+def test_which_edits_change_a_task_s_source_hash(tmp_path, monkeypatch, first, second, same):
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def hash_of(source: str) -> str:
+        (tmp_path / "e2e_tasks.py").write_text(source, encoding="utf-8")
+        linecache.checkcache()
+        sys.modules.pop("e2e_tasks", None)
+        importlib.invalidate_caches()
+        return source_hash.compute_source_hash(importlib.import_module("e2e_tasks").compute.fn)
+
+    try:
+        assert (hash_of(first) == hash_of(second)) is same
+    finally:
+        sys.modules.pop("e2e_tasks", None)
+
+
+def test_a_nested_definition_is_dedented_before_its_resources_are_filtered():
+    def declare(threads: int):
+        if threads == 1:
+
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 1
+
+        else:
+
+            @task(threads=8, memory="16Gi")
+            def compute(x: int) -> int:
+                return x + 1
+
+        return compute
+
+    assert declare(1).source_hash == declare(8).source_hash
+
+
+def test_a_nested_task_with_a_column_zero_string_falls_back_to_raw_source():
+    """``textwrap.dedent`` cannot flatten this: over-invalidate rather than crash."""
+
+    def declare(threads: int):
+        if threads == 1:
+
+            @task(threads=1)
+            def compute() -> str:
+                return """
+banner
+"""
+        else:
+
+            @task(threads=8)
+            def compute() -> str:
+                return """
+banner
+"""
+
+        return compute
+
+    assert declare(1).source_hash != declare(8).source_hash
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(
+            '@task("shell", threads=8, env="flye")\ndef c():\n    pass\n',
+            '@task("shell", env="flye")\ndef c():\n    pass\n',
+            id="positional-kind-and-env-survive",
+        ),
+        pytest.param(
+            '@task(\n    threads=8,\n    memory="4Gi",\n)\ndef c():\n    pass\n',
+            "@task()\ndef c():\n    pass\n",
+            id="multi-line-call-with-trailing-comma",
+        ),
+        pytest.param(
+            "@task(retry_on=(ValueError, KeyError), version=2)\ndef c():\n    pass\n",
+            "@task(version=2)\ndef c():\n    pass\n",
+            id="complex-value-expression",
+        ),
+        pytest.param(
+            "@task(threads=8, **extra)\ndef c():\n    pass\n",
+            "@task(**extra)\ndef c():\n    pass\n",
+            id="double-star-argument-survives",
+        ),
+        pytest.param(
+            "@ginkgo.task(threads=8)\n@other(threads=8)\ndef c():\n    pass\n",
+            "@ginkgo.task()\n@other(threads=8)\ndef c():\n    pass\n",
+            id="attribute-spelling-only",
+        ),
+        pytest.param(
+            '@task(threads=8)\ndef c():\n    return "é"  # threads=8\n',
+            '@task()\ndef c():\n    return "é"  # threads=8\n',
+            id="non-ascii-offsets-and-comment-text",
+        ),
+        pytest.param(
+            "@task(threads=8)\nasync def c(x: int) -> int:\n    return x + 1\n",
+            "@task()\nasync def c(x: int) -> int:\n    return x + 1\n",
+            id="async",
+        ),
+        pytest.param("@task\ndef c():\n    pass\n", "@task\ndef c():\n    pass\n", id="bare"),
+        pytest.param(
+            "@task(threads=8)\ndef compute(x: int) ->\n",
+            "@task(threads=8)\ndef compute(x: int) ->\n",
+            id="unparseable-falls-back-unchanged",
+        ),
+    ],
+)
+def test_resource_kwargs_are_deleted_from_task_calls(source, expected):
+    assert source_hash._without_resource_kwargs(source) == expected
+
+
+def test_an_unsourceable_function_is_refused_at_registration():
+    namespace: dict = {}
+    exec("def dynamic_fn(x): return x", namespace)
+    with pytest.raises(ValueError, match="Cannot extract source"):
+        TaskDef(fn=namespace["dynamic_fn"])
+
+
+def test_an_unparseable_helper_in_the_import_closure_is_refused_at_registration(tmp_path):
+    """A helper that fails to parse must fail loudly, not truncate the closure."""
+    _write_module(tmp_path / "pkg" / "__init__.py", "")
+    _write_module(
+        tmp_path / "pkg" / "tasks.py",
+        "from . import helpers\n\ndef compute(x):\n    return helpers.compute(x)\n",
+    )
+    _write_module(tmp_path / "pkg" / "helpers.py", "def compute(x):\n    return x + 1\n")
+
+    with _imported_from(tmp_path, "pkg.tasks") as tasks:
+        # Break the already-imported helper on disk, as during a mid-edit.
+        (tmp_path / "pkg" / "helpers.py").write_text("def compute(x) ->\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="Cannot parse imports of module 'pkg.helpers'"):
+            TaskDef(fn=tasks.compute)
+
+
+def test_a_function_local_import_not_yet_run_joins_the_closure(tmp_path, monkeypatch):
+    """The closure follows import statements, not what ``sys.modules`` holds."""
+    _write_module(
+        tmp_path / "lazy_tasks.py",
+        "def compute(x):\n    from lazy_helpers import scale\n    return scale(x)\n",
+    )
+    _write_module(tmp_path / "lazy_helpers.py", "def scale(x): return x * 2\n")
+    monkeypatch.delitem(sys.modules, "lazy_helpers", raising=False)
+
+    with _imported_from(tmp_path, "lazy_tasks") as tasks:
+        assert "lazy_helpers" not in sys.modules
+        assert _closure(tasks) == {"lazy_tasks", "lazy_helpers"}
+
+
+def test_an_environment_inside_the_project_stays_out_of_the_closure(tmp_path, monkeypatch):
+    """An env nested in the project root must not pull installed modules in."""
+    _write_module(tmp_path / "pkg" / "__init__.py", "")
+    _write_module(
+        tmp_path / "pkg" / "tasks.py",
+        "import vendorlib\n\nfrom . import helpers\n\n"
+        "def compute(x):\n    return vendorlib.scale(helpers.compute(x))\n",
+    )
+    _write_module(tmp_path / "pkg" / "helpers.py", "def compute(x):\n    return x + 1\n")
+    env_dir = tmp_path / ".venv"
+    _write_module(env_dir / "lib" / "vendorlib.py", "def scale(x):\n    return x * 2\n")
+    monkeypatch.syspath_prepend(str(env_dir / "lib"))
+
+    with _imported_from(tmp_path, "pkg.tasks") as tasks:
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: ())
+        assert "vendorlib" in _closure(tasks)
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (env_dir,))
+        assert _closure(tasks) == {"pkg", "pkg.tasks", "pkg.helpers"}
+
+
+class TestInstalledTaskModuleClosure:
+    """A task module living in site-packages is bounded by its own package."""
+
+    _USES_VENDOR = "import vendorlib\n\ndef compute(x):\n    return vendorlib.scale(x)\n"
+
+    @pytest.fixture
+    def site(self, tmp_path, monkeypatch) -> Path:
+        root = tmp_path / "site-packages"
+        _write_module(root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (root,))
+        return root
+
+    def test_own_helpers_stay_in_and_other_distributions_stay_out(self, site):
+        _write_module(site / "mypkg" / "__init__.py", "")
+        _write_module(
+            site / "mypkg" / "tasks.py",
+            "import vendorlib\n\nfrom . import helpers\n\n"
+            "def compute(x):\n    return vendorlib.scale(helpers.compute(x))\n",
+        )
+        _write_module(site / "mypkg" / "helpers.py", "def compute(x):\n    return x + 1\n")
+
+        with _imported_from(site, "mypkg.tasks") as tasks:
+            assert _closure(tasks) == {"mypkg", "mypkg.tasks", "mypkg.helpers"}
+
+    def test_a_namespace_portion_is_bounded_by_its_own_regular_package(self, site):
+        _write_module(site / "ns" / "inner" / "__init__.py", "")
+        _write_module(
+            site / "ns" / "inner" / "tasks.py",
+            "from ns import other\n\nfrom . import helpers\n\n"
+            "def compute(x):\n    return other.scale(helpers.compute(x))\n",
+        )
+        _write_module(site / "ns" / "inner" / "helpers.py", "def compute(x):\n    return x + 1\n")
+        _write_module(site / "ns" / "other" / "__init__.py", "def scale(x): return x * 2\n")
+
+        with _imported_from(site, "ns.inner.tasks") as tasks:
+            assert _closure(tasks) == {"ns.inner", "ns.inner.tasks", "ns.inner.helpers"}
+
+    @pytest.mark.parametrize(
+        ("package", "distributions"),
+        [("mypkg", None), ("nspkg", {"nspkg": ["nsdist"]})],
+        ids=["regular-package", "init-less-package"],
+    )
+    def test_a_changed_installed_helper_changes_the_hash(
+        self, site, monkeypatch, package, distributions
+    ):
+        """The point of the closure: an installed helper still invalidates."""
+        if distributions is None:
+            _write_module(site / package / "__init__.py", "")
+        else:
+            monkeypatch.setattr(source_hash, "_packages_distributions", lambda: distributions)
+        _write_module(
+            site / package / "tasks.py",
+            f"from {package} import helpers\n\ndef compute(x):\n    return helpers.compute(x)\n",
+        )
+        helpers = site / package / "helpers.py"
+        _write_module(helpers, "def compute(x):\n    return x + 1\n")
+
+        with _imported_from(site, f"{package}.tasks") as tasks:
+            before = source_hash.compute_source_hash(tasks.compute)
+            helpers.write_text("def compute(x):\n    return x + 100\n", encoding="utf-8")
+            assert source_hash.compute_source_hash(tasks.compute) != before
+
+    @pytest.mark.parametrize(
+        ("distributions", "expected"),
+        [({}, {"solo_tasks", "vendorlib"}), ({"solo_tasks": ["solodist"]}, {"solo_tasks"})],
+        ids=["unresolvable-over-hashes", "distribution-confirmed-holds-only-itself"],
+    )
+    def test_a_bare_installed_module(self, site, monkeypatch, distributions, expected):
+        _write_module(site / "solo_tasks.py", self._USES_VENDOR)
+        monkeypatch.setattr(source_hash, "_packages_distributions", lambda: distributions)
+
+        with _imported_from(site, "solo_tasks") as tasks:
+            assert _closure(tasks) == expected
+
+
+def test_editing_a_task_or_a_helper_it_imports_is_a_cache_miss(tmp_path):
+    _write_module(tmp_path / "pkg" / "__init__.py", "")
+    tasks_path = tmp_path / "pkg" / "tasks.py"
+    _write_module(
+        tasks_path,
+        "from ginkgo import task\nfrom . import helpers\n\n"
+        "@task()\ndef compute(x: int) -> int:\n    return helpers.compute(x)\n",
+    )
+    _write_module(
+        tmp_path / "pkg" / "helpers.py",
+        "from .transform import adjust\n\ndef compute(x):\n    return adjust(x)\n",
+    )
+    transform_path = tmp_path / "pkg" / "transform.py"
+    _write_module(transform_path, "def adjust(x):\n    return x + 1\n")
+
+    def run(tasks) -> tuple[int, EventCollector]:
+        collector = EventCollector()
+        return evaluate(tasks.compute(x=5), event_bus=collector.bus), collector
+
+    with _imported_from(tmp_path, "pkg.tasks") as tasks:
+        assert run(tasks)[0] == 6
+        result, collector = run(tasks)
+        assert result == 6 and collector.cached()
+
+        # A transitive helper changes.
+        transform_path.write_text("def adjust(x):\n    return x + 10\n", encoding="utf-8")
+        importlib.reload(sys.modules["pkg.transform"])
+        importlib.reload(sys.modules["pkg.helpers"])
+        tasks = importlib.reload(tasks)
+        result, collector = run(tasks)
+        assert result == 15 and collector.started() and not collector.cached()
+
+        # The task's own body changes.
+        tasks_path.write_text(
+            tasks_path.read_text(encoding="utf-8").replace(
+                "helpers.compute(x)\n", "helpers.compute(x) * 2\n"
+            ),
+            encoding="utf-8",
+        )
+        tasks = importlib.reload(tasks)
+        result, collector = run(tasks)
+        assert result == 30 and collector.started() and not collector.cached()
+
+
+# ---------------------------------------------------------------------------
+# Outputs restored from the cache
 # ---------------------------------------------------------------------------
 
 
@@ -843,7 +408,7 @@ def write_file_task(output_path: Out[file]) -> file:
 @task(kind="shell")
 def write_folder_task(output_dir: Out[folder]) -> folder:
     return shell(
-        cmd=f"mkdir -p {output_dir} && echo 'a' > {output_dir}/a.txt && echo 'b' > {output_dir}/b.txt",
+        cmd=f"mkdir -p {output_dir} && echo a > {output_dir}/a.txt && echo b > {output_dir}/b.txt",
         output=output_dir,
     )
 
@@ -856,185 +421,111 @@ def write_python_file_task(output_path: Out[file], payload: str) -> file:
     return str(output)
 
 
-class TestWritableFileOutputs:
-    def test_output_remains_writable_after_execution(self, tmp_path):
-        output = tmp_path / "result.txt"
-        result = evaluate(write_file_task(output_path=str(output)))
-        result_path = Path(str(result))
-        assert result_path.is_file()
-        assert not result_path.is_symlink()
-        assert result_path.read_text().strip() == "hello"
+def _cached_run(expr) -> object:
+    collector = EventCollector()
+    result = evaluate(expr, event_bus=collector.bus)
+    assert collector.cached()
+    return result
 
-    def test_output_can_be_overwritten_locally(self, tmp_path):
-        output = tmp_path / "editable.txt"
-        result = evaluate(write_file_task(output_path=str(output)))
-        result_path = Path(str(result))
-        result_path.write_text("modified", encoding="utf-8")
-        assert result_path.read_text(encoding="utf-8") == "modified"
 
-    def test_deleted_file_is_restored_on_cache_hit(self, tmp_path):
-        output = tmp_path / "recreate.txt"
-        evaluate(write_file_task(output_path=str(output)))
+def test_a_file_output_is_a_writable_copy_that_a_hit_restores(tmp_path):
+    output = tmp_path / "result.txt"
+    result = Path(str(evaluate(write_file_task(output_path=str(output)))))
+    assert result.is_file() and not result.is_symlink()
+    assert result.read_text().strip() == "hello"
 
-        output.unlink()
-        assert not output.exists()
+    # The user can edit it; the next run restores it without missing the cache.
+    output.write_text("tampered", encoding="utf-8")
+    assert (
+        Path(str(_cached_run(write_file_task(output_path=str(output))))).read_text() == "hello\n"
+    )
 
-        collector = EventCollector()
-        result = evaluate(write_file_task(output_path=str(output)), event_bus=collector.bus)
-        assert collector.cached()
-        result_path = Path(str(result))
-        assert result_path.is_file()
-        assert not result_path.is_symlink()
-        assert result_path.read_text().strip() == "hello"
+    output.unlink()
+    restored = Path(str(_cached_run(write_file_task(output_path=str(output)))))
+    assert restored.is_file() and not restored.is_symlink()
+    assert restored.read_text().strip() == "hello"
 
-    def test_modified_file_is_restored_without_cache_miss(self, tmp_path):
-        output = tmp_path / "modified.txt"
-        evaluate(write_file_task(output_path=str(output)))
 
-        output.write_text("tampered", encoding="utf-8")
+def test_a_folder_output_holds_writable_copies_that_a_hit_restores(tmp_path):
+    output = tmp_path / "outdir"
+    result = Path(str(evaluate(write_folder_task(output_dir=str(output)))))
+    assert result.is_dir()
+    assert not (result / "a.txt").is_symlink() and not (result / "b.txt").is_symlink()
+    assert (result / "b.txt").read_text().strip() == "b"
 
-        collector = EventCollector()
-        result = evaluate(write_file_task(output_path=str(output)), event_bus=collector.bus)
-        assert collector.cached()
-        result_path = Path(str(result))
-        assert result_path.is_file()
-        assert result_path.read_text(encoding="utf-8").strip() == "hello"
+    (output / "a.txt").write_text("tampered", encoding="utf-8")
+    restored = Path(str(_cached_run(write_folder_task(output_dir=str(output)))))
+    assert (restored / "a.txt").read_text().strip() == "a"
 
-    def test_corrupt_stored_bytes_are_a_cache_miss(self, tmp_path):
-        output = tmp_path / "corrupt.txt"
-        evaluate(write_python_file_task(output_path=str(output), payload="GOOD"))
-        output.unlink()
-        (blob,) = (tmp_path / ".ginkgo" / "artifacts" / "blobs").iterdir()
-        blob.chmod(0o644)
-        blob.write_text("BAD!", encoding="utf-8")
+    shutil.rmtree(output)
+    restored = Path(str(_cached_run(write_folder_task(output_dir=str(output)))))
+    assert (restored / "a.txt").read_text().strip() == "a"
 
-        collector = EventCollector()
-        evaluate(
-            write_python_file_task(output_path=str(output), payload="GOOD"),
-            event_bus=collector.bus,
-        )
-        assert not collector.cached()
-        assert output.read_text(encoding="utf-8") == "GOOD"
-        assert blob.read_text(encoding="utf-8") == "GOOD"
 
-    def test_a_hit_with_its_stored_bytes_deleted_stores_them_again(self, tmp_path):
-        """ED-7: the outputs are intact, so the hit stands and re-stores them."""
-        import shutil
+def test_corrupt_stored_bytes_are_a_cache_miss(tmp_path):
+    output = tmp_path / "corrupt.txt"
+    evaluate(write_python_file_task(output_path=str(output), payload="GOOD"))
+    output.unlink()
+    (blob,) = (tmp_path / ".ginkgo" / "artifacts" / "blobs").iterdir()
+    blob.chmod(0o644)
+    blob.write_text("BAD!", encoding="utf-8")
 
-        output = tmp_path / "intact.txt"
-        evaluate(write_python_file_task(output_path=str(output), payload="GOOD"))
-        artifacts = tmp_path / ".ginkgo" / "artifacts"
-        make_writable_recursive(artifacts)
-        shutil.rmtree(artifacts)
+    collector = EventCollector()
+    evaluate(
+        write_python_file_task(output_path=str(output), payload="GOOD"), event_bus=collector.bus
+    )
+    assert not collector.cached()
+    assert output.read_text(encoding="utf-8") == "GOOD"
+    assert blob.read_text(encoding="utf-8") == "GOOD"
 
-        collector = EventCollector()
-        evaluate(
-            write_python_file_task(output_path=str(output), payload="GOOD"),
-            event_bus=collector.bus,
-        )
-        assert collector.cached()
+
+@pytest.mark.parametrize("kind", ["file", "folder"])
+def test_a_hit_whose_stored_bytes_were_deleted_stores_them_again(tmp_path, kind):
+    """ED-7: the outputs are intact, so the hit stands and re-stores them."""
+    output = tmp_path / "intact"
+    expr = (
+        (lambda: write_python_file_task(output_path=str(output), payload="GOOD"))
+        if kind == "file"
+        else (lambda: write_folder_task(output_dir=str(output)))
+    )
+    evaluate(expr())
+    artifacts = tmp_path / ".ginkgo" / "artifacts"
+    make_writable_recursive(artifacts)
+    shutil.rmtree(artifacts)
+
+    _cached_run(expr())
+
+    if kind == "file":
         (blob,) = (artifacts / "blobs").iterdir()
         assert blob.read_text(encoding="utf-8") == "GOOD"
-
-    def test_python_file_output_rerun_overwrites_previous_materialization(self, tmp_path):
-        output = tmp_path / "python.txt"
-        first = evaluate(write_python_file_task(output_path=str(output), payload="first"))
-        assert Path(str(first)).read_text(encoding="utf-8") == "first"
-
-        second = evaluate(write_python_file_task(output_path=str(output), payload="second"))
-        assert Path(str(second)).read_text(encoding="utf-8") == "second"
-
-
-class TestWritableFolderOutputs:
-    def test_output_is_directory_with_regular_files_after_execution(self, tmp_path):
-        output = tmp_path / "outdir"
-        result = evaluate(write_folder_task(output_dir=str(output)))
-        result_path = Path(str(result))
-        assert result_path.is_dir()
-        assert (result_path / "a.txt").read_text().strip() == "a"
-        assert (result_path / "b.txt").read_text().strip() == "b"
-        assert not (result_path / "a.txt").is_symlink()
-        assert not (result_path / "b.txt").is_symlink()
-
-    def test_folder_contents_are_writable(self, tmp_path):
-        output = tmp_path / "writable_dir"
-        result = evaluate(write_folder_task(output_dir=str(output)))
-        result_path = Path(str(result))
-        (result_path / "a.txt").write_text("updated", encoding="utf-8")
-        assert (result_path / "a.txt").read_text(encoding="utf-8") == "updated"
-
-    def test_deleted_folder_is_restored(self, tmp_path):
-        output = tmp_path / "dir_recreate"
-        evaluate(write_folder_task(output_dir=str(output)))
-
-        import shutil
-
+    else:
+        # The tree's manifest and member blobs are back: the folder restores from them.
         shutil.rmtree(output)
-        assert not output.exists()
-
-        collector = EventCollector()
-        result = evaluate(write_folder_task(output_dir=str(output)), event_bus=collector.bus)
-        assert collector.cached()
-        result_path = Path(str(result))
-        assert result_path.is_dir()
-        assert (result_path / "a.txt").read_text().strip() == "a"
-
-    def test_a_hit_with_its_stored_tree_deleted_stores_it_again(self, tmp_path):
-        """ED-7, for a folder: its manifest and member blobs come back."""
-        import shutil
-
-        output = tmp_path / "dir_intact"
-        evaluate(write_folder_task(output_dir=str(output)))
-        artifacts = tmp_path / ".ginkgo" / "artifacts"
-        make_writable_recursive(artifacts)
-        shutil.rmtree(artifacts)
-
-        collector = EventCollector()
-        evaluate(write_folder_task(output_dir=str(output)), event_bus=collector.bus)
-        assert collector.cached()
-        shutil.rmtree(output)
-        result = evaluate(write_folder_task(output_dir=str(output)))
-        assert (Path(str(result)) / "b.txt").read_text().strip() == "b"
-
-    def test_modified_folder_is_restored_without_cache_miss(self, tmp_path):
-        output = tmp_path / "dir_modified"
-        evaluate(write_folder_task(output_dir=str(output)))
-
-        (output / "a.txt").write_text("tampered", encoding="utf-8")
-
-        collector = EventCollector()
-        result = evaluate(write_folder_task(output_dir=str(output)), event_bus=collector.bus)
-        assert collector.cached()
-        assert (Path(str(result)) / "a.txt").read_text(encoding="utf-8").strip() == "a"
+        assert (Path(str(evaluate(expr()))) / "b.txt").read_text().strip() == "b"
 
 
-# ---------------------------------------------------------------------------
-# Cache prune with read-only artifacts
-# ---------------------------------------------------------------------------
+def test_a_python_file_output_rerun_overwrites_the_previous_materialization(tmp_path):
+    output = tmp_path / "python.txt"
+    first = evaluate(write_python_file_task(output_path=str(output), payload="first"))
+    assert Path(str(first)).read_text(encoding="utf-8") == "first"
+
+    second = evaluate(write_python_file_task(output_path=str(output), payload="second"))
+    assert Path(str(second)).read_text(encoding="utf-8") == "second"
 
 
-class TestCachePruneReadOnly:
-    def test_prune_handles_read_only_artifacts(self, tmp_path: Path) -> None:
-        """The prune helper must remove a read-only entry tree without raising."""
-        output = tmp_path / "prunable.txt"
-        evaluate(write_file_task(output_path=str(output)))
+def test_pruning_removes_a_read_only_entry_tree(tmp_path):
+    evaluate(write_file_task(output_path=str(tmp_path / "prunable.txt")))
+    entries = [entry for entry in (tmp_path / ".ginkgo" / "cache").iterdir() if entry.is_dir()]
+    assert entries
 
-        cache_root = Path(".ginkgo") / "cache"
-        entries = [entry for entry in cache_root.iterdir() if entry.is_dir()]
-        assert entries, "expected at least one cache entry to prune"
+    # A naive shutil.rmtree would fail with PermissionError on this tree.
+    for entry in entries:
+        for child in entry.rglob("*"):
+            child.chmod(stat.S_IRUSR | stat.S_IXUSR if child.is_dir() else stat.S_IRUSR)
+        entry.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        _remove_tree(entry)
 
-        # Strip the write bit from every directory and file so a naive
-        # shutil.rmtree would fail with PermissionError; the production helper
-        # must restore permissions and complete the removal.
-        for entry in entries:
-            for child in entry.rglob("*"):
-                child.chmod(stat.S_IRUSR | stat.S_IXUSR if child.is_dir() else stat.S_IRUSR)
-            entry.chmod(stat.S_IRUSR | stat.S_IXUSR)
-
-        for entry in entries:
-            _remove_tree(entry)
-
-        assert not any(child.is_dir() for child in cache_root.iterdir())
+    assert not any(child.is_dir() for child in (tmp_path / ".ginkgo" / "cache").iterdir())
 
 
 # ---------------------------------------------------------------------------
@@ -1049,107 +540,59 @@ def counted_square_task(log_path: untracked, value: int) -> int:
     return value * value
 
 
-class TestUnreadableCacheEntry:
-    def test_an_entry_with_an_unknown_codec_tag_reruns_once_then_caches(self, tmp_path):
-        log_path = str(tmp_path / "runs.log")
-        evaluate(counted_square_task(log_path=log_path, value=3))
+@pytest.mark.parametrize(
+    "content",
+    ['{"__ginkgo_type__": "retired", "value": {}}', '{"__ginkgo_type__": "li'],
+    ids=["unknown-codec-tag", "truncated"],
+)
+def test_an_unreadable_entry_reruns_once_then_caches(tmp_path, content):
+    log_path = str(tmp_path / "runs.log")
+    evaluate(counted_square_task(log_path=log_path, value=3))
+    (entry,) = (tmp_path / ".ginkgo" / "cache").glob("*/output.json")
+    entry.write_text(content, encoding="utf-8")
 
-        # Simulate an entry written by a codec this version no longer has.
-        (entry,) = (tmp_path / ".ginkgo" / "cache").glob("*/output.json")
-        entry.write_text('{"__ginkgo_type__": "retired", "value": {}}', encoding="utf-8")
+    # Loading it, as a dry run does, leaves it for the next real run to replace.
+    store = ConcurrentEvaluator().cache_store
+    assert store.load(cache_key=entry.parent.name, task_def=counted_square_task) is MISSING
+    assert entry.is_file()
 
-        # Loading it, as a dry run does, leaves it for the next real run to replace.
-        cache_key = entry.parent.name
-        loaded = ConcurrentEvaluator().cache_store.load(
-            cache_key=cache_key, task_def=counted_square_task
-        )
-        assert loaded is MISSING
-        assert entry.is_file()
-
-        rerun = evaluate(counted_square_task(log_path=log_path, value=3))
-        collector = EventCollector()
-        cached = evaluate(counted_square_task(log_path=log_path, value=3), event_bus=collector.bus)
-
-        assert rerun == cached == 9
-        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
-        assert collector.cached()
-
-    def test_a_truncated_entry_reruns_once_then_caches(self, tmp_path):
-        log_path = str(tmp_path / "runs.log")
-        evaluate(counted_square_task(log_path=log_path, value=4))
-
-        (entry,) = (tmp_path / ".ginkgo" / "cache").glob("*/output.json")
-        entry.write_text('{"__ginkgo_type__": "li', encoding="utf-8")
-
-        rerun = evaluate(counted_square_task(log_path=log_path, value=4))
-        collector = EventCollector()
-        cached = evaluate(counted_square_task(log_path=log_path, value=4), event_bus=collector.bus)
-
-        assert rerun == cached == 16
-        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
-        assert collector.cached()
+    assert evaluate(counted_square_task(log_path=log_path, value=3)) == 9
+    assert _cached_run(counted_square_task(log_path=log_path, value=3)) == 9
+    assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
 
 
-class TestDynamicTemplateEntries:
+def test_a_dynamic_template_entry_needs_its_task_and_its_index_row(tmp_path, monkeypatch):
     """A dynamic task's entry holds its returned expressions (G1)."""
+    _write_module(
+        tmp_path / "template_tasks.py",
+        """\
+        from ginkgo import task
 
-    def test_a_template_naming_a_removed_task_is_a_miss(self, tmp_path, monkeypatch):
-        _write_module(
-            tmp_path / "template_tasks.py",
-            """\
-            from ginkgo import task
+        @task()
+        def child(x: int) -> int:
+            return x
 
-            @task()
-            def child(x: int) -> int:
-                return x
-
-            @task()
-            def parent() -> int:
-                return child(x=1)
-            """,
+        @task()
+        def parent() -> int:
+            return child(x=1)
+        """,
+    )
+    with _imported_from(tmp_path, "template_tasks") as tasks:
+        store = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+        store.save(
+            cache_key="k",
+            result=DynamicTemplate(tasks.child(x=1)),
+            task_def=tasks.parent,
+            resolved_args={},
+            input_hashes={},
         )
-        with _imported_from(tmp_path, "template_tasks") as tasks:
-            store = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
-            store.save(
-                cache_key="k",
-                result=DynamicTemplate(tasks.child(x=1)),
-                task_def=tasks.parent,
-                resolved_args={},
-                input_hashes={},
-            )
-            assert isinstance(store.load(cache_key="k", task_def=tasks.parent), DynamicTemplate)
+        assert isinstance(store.load(cache_key="k", task_def=tasks.parent), DynamicTemplate)
 
-            # The child is renamed away: the stored template can no longer load.
-            monkeypatch.delattr(tasks, "child")
-            assert store.load(cache_key="k", task_def=tasks.parent) is MISSING
+        # A lost ginkgo.db: the entry's bytes remain, its row does not.
+        rowless = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+        assert rowless.load(cache_key="k", task_def=tasks.parent) is MISSING
+        assert not rowless.has_entry(cache_key="k", task_def=tasks.parent)
 
-    def test_an_entry_the_index_has_no_row_for_is_a_miss(self, tmp_path):
-        _write_module(
-            tmp_path / "rowless_tasks.py",
-            """\
-            from ginkgo import task
-
-            @task()
-            def child(x: int) -> int:
-                return x
-
-            @task()
-            def parent() -> int:
-                return child(x=1)
-            """,
-        )
-        with _imported_from(tmp_path, "rowless_tasks") as tasks:
-            saved = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
-            saved.save(
-                cache_key="k",
-                result=DynamicTemplate(tasks.child(x=1)),
-                task_def=tasks.parent,
-                resolved_args={},
-                input_hashes={},
-            )
-
-            # A lost ginkgo.db: the entry's bytes remain, its row does not.
-            store = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
-
-            assert store.load(cache_key="k", task_def=tasks.parent) is MISSING
-            assert not store.has_entry(cache_key="k", task_def=tasks.parent)
+        # The child is renamed away: the stored template can no longer load.
+        monkeypatch.delattr(tasks, "child")
+        assert store.load(cache_key="k", task_def=tasks.parent) is MISSING

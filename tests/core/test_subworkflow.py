@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
-import sys
 import textwrap
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import pytest
-import yaml
 
-from ginkgo.plugins.api import TaskKind
-from ginkgo.plugins.registry import plugin_registry
 from ginkgo import SubWorkflowDirective, SubWorkflowResult, subworkflow, task
-from ginkgo.runtime.rundir import make_run_id
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.task_runners.subworkflow import (
     DEPTH_ENV,
@@ -24,32 +18,9 @@ from ginkgo.runtime.task_runners.subworkflow import (
     SubWorkflowError,
     SubWorkflowRecursionError,
 )
-
-from tests.conftest import Ledger
-
-
-def _record_child_run(*, root: Path, run_id: str, parent_run_id: str) -> None:
-    """Record the run a child ``ginkgo run`` would have recorded for itself.
-
-    The parent finds its child by asking the ledger who names it as a parent,
-    so a stubbed subprocess has to leave that row behind.
-    """
-    child = Ledger.start(
-        root=root,
-        run_id=run_id,
-        parent_run_id=parent_run_id,
-        parent_task_id="task_0000",
-    )
-    child.finish()
-    child.close()
-
+from tests.conftest import Ledger, run_cli
 
 # Tasks defined at module scope so the task validator accepts them.
-
-
-@task(kind="subworkflow")
-def call_child_task(*, workflow_path: str, region: str) -> SubWorkflowResult:
-    return subworkflow(workflow_path, params={"region": region})
 
 
 @task(kind="subworkflow")
@@ -67,46 +38,93 @@ def call_child_wrong_return(*, workflow_path: str) -> SubWorkflowResult:
     return {"not": "a SubWorkflowDirective"}  # type: ignore[return-value]
 
 
+@task(kind="subworkflow")
+def call_child_with_region(*, workflow_path: str, region: str) -> SubWorkflowResult:
+    return subworkflow(workflow_path, params={"region": region})
+
+
+@task(kind="subworkflow")
+def call_child_with_config(*, workflow_path: str, config_path: str) -> SubWorkflowResult:
+    return subworkflow(workflow_path, params={"region": "from-params"}, config=config_path)
+
+
+@pytest.fixture(autouse=True)
+def top_level_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run as a top-level ``ginkgo run``, even inside a sub-workflow's tests."""
+    for name in (PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV, DEPTH_ENV):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def parent(tmp_path: Path):
+    """A parent run's ledger and evaluator, closed after the test."""
+    ledger = Ledger.start(root=tmp_path, run_id="parent_run")
+    evaluator = ConcurrentEvaluator(run_dir=ledger.run_dir, event_bus=ledger.bus, jobs=1, cores=1)
+    yield ledger, evaluator
+    ledger.close()
+
+
+@dataclass
+class _StubbedChild:
+    """Stands in for the child ``ginkgo run`` the parent would spawn.
+
+    For states a real child cannot be made to produce on demand: a child that
+    records no run, or a parent asserting on the command it built.
+    """
+
+    ledger: Ledger
+    returncode: int = 0
+    records_run: bool = True
+    commands: list[str] = field(default_factory=list)
+
+    def run_subprocess(self, **kwargs) -> subprocess.CompletedProcess[str]:
+        argv = kwargs["argv"]
+        self.commands.append(argv if isinstance(argv, str) else " ".join(argv))
+        if self.records_run:
+            child = Ledger.start(
+                root=self.ledger.db.parent.parent,
+                run_id="child_run",
+                parent_run_id=self.ledger.run_id,
+                parent_task_id="task_0000",
+            )
+            child.finish()
+            child.close()
+        return subprocess.CompletedProcess(argv, self.returncode, stdout="", stderr="")
+
+
+@pytest.fixture
+def stubbed_child(parent, monkeypatch: pytest.MonkeyPatch) -> _StubbedChild:
+    ledger, evaluator = parent
+    stub = _StubbedChild(ledger=ledger)
+    monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", stub.run_subprocess)
+    Path("child.py").write_text("", encoding="utf-8")
+    return stub
+
+
 class TestSubWorkflowConstructor:
-    @pytest.fixture(autouse=True)
-    def _in_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.chdir(tmp_path)
-        Path("workflows").mkdir()
-        for name in ("workflows/child.py", "child.py", "overrides.yaml", "a.yaml", "b.yaml"):
+    def test_records_path_params_and_config(self, tmp_path: Path) -> None:
+        for name in ("child.py", "a.yaml", "b.yaml"):
             Path(name).write_text("x = 1\n", encoding="utf-8")
 
-    def test_basic_expr(self) -> None:
-        expr = subworkflow("workflows/child.py", params={"x": 1})
+        expr = subworkflow("child.py", params={"x": 1})
         assert isinstance(expr, SubWorkflowDirective)
-        assert expr.path == "workflows/child.py"
-        assert expr.params == {"x": 1}
-        assert expr.config == ()
+        assert (expr.path, expr.params, expr.config) == ("child.py", {"x": 1}, ())
+        assert subworkflow(tmp_path / "child.py").path == str(tmp_path / "child.py")
+        assert subworkflow("child.py", config="a.yaml").config == ("a.yaml",)
+        assert subworkflow("child.py", config=["a.yaml", "b.yaml"]).config == ("a.yaml", "b.yaml")
 
-    def test_accepts_path_object(self, tmp_path: Path) -> None:
-        expr = subworkflow(tmp_path / "child.py")
-        assert expr.path == str(tmp_path / "child.py")
-
-    def test_rejects_empty_path(self) -> None:
-        with pytest.raises(ValueError, match="path"):
-            subworkflow("")
-
-    def test_rejects_a_missing_child(self) -> None:
-        with pytest.raises(FileNotFoundError, match="missing.py"):
-            subworkflow("missing.py")
-
-    def test_config_accepts_single_path(self) -> None:
-        expr = subworkflow("child.py", config="overrides.yaml")
-        assert expr.config == ("overrides.yaml",)
-
-    def test_config_accepts_sequence(self) -> None:
-        expr = subworkflow("child.py", config=["a.yaml", "b.yaml"])
-        assert expr.config == ("a.yaml", "b.yaml")
+    @pytest.mark.parametrize(
+        ("path", "error", "match"),
+        [("", ValueError, "path"), ("missing.py", FileNotFoundError, "missing.py")],
+    )
+    def test_rejects_an_empty_or_missing_child(self, path: str, error: type, match: str) -> None:
+        with pytest.raises(error, match=match):
+            subworkflow(path)
 
 
 class TestChildSourceHash:
     @pytest.fixture(autouse=True)
-    def _in_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.chdir(tmp_path)
+    def _child(self) -> None:
         Path("child/modules").mkdir(parents=True)
         Path("child/flow.py").write_text("x = 1\n", encoding="utf-8")
         Path("child/modules/helpers.py").write_text("y = 1\n", encoding="utf-8")
@@ -125,359 +143,82 @@ class TestChildSourceHash:
 
     def test_files_the_child_writes_do_not_change_the_hash(self) -> None:
         before = self._hash()
-        Path("child/results").mkdir()
-        Path("child/results/out.txt").write_text("output\n", encoding="utf-8")
-        Path("child/.ginkgo").mkdir()
-        Path("child/.ginkgo/cache.py").write_text("z = 1\n", encoding="utf-8")
-        Path("child/modules/__pycache__").mkdir()
-        Path("child/modules/__pycache__/helpers.py").write_text("z = 1\n", encoding="utf-8")
+        for written in ("results/out.txt", ".ginkgo/cache.py", "modules/__pycache__/helpers.py"):
+            path = Path("child", written)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("z = 1\n", encoding="utf-8")
         assert self._hash() == before
 
 
-class TestRecursionGuard:
-    def test_rejects_excessive_depth(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+class TestEvaluatorDispatch:
+    def test_excessive_depth_is_refused_before_spawning(
+        self, parent, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        child = tmp_path / "child.py"
-        child.write_text("", encoding="utf-8")
-
+        _, evaluator = parent
+        Path("child.py").write_text("", encoding="utf-8")
         monkeypatch.setenv(DEPTH_ENV, "8")
 
-        recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "parent.py")
-        )
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        runner = evaluator._runner_for(plugin_registry().get(TaskKind, "subworkflow"))
-
-        class _FakeNode:
-            class _TaskDef:
-                name = "test.call_child_task"
-
-            task_def = _TaskDef()
-
         with pytest.raises(SubWorkflowRecursionError):
-            runner.run(
-                node=_FakeNode(),
-                directive=subworkflow(str(child)),
-            )
+            evaluator.evaluate(call_child_no_params_task(workflow_path="child.py"))
 
-
-class TestEvaluatorDispatch:
-    def _make_recorder(self, tmp_path: Path) -> Ledger:
-        return Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "parent.py")
-        )
-
-    def test_dispatch_captures_child_run_id(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        child_path = tmp_path / "child.py"
-        child_path.write_text("# placeholder\n", encoding="utf-8")
-
-        recorder = self._make_recorder(tmp_path)
-
-        captured: dict[str, Any] = {}
-
-        def fake_run_subprocess(
-            *,
-            argv: list[str],
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            env: dict[str, str] | None = None,
-            usage_callback: Any = None,
-        ) -> subprocess.CompletedProcess[str]:
-            captured["argv"] = argv
-            captured["env"] = env
-            _record_child_run(
-                root=tmp_path,
-                run_id="fake_child_run_id_123",
-                parent_run_id=recorder.run_id,
-            )
-            if on_stdout is not None:
-                on_stdout("child output\n")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        result = evaluator.evaluate(call_child_task(workflow_path=str(child_path), region="emea"))
-
-        assert isinstance(result, SubWorkflowResult)
-        assert result.run_id == "fake_child_run_id_123"
-        assert result.status == "success"
-
-        cmd = captured["argv"] if isinstance(captured["argv"], str) else " ".join(captured["argv"])
-        assert "ginkgo.cli" in cmd
-        assert str(child_path) in cmd
-        assert "--config" in cmd  # params dict produced a temp config
-
-        env = captured["env"]
-        assert env[PARENT_RUN_ID_ENV] == recorder.run_id
-        assert env[PARENT_TASK_ID_ENV] == "task_0000"
-        assert env[DEPTH_ENV] == "1"
-
-        task_entry = recorder.task()
-        assert task_entry["sub_run_id"] == "fake_child_run_id_123"
-        assert task_entry["status"] == "succeeded"
-
-    def test_dispatch_fails_on_non_zero_exit(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        child_path = tmp_path / "child.py"
-        child_path.write_text("", encoding="utf-8")
-
-        recorder = self._make_recorder(tmp_path)
-
-        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
-            _record_child_run(root=tmp_path, run_id="child_fail_id", parent_run_id=recorder.run_id)
-            return subprocess.CompletedProcess(
-                args=kwargs.get("argv", ""),
-                returncode=2,
-                stdout="",
-                stderr="something broke\n",
-            )
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        with pytest.raises(SubWorkflowError) as exc_info:
-            evaluator.evaluate(call_child_no_params_task(workflow_path=str(child_path)))
-
-        assert exc_info.value.exit_code == 2
-        assert exc_info.value.child_run_id == "child_fail_id"
-
-        task_entry = recorder.task()
-        assert task_entry["status"] == "failed"
-        assert task_entry["sub_run_id"] == "child_fail_id"
-
-    def test_an_ignored_child_failure_still_records_the_child_run(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """``on_failure="ignore"`` costs nothing in discoverability."""
-        child_path = tmp_path / "child.py"
-        child_path.write_text("", encoding="utf-8")
-
-        recorder = self._make_recorder(tmp_path)
-
-        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
-            _record_child_run(
-                root=tmp_path, run_id="child_ignored_id", parent_run_id=recorder.run_id
-            )
-            return subprocess.CompletedProcess(
-                args=kwargs.get("argv", ""),
-                returncode=2,
-                stdout="",
-                stderr="something broke\n",
-            )
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        with pytest.raises(RootSkippedError, match="call_optional_child_task"):
-            evaluator.evaluate(call_optional_child_task(workflow_path=str(child_path)))
-
-        assert len(evaluator.ignored_failures) == 1
-        task_entry = recorder.task()
-        assert task_entry["status"] == "failed"
-        assert task_entry["ignored"] is True
-        assert task_entry["sub_run_id"] == "child_ignored_id"
-
-    def test_wrong_return_type_rejected(self, tmp_path: Path) -> None:
-        child_path = tmp_path / "child.py"
-        child_path.write_text("", encoding="utf-8")
-
-        recorder = self._make_recorder(tmp_path)
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
+    def test_wrong_return_type_rejected(self, parent) -> None:
+        _, evaluator = parent
+        Path("child.py").write_text("", encoding="utf-8")
 
         with pytest.raises(TypeError, match="subworkflow"):
-            evaluator.evaluate(call_child_wrong_return(workflow_path=str(child_path)))
+            evaluator.evaluate(call_child_wrong_return(workflow_path="child.py"))
 
-    def test_a_child_that_recorded_no_run_raises(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        child_path = tmp_path / "child.py"
-        child_path.write_text("", encoding="utf-8")
-
-        recorder = self._make_recorder(tmp_path)
-
-        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(
-                args=kwargs.get("argv", ""), returncode=0, stdout="", stderr=""
-            )
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
+    def test_a_child_that_recorded_no_run_raises(self, parent, stubbed_child) -> None:
+        stubbed_child.records_run = False
 
         with pytest.raises(RuntimeError, match="recorded no run"):
-            evaluator.evaluate(call_child_no_params_task(workflow_path=str(child_path)))
+            parent[1].evaluate(call_child_no_params_task(workflow_path="child.py"))
 
+    def test_an_ignored_child_failure_still_records_the_child_run(
+        self, parent, stubbed_child
+    ) -> None:
+        """``on_failure="ignore"`` costs nothing in discoverability."""
+        ledger, evaluator = parent
+        stubbed_child.returncode = 2
 
-class TestEndToEnd:
-    """Full-stack test that actually invokes ``python -m ginkgo.cli run`` once."""
+        with pytest.raises(RootSkippedError, match="call_optional_child_task"):
+            evaluator.evaluate(call_optional_child_task(workflow_path="child.py"))
 
-    def test_parent_workflow_invokes_child_subprocess(self, tmp_path: Path) -> None:
-        # Child workflow writes a marker so we can confirm it actually ran.
-        child = tmp_path / "child.py"
-        child.write_text(
-            textwrap.dedent(
-                """
-                from pathlib import Path
-                from ginkgo import flow, task
-
-
-                @task()
-                def touch(marker_path: str) -> str:
-                    Path(marker_path).write_text("child ran", encoding="utf-8")
-                    return marker_path
-
-
-                @flow
-                def main():
-                    return touch(marker_path=str(Path.cwd() / "child_marker.txt"))
-                """
-            ),
-            encoding="utf-8",
+        assert len(evaluator.ignored_failures) == 1
+        entry = ledger.task()
+        assert (entry["status"], entry["ignored"], entry["sub_run_id"]) == (
+            "failed",
+            True,
+            "child_run",
         )
 
-        parent = tmp_path / "parent.py"
-        parent.write_text(
-            textwrap.dedent(
-                f"""
-                from ginkgo import flow, task, subworkflow, SubWorkflowResult
+    def test_params_layer_over_forwarded_config(self, parent, stubbed_child) -> None:
+        # Config files layer in order, so the params file must come last.
+        Path("child.toml").write_text('[params]\nregion = "from-config"\n', encoding="utf-8")
 
-
-                @task(kind="subworkflow")
-                def run_child() -> SubWorkflowResult:
-                    return subworkflow({str(child)!r})
-
-
-                @flow
-                def main():
-                    return run_child()
-                """
-            ),
-            encoding="utf-8",
+        parent[1].evaluate(
+            call_child_with_config(workflow_path="child.py", config_path="child.toml")
         )
 
-        env = os.environ.copy()
-        env.pop("GINKGO_PARENT_RUN_ID", None)
-        env.pop("GINKGO_PARENT_TASK_ID", None)
-        env.pop("GINKGO_CALL_DEPTH", None)
-
-        result = subprocess.run(
-            [sys.executable, "-m", "ginkgo.cli", "run", str(parent)],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
-
-        assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
-        assert (tmp_path / "child_marker.txt").read_text(encoding="utf-8") == "child ran"
-
-        runs_dir = tmp_path / ".ginkgo" / "runs"
-        run_dirs = sorted(p for p in runs_dir.iterdir() if p.is_dir())
-        # Two runs: parent + child.
-        assert len(run_dirs) == 2
-
-    def test_editing_the_child_reruns_the_parent_task(self, tmp_path: Path) -> None:
-        child = tmp_path / "child" / "flow.py"
-        child.parent.mkdir()
-        child_source = textwrap.dedent(
-            """
-            from pathlib import Path
-            from ginkgo import flow, task
+        (command,) = stubbed_child.commands
+        configs = [part.split()[0].strip("'\"") for part in command.split("--config")[1:]]
+        assert configs[0] == "child.toml"
+        assert configs[-1].endswith("child-parameters.yaml")
 
 
-            @task()
-            def touch(marker_path: str) -> str:
-                Path(marker_path).write_text("VERSION", encoding="utf-8")
-                return marker_path
+_FAILING_CHILD = """
+from ginkgo import flow, task
 
+@task()
+def boom() -> int:
+    raise RuntimeError("child broke")
 
-            @flow
-            def main():
-                return touch(marker_path=str(Path.cwd() / "child_marker.txt"))
-            """
-        )
-        child.write_text(child_source.replace("VERSION", "v1"), encoding="utf-8")
-        parent = tmp_path / "parent.py"
-        parent.write_text(
-            textwrap.dedent(
-                """
-                from ginkgo import flow, task, subworkflow, SubWorkflowResult
+@flow
+def main():
+    return boom()
+"""
 
-
-                @task(kind="subworkflow")
-                def run_child() -> SubWorkflowResult:
-                    return subworkflow("child/flow.py")
-
-
-                @flow
-                def main():
-                    return run_child()
-                """
-            ),
-            encoding="utf-8",
-        )
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"GINKGO_PARENT_RUN_ID", "GINKGO_PARENT_TASK_ID", "GINKGO_CALL_DEPTH"}
-        }
-
-        def run_parent() -> None:
-            result = subprocess.run(
-                [sys.executable, "-m", "ginkgo.cli", "run", str(parent)],
-                cwd=tmp_path,
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=120,
-            )
-            assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
-
-        run_parent()
-        child.write_text(child_source.replace("VERSION", "v2"), encoding="utf-8")
-        run_parent()
-
-        assert (tmp_path / "child_marker.txt").read_text(encoding="utf-8") == "v2"
-
-
-@task(kind="subworkflow")
-def call_child_with_region(*, workflow_path: str, region: str) -> SubWorkflowResult:
-    return subworkflow(workflow_path, params={"region": region})
-
-
-@task(kind="subworkflow")
-def call_child_with_config(*, workflow_path: str, config_path: str) -> SubWorkflowResult:
-    return subworkflow(workflow_path, params={"region": "from-params"}, config=config_path)
-
-
-_CHILD_DECLARING_PARAMS = (
-    """
+_CHILD_DECLARING_PARAMS = """
 import ginkgo
 from pathlib import Path
 from ginkgo import file, flow, task
@@ -494,95 +235,84 @@ def write_region(r: str, d: int, output_path: str) -> file:
 @flow
 def main():
     return write_region(r=region, d=depth, output_path="child-result.txt")
-""".strip()
-    + "\n"
-)
+"""
 
 
-class TestSubworkflowParams:
-    def test_params_are_written_as_a_params_table(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The child receives params under [params], not as top-level config keys."""
-        child_path = tmp_path / "child.py"
-        child_path.write_text("", encoding="utf-8")
+@pytest.mark.integration
+class TestRealChild:
+    """Each test spawns a real child ``ginkgo run``."""
 
-        recorder = Ledger.start(root=tmp_path, run_id="parent_run")
-        written: dict[str, Any] = {}
-
-        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
-            argv = kwargs.get("argv", "")
-            cmd = argv if isinstance(argv, str) else " ".join(argv)
-            # Read the temp config while it still exists; it is deleted on return.
-            config_path = Path(cmd.split("--config")[1].strip().strip("'\""))
-            written["payload"] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            _record_child_run(root=tmp_path, run_id="child_run_1", parent_run_id="parent_run")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        evaluator.evaluate(
-            call_child_with_region(workflow_path=str(child_path), region="2L:1-100")
-        )
-
-        assert written["payload"] == {"params": {"region": "2L:1-100"}}
-
-    def test_params_layer_over_forwarded_config(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # Config files layer in order, so the params file must come last.
-        child_path = tmp_path / "child.py"
-        child_path.write_text("", encoding="utf-8")
-        config_path = tmp_path / "child.toml"
-        config_path.write_text('[params]\nregion = "from-config"\n', encoding="utf-8")
-        recorder = Ledger.start(root=tmp_path, run_id="parent_run")
-        configs: list[str] = []
-
-        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
-            argv = kwargs["argv"]
-            cmd = argv if isinstance(argv, str) else " ".join(argv)
-            configs.extend(part.split()[0].strip("'\"") for part in cmd.split("--config")[1:])
-            _record_child_run(root=tmp_path, run_id="child_run_1", parent_run_id="parent_run")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        evaluator.evaluate(
-            call_child_with_config(workflow_path=str(child_path), config_path=str(config_path))
-        )
-
-        assert configs[0] == str(config_path)
-        assert configs[-1].endswith("child-parameters.yaml")
-
-    @pytest.mark.integration
-    def test_child_resolves_parent_params_through_declared_parameters(self) -> None:
+    def test_child_resolves_parent_params_and_links_back_to_the_parent(self, parent) -> None:
         """Parent params reach the child's ginkgo.param, layering over its own table."""
-        workspace = Path.cwd()
-        child_path = workspace / "child.py"
-        child_path.write_text(_CHILD_DECLARING_PARAMS, encoding="utf-8")
+        ledger, evaluator = parent
+        Path("child.py").write_text(_CHILD_DECLARING_PARAMS, encoding="utf-8")
         # The child's own table supplies depth; the parent supplies only region,
         # so depth must survive the layering rather than fall back to its default.
-        (workspace / "ginkgo.toml").write_text("[params]\ndepth = 42\n", encoding="utf-8")
+        Path("ginkgo.toml").write_text("[params]\ndepth = 42\n", encoding="utf-8")
 
-        recorder = Ledger.start(root=workspace, run_id="parent_run")
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-
-        result = evaluator.evaluate(
-            call_child_with_region(workflow_path=str(child_path), region="2L:1-100")
-        )
+        result = evaluator.evaluate(call_child_with_region(workflow_path="child.py", region="2L"))
 
         assert isinstance(result, SubWorkflowResult)
         assert result.status == "success"
-        assert (workspace / "child-result.txt").read_text(encoding="utf-8") == "2L:1-100/42"
+        assert Path("child-result.txt").read_text(encoding="utf-8") == "2L/42"
+        # The parent found its child through the ledger, so the child recorded
+        # the parent run and task it was handed.
+        entry = ledger.task()
+        assert (entry["status"], entry["sub_run_id"]) == ("succeeded", result.run_id)
+
+    def test_a_failing_child_fails_the_parent_task(self, parent) -> None:
+        ledger, evaluator = parent
+        Path("child.py").write_text(_FAILING_CHILD, encoding="utf-8")
+
+        with pytest.raises(SubWorkflowError) as exc_info:
+            evaluator.evaluate(call_child_no_params_task(workflow_path="child.py"))
+
+        assert exc_info.value.exit_code == 1
+        assert exc_info.value.child_run_id is not None
+        entry = ledger.task()
+        assert (entry["status"], entry["sub_run_id"]) == ("failed", exc_info.value.child_run_id)
+
+    def test_editing_the_child_reruns_the_parent_task(self) -> None:
+        child_source = textwrap.dedent(
+            """
+            from pathlib import Path
+            from ginkgo import flow, task
+
+            @task()
+            def touch(marker_path: str) -> str:
+                Path(marker_path).write_text("VERSION", encoding="utf-8")
+                return marker_path
+
+            @flow
+            def main():
+                return touch(marker_path=str(Path.cwd() / "child_marker.txt"))
+            """
+        )
+        Path("child").mkdir()
+        Path("child/flow.py").write_text(child_source.replace("VERSION", "v1"), encoding="utf-8")
+        Path("parent.py").write_text(
+            textwrap.dedent(
+                """
+                from ginkgo import flow, task, subworkflow, SubWorkflowResult
+
+                @task(kind="subworkflow")
+                def run_child() -> SubWorkflowResult:
+                    return subworkflow("child/flow.py")
+
+                @flow
+                def main():
+                    return run_child()
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        first = run_cli("run", "parent.py")
+        assert first.returncode == 0, first.stderr
+        assert Path("child_marker.txt").read_text(encoding="utf-8") == "v1"
+        assert len([p for p in Path(".ginkgo/runs").iterdir() if p.is_dir()]) == 2
+
+        Path("child/flow.py").write_text(child_source.replace("VERSION", "v2"), encoding="utf-8")
+        second = run_cli("run", "parent.py")
+        assert second.returncode == 0, second.stderr
+        assert Path("child_marker.txt").read_text(encoding="utf-8") == "v2"

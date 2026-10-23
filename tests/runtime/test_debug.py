@@ -69,156 +69,86 @@ def _in_tmp_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def test_run_level_failure_without_failed_tasks_reports_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", error="Pixi environment 'ghost_env' not found.")
+FAILED_TASK = {"status": "failed", "failed_task": True}
 
-    # Exit code reports whether debug could produce a report, not whether the
-    # inspected run failed, matching `runs show`.
+
+@pytest.mark.parametrize(
+    ("run", "shown", "hidden"),
+    [
+        (
+            {"status": "failed", "error": "Pixi environment 'ghost_env' not found."},
+            ["Debug Report", "Run Failure", "ghost_env", r"Failures\s+1\s"],
+            ["No failed tasks found"],
+        ),
+        ({**FAILED_TASK, "error": "boom"}, [r"Failures\s+1\s"], ["Run Failure"]),
+        (
+            {**FAILED_TASK, "error": "orchestrator exploded"},
+            ["Failed Task: explode", "boom", "Run Failure", "orchestrator exploded"],
+            [],
+        ),
+        (
+            {**FAILED_TASK, "display_label": "explode[north]"},
+            [r"Failed Task: explode\[north\]", r"Task +explode\[north\]"],
+            [],
+        ),
+        ({**FAILED_TASK, "message": "bad region bad[/x] [bold]"}, [r"bad\[/x\] \[bold\]"], []),
+        ({"succeeded_task": True}, [f"✓ No failed tasks found in {RUN_ID}"], ["Run Failure"]),
+        ({}, [f"✓ No failed tasks found in {RUN_ID}"], []),
+        ({"status": "failed"}, ["No error recorded in the manifest."], []),
+    ],
+    ids=[
+        "run-error-only",
+        "restated-error-counted-once",
+        "task-and-run-error",
+        "branch-label",
+        "brackets-verbatim",
+        "succeeded",
+        "nothing-recorded",
+        "failed-without-error",
+    ],
+)
+def test_the_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], run, shown, hidden
+) -> None:
+    _record_run(cwd=tmp_path, **run)
+
+    # The exit code says whether debug could report, not whether the run failed.
     assert _debug() == 0
     stdout = capsys.readouterr().out
-    assert "Debug Report" in stdout
-    assert "Run Failure" in stdout
-    assert "ghost_env" in stdout
-    assert "No failed tasks found" not in stdout
+    for pattern in shown:
+        assert re.search(pattern, stdout), pattern
+    for text in hidden:
+        assert text not in stdout
 
 
-def test_run_level_failure_without_failed_tasks_counts_as_one_failure(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("run", "error", "failure"),
+    [
+        ({"status": "failed", "error": "orchestrator exploded"}, "orchestrator exploded", None),
+        ({}, None, None),
+        # The run's error only restates the task's, which is already reported.
+        ({**FAILED_TASK, "error": "boom"}, None, {"status": "failed", "message": "boom"}),
+        ({**FAILED_TASK, "display_label": "explode[north]"}, None, {"label": "explode[north]"}),
+    ],
+)
+def test_the_json_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], run, error, failure
 ) -> None:
-    _record_run(cwd=tmp_path, status="failed", error="Scheduler reached a deadlock")
-
-    assert _debug() == 0
-    assert re.search(r"Failures\s+1\s", capsys.readouterr().out)
-
-
-def test_failed_task_behind_the_run_failure_is_counted_once(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", error="boom", failed_task=True)
-
-    assert _debug() == 0
-    assert re.search(r"Failures\s+1\s", capsys.readouterr().out)
-
-
-def test_failed_task_and_run_level_error_are_both_rendered(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", error="orchestrator exploded", failed_task=True)
-
-    assert _debug() == 0
-    stdout = capsys.readouterr().out
-    assert "Failed Task: explode" in stdout
-    assert "boom" in stdout
-    assert "Run Failure" in stdout
-    assert "orchestrator exploded" in stdout
-
-
-def test_a_fan_out_branch_is_named_by_its_label(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", failed_task=True, display_label="explode[north]")
-
-    assert _debug() == 0
-    stdout = capsys.readouterr().out
-    assert "Failed Task: explode[north]" in stdout
-    assert re.search(r"Task +explode\[north\]", stdout)
-
-
-def test_json_payload_carries_the_branch_label(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", failed_task=True, display_label="explode[north]")
-
-    assert _debug(json_output=True) == 0
-    failure = json.loads(capsys.readouterr().out)["failures"][0]
-    assert (failure["task_name"], failure["display_label"]) == ("explode", "explode[north]")
-
-
-def test_a_bracketed_error_message_is_printed_verbatim(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(
-        cwd=tmp_path, status="failed", failed_task=True, message="bad region bad[/x] [bold]"
-    )
-
-    assert _debug() == 0
-    assert "bad region bad[/x] [bold]" in capsys.readouterr().out
-
-
-def test_succeeded_run_keeps_empty_state(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, succeeded_task=True)
-
-    assert _debug() == 0
-    stdout = capsys.readouterr().out
-    assert f"✓ No failed tasks found in {RUN_ID}" in stdout
-    assert "Run Failure" not in stdout
-
-
-def test_a_run_that_recorded_no_failure_is_treated_as_clean(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path)
-
-    assert _debug() == 0
-    assert f"✓ No failed tasks found in {RUN_ID}" in capsys.readouterr().out
-
-
-def test_failed_status_without_recorded_error_says_so(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed")
-
-    assert _debug() == 0
-    assert "No error recorded in the manifest." in capsys.readouterr().out
-
-
-def test_json_payload_includes_run_level_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", error="orchestrator exploded")
+    _record_run(cwd=tmp_path, **run)
 
     assert _debug(json_output=True) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "failed"
-    assert payload["error"] == "orchestrator exploded"
-    assert payload["failures"] == []
-
-
-def test_json_payload_carries_null_error_when_absent(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path)
-
-    assert _debug(json_output=True) == 0
-    assert json.loads(capsys.readouterr().out)["error"] is None
-
-
-def test_json_failure_carries_its_status_and_its_error_once(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", error="boom", failed_task=True)
-
-    assert _debug(json_output=True) == 0
-    payload = json.loads(capsys.readouterr().out)
-    failure = payload["failures"][0]
-    assert failure["status"] == "failed"
-    assert failure["failure"]["message"] == "boom"
-    assert "error" not in failure
-    # The run's error only restates the task's, which is already reported.
-    assert payload["error"] is None
-
-
-def test_a_run_error_restating_the_task_failure_gets_no_second_panel(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _record_run(cwd=tmp_path, status="failed", error="boom", failed_task=True)
-
-    assert _debug() == 0
-    assert "Run Failure" not in capsys.readouterr().out
+    assert payload["error"] == error
+    if failure is None:
+        assert payload["failures"] == []
+        return
+    (entry,) = payload["failures"]
+    assert "error" not in entry
+    if "label" in failure:
+        assert (entry["task_name"], entry["display_label"]) == ("explode", failure["label"])
+    else:
+        assert entry["status"] == failure["status"]
+        assert entry["failure"]["message"] == failure["message"]
 
 
 def test_the_log_tail_prints_below_the_panel_and_unwrapped(

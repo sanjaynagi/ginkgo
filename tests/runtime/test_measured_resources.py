@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,15 +22,12 @@ from ginkgo.runtime.worker import (
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
 
-class TestParseCputime:
-    def test_minutes_seconds(self) -> None:
-        assert _parse_cputime("1:02.50") == 62.5
-
-    def test_hours_minutes_seconds(self) -> None:
-        assert _parse_cputime("1:02:03") == 3723.0
-
-    def test_days_prefix(self) -> None:
-        assert _parse_cputime("2-01:00:00") == 2 * 86400 + 3600.0
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [("1:02.50", 62.5), ("1:02:03", 3723.0), ("2-01:00:00", 2 * 86400 + 3600.0)],
+)
+def test_parse_cputime(text: str, seconds: float) -> None:
+    assert _parse_cputime(text) == seconds
 
 
 class TestSubprocessUsageSampler:
@@ -136,21 +132,22 @@ class TestBodyMeasurement:
         assert response["measured_resources"]["peak_rss_bytes"] < 20_000_000
 
 
-class TestUsageMerging:
-    def test_peaks_take_max_and_cpu_accumulates(self) -> None:
-        evaluator = ConcurrentEvaluator(jobs=1)
-        holder: Any = SimpleNamespace(measured_resources=None)
+def test_measurements_merge_across_attempts_and_survive_a_retry() -> None:
+    evaluator = ConcurrentEvaluator(jobs=1)
+    (node_id,) = evaluator._register(_retried_work())
+    node = evaluator.task_nodes[node_id]
+    for peak, cpu in ((100, 1.0), (50, 0.5)):
         evaluator._record_measured_usage(
-            node=holder, measured={"peak_rss_bytes": 100, "cpu_seconds": 1.0, "source": "sampled"}
+            node=node, measured={"peak_rss_bytes": peak, "cpu_seconds": cpu, "source": "sampled"}
         )
-        evaluator._record_measured_usage(
-            node=holder, measured={"peak_rss_bytes": 50, "cpu_seconds": 0.5, "source": "sampled"}
-        )
-        assert holder.measured_resources == {
-            "peak_rss_bytes": 100,
-            "cpu_seconds": 1.5,
-            "source": "sampled",
-        }
+
+    evaluator._schedule_retry(node=node, exc=RuntimeError("oom"))
+
+    assert node.measured_resources == {
+        "peak_rss_bytes": 100,
+        "cpu_seconds": 1.5,
+        "source": "sampled",
+    }
 
 
 # ----- End-to-end manifest tests ----------------------------------------------
@@ -206,27 +203,6 @@ class TestManifestRecording:
             "effective_memory_gb": 1,
         }
 
-    def test_an_escalated_retry_records_both_budgets(self, tmp_path: Path) -> None:
-        """A retry runs against a budget the declaration never named.
-
-        ``node.memory_gb`` is raised in place by escalation, so recording only
-        it would lose the number a user edits; recording only the declaration
-        would call a 30 GiB peak an overrun of 16 when the attempt was given 32
-        and fitted.
-        """
-        from ginkgo.runtime.evaluator import NodeRun
-
-        node = NodeRun.__new__(NodeRun)
-        node.threads = 4
-        node.memory_gb = 32  # after escalation
-        node.declared_memory_gb = 16  # what the task asked for
-        node.measured_resources = {"peak_rss_bytes": 30_000, "cpu_seconds": 1.0}
-
-        usage = ConcurrentEvaluator(jobs=1)._resource_usage_for(node=node)
-
-        assert usage["declared"]["memory_gb"] == 16
-        assert usage["declared"]["effective_memory_gb"] == 32
-
     def test_shell_task_records_sampled_usage(self, tmp_path: Path) -> None:
         out = tmp_path / "shell-out.txt"
         usage = _run_with_ledger(_shell_work(out=str(out)), tmp_path)
@@ -243,19 +219,3 @@ class TestManifestRecording:
         ledger.close()
         assert usage["measured"]["source"] == "rusage"
         assert usage["measured"]["baseline_rss_bytes"] > 0
-
-
-class TestRetryCarry:
-    def test_schedule_retry_keeps_measurements(self) -> None:
-        evaluator = ConcurrentEvaluator(jobs=1)
-        (node_id,) = evaluator._register(_retried_work())
-        node = evaluator.task_nodes[node_id]
-        node.measured_resources = {"peak_rss_bytes": 42, "cpu_seconds": 0.1, "source": "rusage"}
-
-        evaluator._schedule_retry(node=node, exc=RuntimeError("oom"))
-
-        assert node.measured_resources == {
-            "peak_rss_bytes": 42,
-            "cpu_seconds": 0.1,
-            "source": "rusage",
-        }

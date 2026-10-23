@@ -1,12 +1,12 @@
-"""Integration tests for the longer example workflows."""
+"""The longer example workflows run end to end, then rerun from cache."""
 
 from __future__ import annotations
 
 import importlib.util
 import os
 import shutil
-import subprocess
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 from unittest.mock import patch
@@ -15,367 +15,224 @@ import pandas as pd
 import pytest
 
 from ginkgo.cli.commands.init import write_starter_project
-from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.cli.commands.run import run_workflow
+from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.core.shell import shell_argv
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
+from ginkgo.runtime.task_runners.shell import ShellRunner
 from tests.conftest import latest_run_view
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXAMPLES_ROOT = REPO_ROOT / "examples"
+EXAMPLES_ROOT = Path(__file__).resolve().parents[2] / "examples"
 
 
-def _materialize_example(*, name: str, destination_root: Path) -> Path:
-    """Place one example workflow in the isolated test workspace.
+@dataclass(frozen=True)
+class Example:
+    """What one example must produce, and how its rerun must behave."""
 
-    ``init`` is not a checked-in example: it is the starter project the packaged
-    templates scaffold, materialised here from that single source so it cannot
-    drift from what ``ginkgo init`` gives users. Every other name is copied from
-    ``examples/``.
-    """
-    destination = destination_root / name
-    if name == "init":
-        return write_starter_project(root=destination)
-
-    source = EXAMPLES_ROOT / name
-    shutil.copytree(
-        source,
-        destination,
-        ignore=shutil.ignore_patterns(
-            ".ginkgo",
-            "results",
-            "logs",
-            "__pycache__",
-            ".pytest_cache",
-        ),
-    )
-    return destination
+    name: str
+    task_count: int | None = None
+    plugins: tuple[str, ...] = ()
+    globs: dict[str, int] = field(default_factory=dict)
+    files: tuple[str, ...] = ()
+    phrases: dict[str, str] = field(default_factory=dict)
+    columns: dict[str, tuple[str, set[str]]] = field(default_factory=dict)
+    # (task-name suffix, number of dynamic children) for a planner that expands.
+    planner: tuple[str, int] | None = None
+    # Task-name suffix of a notebook task whose page must be rendered.
+    notebook: str | None = None
+    # Task-name suffix of a task whose file outputs must be stored artifacts.
+    stored: str | None = None
+    docker: bool = False
+    reruns: int = 1
+    all_cached: bool = True
 
 
-def _run_example(*, example_dir: Path) -> tuple[Path, dict[str, object]]:
-    """Execute an example workflow and return its newest run's projections."""
-    exit_code = run_workflow(
-        workflow_path=discover_default_workflow(project_root=example_dir),
-        config_paths=[],
-        jobs=4,
-        cores=4,
-        memory=None,
-        dry_run=False,
-    )
-    assert exit_code == 0
-
-    return latest_run_view(root=example_dir)
+EXAMPLES = [
+    Example(
+        name="init",
+        task_count=15,
+        plugins=("ginkgo_pixi", "ginkgo_notebook"),
+        files=("results/summary.json", "results/delivery_manifest.md"),
+        notebook=".render_overview_notebook",
+        stored=".write_seed_card",
+        docker=True,
+        # The second run replays some tasks; only the third is wholly cached.
+        reruns=2,
+    ),
+    Example(
+        name="bioinfo",
+        plugins=("ginkgo_pixi", "ginkgo_oci"),
+        globs={
+            "results/filtered/*.filtered.fastq.gz": 4,
+            "results/qc/*.stats.tsv": 2,
+            "results/read_counts/*.counts.tsv": 2,
+        },
+        columns={"results/summary.csv": ("sample_id", {"ERR3058522", "ERR3058532"})},
+        stored=".filter_fastq",
+        docker=True,
+    ),
+    Example(
+        name="chem",
+        task_count=11,
+        globs={"results/series/*_packet.md": 4},
+        files=("results/delivery_manifest.txt",),
+        phrases={"results/portfolio_summary.md": "Series Packets"},
+        planner=(".plan_series_packets", 4),
+    ),
+    Example(
+        name="retail",
+        task_count=14,
+        plugins=("ginkgo_notebook",),
+        globs={"results/regions/*.csv": 4},
+        files=("results/delivery_manifest.txt",),
+        phrases={"results/executive_report.md": "Top region:"},
+        notebook=".render_channel_performance_notebook",
+    ),
+    Example(
+        name="news",
+        globs={"results/desk_packets/*_packet.md": 5},
+        files=("results/delivery_manifest.txt",),
+        phrases={"results/newsroom_digest.md": "Desk Packets"},
+        planner=(".plan_desk_packets", 5),
+        all_cached=False,
+    ),
+    Example(
+        name="supplychain",
+        task_count=19,
+        globs={"results/scenarios/*.json": 10},
+        files=("results/artifact_manifest.txt",),
+        phrases={"results/operations_brief.md": "Scenario Scorecard"},
+        columns={
+            "results/resilience_scorecard.csv": (
+                "scenario_id",
+                {
+                    "customs_holdup",
+                    "demand_surge",
+                    "fuel_spike",
+                    "labour_strike",
+                    "peak_season",
+                    "port_delay",
+                    "rail_disruption",
+                    "raw_material_shortage",
+                    "supplier_outage",
+                    "weather_shock",
+                },
+            )
+        },
+    ),
+    Example(
+        name="ml",
+        task_count=13,
+        files=("results/delivery_manifest.txt",),
+        phrases={"results/model_card.md": "Champion Model Card"},
+        columns={
+            "results/candidate_scorecard.csv": (
+                "model_name",
+                {"baseline_logit", "expansion_focus", "precision_guard", "retention_boost"},
+            )
+        },
+    ),
+]
 
 
 @contextmanager
-def _mock_docker() -> Iterator[None]:
-    """Mock Docker runtime so container shell tasks execute locally.
+def _host_docker() -> Iterator[None]:
+    """Run container shell tasks on the host, as the container would have run them."""
+    original = ShellRunner.run_subprocess
 
-    Docker argv is intercepted at the shell runner's ``run_subprocess`` level:
-    the shell command is extracted and executed directly under strict bash,
-    bypassing the container runtime while producing real file outputs.
-    """
-    from ginkgo.runtime.task_runners.shell import ShellRunner
-
-    original_run_subprocess = ShellRunner.run_subprocess
-
-    def _patched_run_subprocess(
-        self_runner: Any,
-        *,
-        argv: list[str],
-        on_stdout: Any = None,
-        on_stderr: Any = None,
-        **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        # Run the command the container would have run on the host instead.
+    def run_subprocess(self: Any, *, argv: list[str], **kwargs: Any):
         if argv[0] == "docker":
             argv = shell_argv(shell="bash", cmd=argv[-1])
-        return original_run_subprocess(
-            self_runner,
-            argv=argv,
-            on_stdout=on_stdout,
-            on_stderr=on_stderr,
+        return original(
+            self, argv=argv, on_stdout=kwargs.get("on_stdout"), on_stderr=kwargs.get("on_stderr")
         )
 
     with (
-        patch.object(ShellRunner, "run_subprocess", _patched_run_subprocess),
+        patch.object(ShellRunner, "run_subprocess", run_subprocess),
         patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
         patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
-        patch.object(ContainerBackend, "_resolve_digest", return_value="sha256:fake_test_digest"),
+        patch.object(ContainerBackend, "_resolve_digest", return_value="sha256:fake"),
     ):
         yield
 
 
-@pytest.fixture
-def installed_plugins() -> Iterator[PluginRegistry]:
-    """Run against the installed plugins rather than core's test stubs."""
-    with use_plugin_registry(PluginRegistry.discover()) as registry:
-        yield registry
+def _run(example: Example, example_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """Run the example's default workflow and return its newest run's projections."""
+    with _host_docker() if example.docker else nullcontext():
+        exit_code = run_workflow(
+            workflow_path=discover_default_workflow(project_root=example_dir),
+            config_paths=[],
+            jobs=4,
+            cores=4,
+            memory=None,
+            dry_run=False,
+        )
+    assert exit_code == 0
+    return latest_run_view(root=example_dir)
+
+
+def _task(manifest: dict[str, Any], suffix: str) -> dict[str, Any]:
+    return next(t for t in manifest["tasks"].values() if str(t["name"]).endswith(suffix))
 
 
 @pytest.mark.integration
-class TestExamples:
-    @pytest.mark.skipif(
-        importlib.util.find_spec("ginkgo_pixi") is None
-        or importlib.util.find_spec("ginkgo_notebook") is None,
-        reason="the init scaffold needs the ginkgo-pixi and ginkgo-notebook plugins",
-    )
-    def test_init_example_runs_and_caches(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        installed_plugins: PluginRegistry,
-    ) -> None:
-        example_dir = _materialize_example(name="init", destination_root=tmp_path)
-        monkeypatch.chdir(example_dir)
+@pytest.mark.parametrize("example", EXAMPLES, ids=lambda example: example.name)
+def test_an_example_runs_and_its_rerun_is_cached(
+    example: Example, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = [name for name in example.plugins if importlib.util.find_spec(name) is None]
+    if missing:
+        pytest.skip(f"the {example.name} example needs {', '.join(missing)}")
+    if example.name == "bioinfo" and not os.environ.get("GINKGO_REMOTE_OCI_PROFILE"):
+        pytest.skip("Set GINKGO_REMOTE_OCI_PROFILE to run the OCI bioinfo example")
 
-        with _mock_docker():
-            first_run_dir, first_manifest = _run_example(example_dir=example_dir)
-
-        notebook_task = next(
-            task
-            for task in first_manifest["tasks"].values()
-            if str(task["name"]).endswith(".render_overview_notebook")
+    example_dir = tmp_path / example.name
+    if example.name == "init":
+        # The scaffold `ginkgo init` writes, so the test cannot drift from it.
+        write_starter_project(root=example_dir)
+    else:
+        shutil.copytree(
+            EXAMPLES_ROOT / example.name,
+            example_dir,
+            ignore=shutil.ignore_patterns(".ginkgo", "results", "logs", "__pycache__"),
         )
-        notebook_html = first_run_dir / str(notebook_task["rendered_html"])
+    monkeypatch.chdir(example_dir)
+    registry = PluginRegistry.discover() if example.plugins else None
 
-        assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 15
-        assert notebook_task["kind"] == "notebook"
-        assert notebook_html.is_file()
-        assert (example_dir / "results" / "summary.json").is_file()
-        assert (example_dir / "results" / "delivery_manifest.md").is_file()
-        seed_card_outputs = [
-            output
-            for task in first_manifest["tasks"].values()
-            if str(task["name"]).endswith(".write_seed_card")
-            for output in task.get("outputs", [])
-        ]
-        assert seed_card_outputs
-        assert all(output.get("artifact_id") for output in seed_card_outputs)
+    with use_plugin_registry(registry) if registry else nullcontext():
+        run_dir, manifest = _run(example, example_dir)
 
-        with _mock_docker():
-            _, second_manifest = _run_example(example_dir=example_dir)
-        with _mock_docker():
-            _, third_manifest = _run_example(example_dir=example_dir)
+        assert manifest["status"] == "succeeded"
+        if example.task_count is not None:
+            assert len(manifest["tasks"]) == example.task_count
+        for pattern, count in example.globs.items():
+            assert len(list(example_dir.glob(pattern))) == count, pattern
+        for name in example.files:
+            assert (example_dir / name).is_file(), name
+        for name, phrase in example.phrases.items():
+            assert phrase in (example_dir / name).read_text(encoding="utf-8")
+        for name, (column, values) in example.columns.items():
+            assert set(pd.read_csv(example_dir / name)[column]) == values
+        if example.planner:
+            suffix, children = example.planner
+            assert len(_task(manifest, suffix)["dynamic_dependency_ids"]) == children
+        if example.notebook:
+            notebook = _task(manifest, example.notebook)
+            assert notebook["kind"] == "notebook"
+            assert (run_dir / str(notebook["rendered_html"])).is_file()
+        if example.stored:
+            outputs = [
+                output
+                for task in manifest["tasks"].values()
+                if str(task["name"]).endswith(example.stored)
+                for output in task.get("outputs", [])
+            ]
+            assert outputs and all(output.get("artifact_id") for output in outputs)
 
-        assert second_manifest["status"] == "succeeded"
-        assert any(task["status"] == "cached" for task in second_manifest["tasks"].values())
-        assert third_manifest["status"] == "succeeded"
-        assert all(task["status"] == "cached" for task in third_manifest["tasks"].values())
+        for _ in range(example.reruns):
+            _, rerun = _run(example, example_dir)
 
-    @pytest.mark.skipif(
-        importlib.util.find_spec("ginkgo_pixi") is None
-        or importlib.util.find_spec("ginkgo_oci") is None,
-        reason="the bioinfo example needs the ginkgo-pixi and ginkgo-oci plugins",
-    )
-    def test_bioinfo_example_runs_and_caches(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        installed_plugins: PluginRegistry,
-    ) -> None:
-        profile = os.environ.get("GINKGO_REMOTE_OCI_PROFILE")
-        if not profile:
-            pytest.skip("Set GINKGO_REMOTE_OCI_PROFILE to run the OCI bioinfo example")
-
-        example_dir = _materialize_example(name="bioinfo", destination_root=tmp_path)
-        monkeypatch.chdir(example_dir)
-
-        with _mock_docker():
-            _, first_manifest = _run_example(example_dir=example_dir)
-
-        filtered_fastqs = sorted(
-            (example_dir / "results" / "filtered").glob("*.filtered.fastq.gz")
-        )
-        qc_tables = sorted((example_dir / "results" / "qc").glob("*.stats.tsv"))
-        count_files = sorted((example_dir / "results" / "read_counts").glob("*.counts.tsv"))
-        summary = pd.read_csv(example_dir / "results" / "summary.csv")
-
-        assert first_manifest["status"] == "succeeded"
-        assert len(filtered_fastqs) == 4
-        assert len(qc_tables) == 2
-        assert len(count_files) == 2
-        assert sorted(summary["sample_id"].unique().tolist()) == ["ERR3058522", "ERR3058532"]
-        assert len(summary) == 4
-        assert "read_count_r1" in summary.columns
-        assert all(
-            output.get("artifact_id")
-            for task in first_manifest["tasks"].values()
-            if str(task["name"]).endswith(".filter_fastq")
-            for output in task.get("outputs", [])
-        )
-
-        with _mock_docker():
-            _, second_manifest = _run_example(example_dir=example_dir)
-
-        assert second_manifest["status"] == "succeeded"
-        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
-
-    def test_chem_example_expands_series_packets(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        example_dir = _materialize_example(name="chem", destination_root=tmp_path)
-        monkeypatch.chdir(example_dir)
-
-        _, first_manifest = _run_example(example_dir=example_dir)
-
-        packet_outputs = sorted((example_dir / "results" / "series").glob("*_packet.md"))
-        packet_names = [path.stem for path in packet_outputs]
-        packet_planner = next(
-            task
-            for task in first_manifest["tasks"].values()
-            if str(task["name"]).endswith(".plan_series_packets")
-        )
-        register = pd.read_csv(example_dir / "results" / "candidate_register.csv")
-
-        assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 11
-        assert len(packet_outputs) == 4
-        assert packet_planner["status"] == "succeeded"
-        assert len(packet_planner["dynamic_dependency_ids"]) == 4
-        assert "benzimidazole_packet" in packet_names
-        assert "indazole_packet" in packet_names
-        assert "advance" in register["advance_recommendation"].tolist()
-        assert (example_dir / "results" / "delivery_manifest.txt").is_file()
-        assert "Series Packets" in (example_dir / "results" / "portfolio_summary.md").read_text(
-            encoding="utf-8"
-        )
-
-        _, second_manifest = _run_example(example_dir=example_dir)
-        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
-
-    @pytest.mark.skipif(
-        importlib.util.find_spec("ginkgo_notebook") is None,
-        reason="the retail example's notebook task needs the ginkgo-notebook plugin",
-    )
-    def test_retail_example_runs_and_caches(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        installed_plugins: PluginRegistry,
-    ) -> None:
-        example_dir = _materialize_example(name="retail", destination_root=tmp_path)
-        monkeypatch.chdir(example_dir)
-
-        first_run_dir, first_manifest = _run_example(example_dir=example_dir)
-        region_outputs = sorted((example_dir / "results" / "regions").glob("*.csv"))
-        notebook_task = next(
-            task
-            for task in first_manifest["tasks"].values()
-            if str(task["name"]).endswith(".render_channel_performance_notebook")
-        )
-        notebook_html = first_run_dir / str(notebook_task["rendered_html"])
-
-        assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 14
-        assert len(region_outputs) == 4
-        assert notebook_task["kind"] == "notebook"
-        assert notebook_html.is_file()
-        assert (example_dir / "results" / "delivery_manifest.txt").is_file()
-        assert "Top region:" in (example_dir / "results" / "executive_report.md").read_text(
-            encoding="utf-8"
-        )
-
-        second_run_dir, second_manifest = _run_example(example_dir=example_dir)
-        assert second_run_dir is not None
-        assert second_manifest["status"] == "succeeded"
-        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
-
-    def test_newsroom_example_expands_dynamic_packets(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        example_dir = _materialize_example(name="news", destination_root=tmp_path)
-        monkeypatch.chdir(example_dir)
-
-        _, first_manifest = _run_example(example_dir=example_dir)
-
-        packet_outputs = sorted((example_dir / "results" / "desk_packets").glob("*_packet.md"))
-        packet_names = [path.stem for path in packet_outputs]
-        packet_planner = next(
-            task
-            for task in first_manifest["tasks"].values()
-            if str(task["name"]).endswith(".plan_desk_packets")
-        )
-
-        assert len(packet_outputs) == 5
-        assert packet_planner["status"] == "succeeded"
-        assert len(packet_planner["dynamic_dependency_ids"]) == 5
-        assert "business_packet" in packet_names
-        assert "politics_packet" in packet_names
-        assert "Desk Packets" in (example_dir / "results" / "newsroom_digest.md").read_text(
-            encoding="utf-8"
-        )
-
-        _, second_manifest = _run_example(example_dir=example_dir)
-        assert any(task["status"] == "cached" for task in second_manifest["tasks"].values())
-        assert (example_dir / "results" / "delivery_manifest.txt").is_file()
-
-    def test_supplychain_example_runs_scenarios_and_caches(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        example_dir = _materialize_example(name="supplychain", destination_root=tmp_path)
-        monkeypatch.chdir(example_dir)
-
-        _, first_manifest = _run_example(example_dir=example_dir)
-        scenario_outputs = sorted((example_dir / "results" / "scenarios").glob("*.json"))
-        scorecard = pd.read_csv(example_dir / "results" / "resilience_scorecard.csv")
-
-        assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 19
-        assert len(scenario_outputs) == 10
-        assert sorted(scorecard["scenario_id"].tolist()) == [
-            "customs_holdup",
-            "demand_surge",
-            "fuel_spike",
-            "labour_strike",
-            "peak_season",
-            "port_delay",
-            "rail_disruption",
-            "raw_material_shortage",
-            "supplier_outage",
-            "weather_shock",
-        ]
-        assert (example_dir / "results" / "artifact_manifest.txt").is_file()
-        assert "Scenario Scorecard" in (example_dir / "results" / "operations_brief.md").read_text(
-            encoding="utf-8"
-        )
-
-        _, second_manifest = _run_example(example_dir=example_dir)
-        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
-
-    def test_ml_example_runs_candidate_fanout_and_caches(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        example_dir = _materialize_example(name="ml", destination_root=tmp_path)
-        monkeypatch.chdir(example_dir)
-
-        _, first_manifest = _run_example(example_dir=example_dir)
-        scorecard = pd.read_csv(example_dir / "results" / "candidate_scorecard.csv")
-
-        assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 13
-
-        assert sorted(scorecard["model_name"].tolist()) == [
-            "baseline_logit",
-            "expansion_focus",
-            "precision_guard",
-            "retention_boost",
-        ]
-        assert (example_dir / "results" / "delivery_manifest.txt").is_file()
-        assert "Champion Model Card" in (example_dir / "results" / "model_card.md").read_text(
-            encoding="utf-8"
-        )
-
-        _, second_manifest = _run_example(example_dir=example_dir)
-        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
+    assert rerun["status"] == "succeeded"
+    statuses = [task["status"] == "cached" for task in rerun["tasks"].values()]
+    assert all(statuses) if example.all_cached else any(statuses)

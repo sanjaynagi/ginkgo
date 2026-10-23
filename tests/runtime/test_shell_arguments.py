@@ -78,10 +78,7 @@ def count_rows_via_shell(scores: object, csv_path: str, output_path: str) -> fil
 
 
 class TestUpstreamOutputArguments:
-    def test_a_file_output_reaches_the_script_as_a_readable_path(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
+    def test_a_file_output_reaches_the_script_as_a_readable_path(self, tmp_path: Path) -> None:
         script_path = tmp_path / "copy_input.py"
         script_path.write_text(_COPY_SCRIPT, encoding="utf-8")
 
@@ -95,15 +92,8 @@ class TestUpstreamOutputArguments:
 
         assert Path(produced).read_text(encoding="utf-8") == "site,count\nnorth,10\n"
 
-    def test_shell_task_writes_the_format_its_command_expects(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The route the refusal recommends: ``object`` annotation, then write CSV.
-
-        This is what the refusal tells a shell-task author to do, so it has to
-        work.
-        """
-        monkeypatch.chdir(tmp_path)
+    def test_shell_task_writes_the_format_its_command_expects(self) -> None:
+        """The route the refusal recommends, ``object`` then write CSV, has to work."""
 
         produced = ginkgo.evaluate(
             count_rows_via_shell(
@@ -123,69 +113,53 @@ class TestUpstreamOutputArguments:
 # ---------------------------------------------------------------------------
 
 
-class TestRenderCliTokens:
-    """Pin the argparse-friendly rendering ``render_cli_tokens`` produces.
+@pytest.mark.parametrize(
+    ("value", "tokens"),
+    [
+        (["results/a.tsv", "results/b.tsv"], ["--opt", "results/a.tsv", "results/b.tsv"]),
+        (("results/a.tsv", "results/b.tsv"), ["--opt", "results/a.tsv", "results/b.tsv"]),
+        ([], ["--opt"]),
+        # Lists with no positional CLI form stay JSON.
+        ([["a", "b"], ["c"]], ["--opt", shlex.quote('[["a", "b"], ["c"]]')]),
+        ([{"a": 1}], ["--opt", shlex.quote('[{"a": 1}]')]),
+        (["a", None], ["--opt", shlex.quote('["a", null]')]),
+        ([True, False], ["--opt", shlex.quote("[true, false]")]),
+        (True, ["--opt"]),
+        (False, []),
+        (None, ["--opt", "null"]),
+        ("north", ["--opt", "north"]),
+        (3, ["--opt", "3"]),
+    ],
+)
+def test_render_cli_tokens(value, tokens: list[str]) -> None:
+    """An argparse script declares ``nargs="*"`` for lists, ``store_true`` for bools."""
+    assert render_cli_tokens(option="--opt", value=value) == tokens
 
-    A script's own parser is expected to declare the matching idiom:
-    ``nargs="*"``/``"+"`` for a scalar/path list, ``action="store_true"`` for
-    a bool.
-    """
 
-    def test_list_of_paths_renders_as_separate_tokens(self) -> None:
-        tokens = render_cli_tokens(option="--clusters", value=["results/a.tsv", "results/b.tsv"])
-        assert tokens == ["--clusters", "results/a.tsv", "results/b.tsv"]
+@pytest.mark.parametrize(
+    ("value", "tokens"),
+    [
+        (["results/a.tsv", "results/b.tsv"], ["--opt", "results/a.tsv", "--opt", "results/b.tsv"]),
+        ([], []),
+        ([[1, 2], [3]], ["--opt", shlex.quote("[[1, 2], [3]]")]),
+        # ``mo.cli_args()`` turns "true"/"false" into a bool; a bare flag
+        # would come back as an empty string.
+        (True, ["--opt", "true"]),
+        (False, ["--opt", "false"]),
+    ],
+)
+def test_render_repeated_cli_tokens(value, tokens: list[str]) -> None:
+    """``mo.cli_args()`` collects a repeated option into a list, so lists repeat it."""
+    assert render_repeated_cli_tokens(option="--opt", value=value) == tokens
 
-    def test_empty_list_renders_as_the_bare_option(self) -> None:
-        assert render_cli_tokens(option="--clusters", value=[]) == ["--clusters"]
 
-    def test_tuple_of_paths_renders_the_same_as_a_list(self) -> None:
-        tokens = render_cli_tokens(option="--clusters", value=("results/a.tsv", "results/b.tsv"))
-        assert tokens == ["--clusters", "results/a.tsv", "results/b.tsv"]
-
-    def test_items_with_spaces_and_glob_characters_are_individually_quoted(self) -> None:
-        tokens = render_cli_tokens(
-            option="--clusters", value=["results/a b.tsv", "results/[c].tsv", "results/*.tsv"]
-        )
-        assert tokens[0] == "--clusters"
-        # Each item is its own shell-quoted token, so re-parsing the joined
-        # command line recovers the original strings verbatim rather than
-        # letting the shell glob or word-split them.
-        assert shlex.split(" ".join(tokens[1:])) == [
-            "results/a b.tsv",
-            "results/[c].tsv",
-            "results/*.tsv",
-        ]
-
-    def test_nested_list_keeps_json_rendering(self) -> None:
-        tokens = render_cli_tokens(option="--groups", value=[["a", "b"], ["c"]])
-        assert tokens == ["--groups", shlex.quote('[["a", "b"], ["c"]]')]
-
-    def test_list_containing_a_dict_keeps_json_rendering(self) -> None:
-        tokens = render_cli_tokens(option="--rows", value=[{"a": 1}])
-        assert tokens == ["--rows", shlex.quote('[{"a": 1}]')]
-
-    def test_list_containing_none_keeps_json_rendering(self) -> None:
-        """None has no positional CLI form, so a list holding one stays JSON."""
-        tokens = render_cli_tokens(option="--items", value=["a", None])
-        assert tokens == ["--items", shlex.quote('["a", null]')]
-
-    def test_list_containing_a_bool_keeps_json_rendering(self) -> None:
-        """A bool inside a list has no store_true idiom, so it stays JSON too."""
-        tokens = render_cli_tokens(option="--flags", value=[True, False])
-        assert tokens == ["--flags", shlex.quote("[true, false]")]
-
-    def test_true_renders_as_the_bare_option(self) -> None:
-        assert render_cli_tokens(option="--verbose", value=True) == ["--verbose"]
-
-    def test_false_omits_the_option_entirely(self) -> None:
-        assert render_cli_tokens(option="--verbose", value=False) == []
-
-    def test_none_keeps_its_current_single_token_rendering(self) -> None:
-        assert render_cli_tokens(option="--label", value=None) == ["--label", "null"]
-
-    def test_scalar_still_renders_as_a_single_token(self) -> None:
-        assert render_cli_tokens(option="--name", value="north") == ["--name", "north"]
-        assert render_cli_tokens(option="--count", value=3) == ["--count", "3"]
+@pytest.mark.parametrize("render", [render_cli_tokens, render_repeated_cli_tokens])
+def test_items_with_spaces_and_glob_characters_are_individually_quoted(render) -> None:
+    # Re-parsing the joined command line recovers each string verbatim rather
+    # than letting the shell glob or word-split it.
+    items = ["results/a b.tsv", "results/[c].tsv", "results/*.tsv"]
+    tokens = shlex.split(" ".join(render(option="--opt", value=items)))
+    assert [token for token in tokens if token != "--opt"] == items
 
 
 # ---------------------------------------------------------------------------
@@ -210,44 +184,6 @@ Path(args.output_path).write_text("\\n".join(lines) + "\\n", encoding="utf-8")
 """
 
 
-class TestRenderRepeatedCliTokens:
-    """Pin the ``mo.cli_args()``-friendly rendering a marimo notebook gets.
-
-    ``mo.cli_args()`` joins the tokens after an option into one string but
-    collects a repeated option into a list, so a list must repeat its option.
-    """
-
-    def test_list_of_paths_repeats_the_option_per_item(self) -> None:
-        tokens = render_repeated_cli_tokens(
-            option="--clusters", value=["results/a.tsv", "results/b.tsv"]
-        )
-        assert tokens == ["--clusters", "results/a.tsv", "--clusters", "results/b.tsv"]
-
-    def test_empty_list_omits_the_option(self) -> None:
-        assert render_repeated_cli_tokens(option="--clusters", value=[]) == []
-
-    def test_items_with_spaces_and_glob_characters_are_individually_quoted(self) -> None:
-        tokens = render_repeated_cli_tokens(
-            option="--clusters", value=["results/a b.tsv", "results/*.tsv"]
-        )
-        assert shlex.split(" ".join(tokens)) == [
-            "--clusters",
-            "results/a b.tsv",
-            "--clusters",
-            "results/*.tsv",
-        ]
-
-    def test_nested_list_keeps_json(self) -> None:
-        tokens = render_repeated_cli_tokens(option="--grid", value=[[1, 2], [3]])
-        assert tokens == ["--grid", shlex.quote("[[1, 2], [3]]")]
-
-    @pytest.mark.parametrize(("value", "rendered"), [(True, "true"), (False, "false")])
-    def test_bool_keeps_a_literal_value(self, value: bool, rendered: str) -> None:
-        # ``mo.cli_args()`` turns "true"/"false" into a bool; a bare flag
-        # would come back as an empty string.
-        assert render_repeated_cli_tokens(option="--flag", value=value) == ["--flag", rendered]
-
-
 @task()
 def write_cluster_file(label: str, output_path: str) -> file:
     out = Path(output_path)
@@ -263,63 +199,33 @@ def combine_clusters(
     return script(script_path, output=output_path)
 
 
-class TestScriptTaskFanInListArgument:
-    def test_map_fan_in_list_of_files_reaches_an_nargs_star_parser(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A ``.map()`` fan-in of file paths survives the shell as separate tokens."""
-        monkeypatch.chdir(tmp_path)
-        script_path = tmp_path / "combine.py"
-        script_path.write_text(_COMBINE_SCRIPT, encoding="utf-8")
+def test_list_and_bool_arguments_reach_an_argparse_script(tmp_path: Path) -> None:
+    """A ``.map()`` fan-in survives the shell as separate tokens (#308), an empty
+    one as the bare option, and a bool as ``store_true`` (#309)."""
+    script_path = tmp_path / "combine.py"
+    script_path.write_text(_COMBINE_SCRIPT, encoding="utf-8")
+    clusters = write_cluster_file().map(
+        label=["north", "south"], output_path=["results/a.tsv", "results/b.tsv"]
+    )
 
-        cluster_a = write_cluster_file(label="north", output_path="results/a.tsv")
-        cluster_b = write_cluster_file(label="south", output_path="results/b.tsv")
-
-        produced = ginkgo.evaluate(
-            combine_clusters(
-                clusters=[cluster_a, cluster_b],
-                script_path=str(script_path),
-                output_path="results/combined.txt",
-            )
+    def combine(name: str, **kwargs):
+        return combine_clusters(
+            script_path=str(script_path), output_path=f"results/{name}.txt", **kwargs
         )
 
-        assert Path(produced).read_text(encoding="utf-8").splitlines() == ["north", "south"]
+    produced = ginkgo.evaluate(
+        [
+            combine("fan-in", clusters=clusters),
+            combine("empty", clusters=[]),
+            combine("verbose", clusters=[], verbose=True),
+        ]
+    )
 
-    def test_empty_fan_in_reaches_the_parser_as_no_clusters(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An empty fan-out renders the bare option, matching nargs="*" default []."""
-        monkeypatch.chdir(tmp_path)
-        script_path = tmp_path / "combine.py"
-        script_path.write_text(_COMBINE_SCRIPT, encoding="utf-8")
-
-        produced = ginkgo.evaluate(
-            combine_clusters(
-                clusters=[],
-                script_path=str(script_path),
-                output_path="results/combined.txt",
-            )
-        )
-
-        assert Path(produced).read_text(encoding="utf-8") == "\n"
-
-    def test_bool_flag_renders_as_store_true(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        script_path = tmp_path / "combine.py"
-        script_path.write_text(_COMBINE_SCRIPT, encoding="utf-8")
-
-        produced = ginkgo.evaluate(
-            combine_clusters(
-                clusters=[],
-                script_path=str(script_path),
-                output_path="results/combined.txt",
-                verbose=True,
-            )
-        )
-
-        assert Path(produced).read_text(encoding="utf-8").splitlines() == ["verbose"]
+    assert [Path(path).read_text(encoding="utf-8") for path in produced] == [
+        "north\nsouth\n",
+        "\n",
+        "verbose\n",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -353,41 +259,32 @@ class TestLivePythonPayloadArguments:
         assert "plain `str` is not a safe substitute" in message
         assert "no dependency edge" in message
 
-    def test_nested_payload_names_its_position(self) -> None:
+    @pytest.mark.parametrize(
+        ("wrap", "task_kind", "match"),
+        [
+            (lambda payload: ["ok", payload], "script", r"eat_payload\.scores\[1\]"),
+            (lambda payload: {"north": payload}, "notebook", r"eat_payload\.scores\['north'\]"),
+        ],
+    )
+    def test_nested_payload_names_its_position(self, wrap, task_kind: str, match: str) -> None:
+        nested = wrap(pd.DataFrame({"count": [10]}))
+        with pytest.raises(TypeError, match=match):
+            serialize_cli_argument_value(nested, label="eat_payload.scores", task_kind=task_kind)
+
+    def test_stringify_and_unlabelled_refusals_still_name_the_type(self) -> None:
         payload = pd.DataFrame({"count": [10]})
-
-        with pytest.raises(TypeError, match=r"eat_payload\.scores\[1\]"):
-            serialize_cli_argument_value(
-                ["ok", payload], label="eat_payload.scores", task_kind="script"
-            )
-
-        with pytest.raises(TypeError, match=r"eat_payload\.scores\['north'\]"):
-            serialize_cli_argument_value(
-                {"north": payload}, label="eat_payload.scores", task_kind="notebook"
-            )
-
-    def test_stringify_refuses_rather_than_reaching_json(self) -> None:
         with pytest.raises(TypeError) as excinfo:
-            stringify_cli_argument(
-                pd.DataFrame({"count": [10]}), label="eat_payload.scores", task_kind="script"
-            )
-
+            stringify_cli_argument(payload, label="eat_payload.scores", task_kind="script")
         assert "JSON serializable" not in str(excinfo.value)
-
-    def test_unlabelled_refusal_still_names_the_type(self) -> None:
-        """Called without a label, the refusal still names the type."""
         with pytest.raises(TypeError, match="pandas.DataFrame"):
-            serialize_cli_argument_value(pd.DataFrame({"count": [10]}))
+            serialize_cli_argument_value(payload)
 
     def test_a_date_argument_crosses_as_iso_text(self) -> None:
         """A date has a text form, so it crosses rather than being refused."""
         assert serialize_cli_argument_value(datetime.date(2026, 1, 1)) == "2026-01-01"
         assert stringify_cli_argument(datetime.date(2026, 1, 1)) == "2026-01-01"
 
-    def test_table_payload_into_a_script_task_is_refused_end_to_end(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
+    def test_table_payload_into_a_script_task_is_refused_end_to_end(self, tmp_path: Path) -> None:
         script_path = tmp_path / "copy_input.py"
         script_path.write_text(_COPY_SCRIPT, encoding="utf-8")
 

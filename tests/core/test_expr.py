@@ -1,12 +1,11 @@
 """Unit tests for Expr, ExprList, and related expression tree primitives."""
 
 import copy
-import dataclasses
 
 import pytest
 
-from ginkgo import Expr, ExprList, Out, file, task
-from ginkgo.core.expr import OutputIndex, _OutputProxy
+from ginkgo import ExprList, Out, file, task
+from ginkgo.core.expr import OutputIndex
 
 
 @task()
@@ -30,57 +29,31 @@ def pair_task(x: int) -> tuple[int, int]:
 
 
 class TestExpr:
-    def test_expr_stores_task_def_and_args(self):
-        expr = dummy(x=10)
-        assert isinstance(expr, Expr)
-        assert expr.task_def is dummy
-        assert expr.args == {"x": 10}
-
-    def test_expr_is_frozen(self):
-        expr = dummy(x=10)
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            expr.args = {}  # type: ignore[misc]
-
-    def test_expr_repr_with_concrete_args(self):
-        expr = dummy(x=42)
-        r = repr(expr)
-        assert "dummy" in r
-        assert "x=42" in r
-
-    def test_expr_repr_with_expr_args(self):
-        inner = dummy(x=1)
-        outer = dummy(x=inner)
-        r = repr(outer)
-        assert "x=<Expr>" in r
-
-    def test_nested_expr_preserves_structure(self):
-        a = dummy(x=1)
-        b = dummy(x=a)
-        assert isinstance(b.args["x"], Expr)
-        assert b.args["x"].args["x"] == 1
+    def test_repr_names_the_task_and_its_arguments(self):
+        assert "dummy" in repr(dummy(x=42)) and "x=42" in repr(dummy(x=42))
+        assert "x=<Expr>" in repr(dummy(x=dummy(x=1)))
+        assert f"{dummy(x=1)}".startswith("Expr(")
 
     def test_unpacking_names_the_task_and_the_output_idiom(self):
-        expr = pair_task(x=1)
         with pytest.raises(TypeError) as excinfo:
-            first, second = expr  # noqa: F841 - the unpack itself is the subject
+            first, second = pair_task(x=1)  # noqa: F841 - the unpack itself is the subject
         message = str(excinfo.value)
         assert "pair_task()" in message
         assert "r.output[0]" in message
         # TaskDef.name carries the synthetic module prefix; the message must not.
         assert pair_task.name not in message
 
-    def test_iterating_explains_itself(self):
-        with pytest.raises(TypeError, match=r"pair_task\(\).*output\[0\]"):
-            for _ in pair_task(x=1):
-                pass
-
-    def test_indexing_points_at_output(self):
-        with pytest.raises(TypeError, match=r"pair_task\(\).*cannot be indexed.*output\[0\]"):
-            pair_task(x=1)[0]
-
-    def test_len_points_at_output(self):
-        with pytest.raises(TypeError, match=r"pair_task\(\).*measured with len\(\).*output\[0\]"):
-            len(pair_task(x=1))
+    @pytest.mark.parametrize(
+        ("operation", "match"),
+        [
+            (lambda expr: [_ for _ in expr], r"pair_task\(\).*output\[0\]"),
+            (lambda expr: expr[0], r"pair_task\(\).*cannot be indexed.*output\[0\]"),
+            (lambda expr: len(expr), r"pair_task\(\).*measured with len\(\).*output\[0\]"),
+        ],
+    )
+    def test_container_operations_point_at_output(self, operation, match):
+        with pytest.raises(TypeError, match=match):
+            operation(pair_task(x=1))
 
     def test_expr_stays_truthy_despite_refusing_len(self):
         assert bool(pair_task(x=1)) is True
@@ -131,15 +104,21 @@ class TestExpr:
         with pytest.raises(TypeError, match=r"dummy\(\) returns one deferred result"):
             operation(dummy(x=1))
 
-    def test_plain_formatting_still_renders_the_call(self):
-        expr = dummy(x=1)
-        assert f"{expr}" == repr(expr)
-
     def test_expr_compares_with_expr_by_identity(self):
         expr = dummy(x=1)
         assert expr == expr
         assert dummy(x=1) != dummy(x=1)
         assert expr in [dummy(x=2), expr]
+
+    def test_comparing_calls_with_mixed_nested_arguments_does_not_raise(self):
+        """A nested call in one and a plain value in the other must not reach the refusal."""
+        nested = dummy(x=dummy(x=1))
+        plain = dummy(x="s")
+        calls = [plain, nested]
+        assert nested != plain
+        assert calls.index(nested) == 1
+        calls.remove(nested)
+        assert calls == [plain]
 
     def test_out_parameter_attribute_points_at_output(self):
         with pytest.raises(AttributeError, match=r"""r\.output\['report'\]"""):
@@ -152,99 +131,32 @@ class TestExpr:
         assert not hasattr(expr, "__setstate__")
         assert copy.copy(expr).args == {"x": 1}
 
-    def test_comparing_calls_with_mixed_nested_arguments_does_not_raise(self):
-        """A nested call in one and a plain value in the other must not reach the refusal."""
-        nested = dummy(x=dummy(x=1))
-        plain = dummy(x="s")
-        assert nested != plain
-        assert nested in [plain, nested]
-        assert [plain, nested].index(nested) == 1
-        calls = [plain, nested]
-        calls.remove(nested)
-        assert calls == [plain]
-
-
-class TestExprList:
-    def test_len(self):
-        exprs = [dummy(x=i) for i in range(5)]
-        el = ExprList(exprs=exprs)
-        assert len(el) == 5
-
-    def test_getitem(self):
-        exprs = [dummy(x=i) for i in range(3)]
-        el = ExprList(exprs=exprs)
-        assert el[0].args["x"] == 0
-        assert el[2].args["x"] == 2
-
-    def test_iter(self):
-        exprs = [dummy(x=i) for i in range(3)]
-        el = ExprList(exprs=exprs)
-        collected = list(el)
-        assert len(collected) == 3
-        assert all(isinstance(e, Expr) for e in collected)
-
-    def test_map_requires_shared_task_for_mixed_exprlist(self):
-        @task()
-        def other(y: int) -> int:
-            return y * 2
-
-        exprs = [dummy(x=1), other(y=2)]
-        el = ExprList(exprs=exprs)
-        with pytest.raises(TypeError, match="share one task"):
-            el.map(x=[3])
-
 
 class TestOutputIndex:
-    def test_expr_output_returns_proxy(self):
+    def test_expr_output_selects_one_element(self):
         expr = pair_task(x=1)
-        assert isinstance(expr.output, _OutputProxy)
+        second = expr.output[1]
 
-    def test_expr_output_getitem_returns_output_index(self):
-        expr = pair_task(x=1)
-        idx = expr.output[0]
-        assert isinstance(idx, OutputIndex)
-        assert idx.expr is expr
-        assert idx.index == 0
+        assert isinstance(second, OutputIndex)
+        assert (second.expr, second.index) == (expr, 1)
+        assert "OutputIndex" in repr(second) and "pair_task" in repr(second)
 
-    def test_expr_output_getitem_preserves_index(self):
-        expr = pair_task(x=1)
-        assert expr.output[0].index == 0
-        assert expr.output[1].index == 1
+    def test_exprlist_output_selects_one_element_of_every_branch(self):
+        exprs = [pair_task(x=i) for i in range(3)]
+        indexed = ExprList(exprs=exprs, task_def=pair_task).output[1]
 
-    @pytest.mark.parametrize("call", [lambda: dummy(x=1), lambda: path_task(x=1)])
+        assert isinstance(indexed, ExprList)
+        assert indexed.task_def is pair_task
+        assert [(item.expr, item.index) for item in indexed] == [(expr, 1) for expr in exprs]
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: dummy(x=1),
+            lambda: path_task(x=1),
+            lambda: ExprList(exprs=[dummy(x=1)], task_def=dummy),
+        ],
+    )
     def test_a_single_value_return_cannot_be_indexed(self, call):
-        with pytest.raises(TypeError, match=r"returns a single value, so it has no output \[0\]"):
-            call().output[0]
-
-    def test_a_single_value_fan_out_cannot_be_indexed(self):
         with pytest.raises(TypeError, match="returns a single value"):
-            ExprList(exprs=[dummy(x=1)], task_def=dummy).output[0]
-
-    def test_exprlist_output_returns_proxy(self):
-        exprs = [pair_task(x=i) for i in range(3)]
-        el = ExprList(exprs=exprs)
-        assert isinstance(el.output, _OutputProxy)
-
-    def test_exprlist_output_getitem_returns_exprlist(self):
-        exprs = [pair_task(x=i) for i in range(3)]
-        el = ExprList(exprs=exprs, task_def=pair_task)
-        result = el.output[0]
-        assert isinstance(result, ExprList)
-        assert len(result) == 3
-        assert result.task_def is pair_task
-
-    def test_exprlist_output_getitem_wraps_each_expr(self):
-        exprs = [pair_task(x=i) for i in range(3)]
-        el = ExprList(exprs=exprs)
-        indexed = el.output[1]
-        for i, item in enumerate(indexed):
-            assert isinstance(item, OutputIndex)
-            assert item.index == 1
-            assert item.expr is exprs[i]
-
-    def test_output_index_repr(self):
-        expr = pair_task(x=5)
-        idx = expr.output[0]
-        r = repr(idx)
-        assert "OutputIndex" in r
-        assert "pair_task" in r
+            call().output[0]

@@ -74,65 +74,57 @@ def render_with_output(notebook_path: str, sample_id: str, output_path: Out[file
     return notebook(notebook_path, output=output_path)
 
 
-def _evaluate(expr: object, *, root: Path) -> tuple[object, RunDir, list[TaskAnnotated]]:
+@task("notebook")
+def render_jupyter() -> file:
+    return notebook("report.ipynb")
+
+
+def _evaluate(expr: object, *, root: Path) -> tuple[object, RunDir, dict[str, object]]:
+    """Run *expr* once; return its result, run directory and annotated fields."""
     run_dir = RunDir.create(run_id=make_run_id(workflow_path=root / "flow.py"), root=root / "runs")
     bus = EventBus()
-    annotated: list[TaskAnnotated] = []
-    bus.subscribe(
-        lambda event: annotated.append(event) if isinstance(event, TaskAnnotated) else None
-    )
-    result = ConcurrentEvaluator(run_dir=run_dir, event_bus=bus, jobs=1, cores=1).evaluate(expr)
-    return result, run_dir, annotated
-
-
-def _rendered(annotated: list[TaskAnnotated]) -> dict[str, object]:
     fields: dict[str, object] = {}
-    for event in annotated:
-        fields.update(event.fields)
-    return fields
+    bus.subscribe(lambda event: isinstance(event, TaskAnnotated) and fields.update(event.fields))
+    result = ConcurrentEvaluator(run_dir=run_dir, event_bus=bus, jobs=1, cores=1).evaluate(expr)
+    return result, run_dir, fields
 
 
-def test_a_notebook_runs_with_the_task_arguments_and_returns_its_page(
+def test_a_notebook_renders_its_page_and_leaves_the_source_untouched(
     tmp_path: Path, notebook_path: Path
 ) -> None:
-    result, run_dir, annotated = _evaluate(
+    before = notebook_path.read_bytes()
+
+    result, run_dir, fields = _evaluate(
         render(notebook_path=str(notebook_path), sample_id="s1"), root=tmp_path
     )
 
     html = run_dir.path / "notebooks" / "task_0000.html"
     assert Path(str(result)) == html
     assert "sample" in html.read_text(encoding="utf-8")
-    assert _rendered(annotated) == {
+    assert fields == {
         "rendered_html": "notebooks/task_0000.html",
         "rendered_html_run_id": run_dir.run_id,
     }
+    assert notebook_path.read_bytes() == before
 
 
-def test_a_cache_hit_points_at_the_page_the_producing_run_rendered(
+def test_a_cache_hit_points_at_the_producing_page_until_the_notebook_is_edited(
     tmp_path: Path, notebook_path: Path
 ) -> None:
     expr = render(notebook_path=str(notebook_path), sample_id="s1")
     _, first_run, _ = _evaluate(expr, root=tmp_path)
 
-    _, _, annotated = _evaluate(expr, root=tmp_path)
-
-    replayed = _rendered(annotated)
+    _, _, replayed = _evaluate(expr, root=tmp_path)
     assert replayed["rendered_html"] == str(
         (first_run.path / "notebooks" / "task_0000.html").resolve()
     )
     assert replayed["rendered_html_run_id"] == first_run.run_id
 
-
-def test_editing_the_notebook_reruns_the_task(tmp_path: Path, notebook_path: Path) -> None:
-    expr = render(notebook_path=str(notebook_path), sample_id="s1")
-    _evaluate(expr, root=tmp_path)
-
     notebook_path.write_text(_NOTEBOOK + "\n# edited\n", encoding="utf-8")
-    _, second_run, annotated = _evaluate(
+    _, third_run, rerun = _evaluate(
         render(notebook_path=str(notebook_path), sample_id="s1"), root=tmp_path
     )
-
-    assert _rendered(annotated)["rendered_html_run_id"] == second_run.run_id
+    assert rerun["rendered_html_run_id"] == third_run.run_id
 
 
 def test_a_failing_cell_fails_the_task_and_points_at_the_page(
@@ -158,17 +150,22 @@ def test_a_declared_output_is_the_result(tmp_path: Path, notebook_path: Path) ->
     assert output.read_text(encoding="utf-8") == "s7"
 
 
-def test_notebook_runs_marimo_notebooks_only(tmp_path: Path) -> None:
-    ipynb = tmp_path / "report.ipynb"
-    ipynb.write_text("{}", encoding="utf-8")
+@pytest.mark.parametrize(
+    ("name", "source", "error", "match"),
+    [
+        ("report.ipynb", "{}", ValueError, "marimo notebooks, which are .py files"),
+        ("broken.py", "import marimo\napp = marimo.App(\n", SyntaxError, None),
+        ("missing.py", None, FileNotFoundError, "Notebook source not found"),
+    ],
+)
+def test_notebook_refuses_what_it_cannot_run(
+    tmp_path: Path, name: str, source: str | None, error: type[Exception], match: str | None
+) -> None:
+    if source is not None:
+        (tmp_path / name).write_text(source, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="marimo notebooks, which are .py files"):
-        notebook(ipynb)
-
-
-@task("notebook")
-def render_jupyter() -> file:
-    return notebook("report.ipynb")
+    with pytest.raises(error, match=match):
+        notebook(tmp_path / name)
 
 
 def test_a_dry_run_reports_a_jupyter_notebook(tmp_path: Path) -> None:
@@ -179,26 +176,5 @@ def test_a_dry_run_reports_a_jupyter_notebook(tmp_path: Path) -> None:
 
     plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
 
-    assert len(plan.diagnostics) == 1
-    assert "Jupyter .ipynb notebooks are not supported" in plan.diagnostics[0].message
-
-
-def test_the_users_notebook_is_left_byte_identical(tmp_path: Path, notebook_path: Path) -> None:
-    before = notebook_path.read_bytes()
-
-    _evaluate(render(notebook_path=str(notebook_path), sample_id="s1"), root=tmp_path)
-
-    assert notebook_path.read_bytes() == before
-
-
-def test_a_notebook_with_a_syntax_error_is_refused(tmp_path: Path) -> None:
-    broken = tmp_path / "broken.py"
-    broken.write_text("import marimo\napp = marimo.App(\n", encoding="utf-8")
-
-    with pytest.raises(SyntaxError):
-        notebook(broken)
-
-
-def test_a_missing_notebook_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="Notebook source not found"):
-        notebook(tmp_path / "missing.py")
+    [diagnostic] = plan.diagnostics
+    assert "Jupyter .ipynb notebooks are not supported" in diagnostic.message

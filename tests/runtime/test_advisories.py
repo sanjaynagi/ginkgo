@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ginkgo import folder, task
 from ginkgo.runtime.advisories import untracked_directory_notices, written_str_inputs_notice
 
@@ -49,28 +51,20 @@ class TestUntrackedDirectoryNotices:
         assert "make_dir returns a path to a directory as 'str'" in notices[0]
         assert again == []
 
-    def test_a_literal_directory_is_not_warned_about(self, tmp_path: Path) -> None:
-        expr = consume(inputs=[str(tmp_path)])
-
-        assert (
-            untracked_directory_notices(
-                task_def=expr.task_def,
-                args=expr.args,
-                resolved_args={"inputs": [str(tmp_path)]},
-                warned=set(),
-            )
-            == []
+    @pytest.mark.parametrize("folder_annotation", [False, True])
+    def test_a_literal_or_folder_directory_is_not_warned_about(
+        self, tmp_path: Path, folder_annotation: bool
+    ) -> None:
+        expr = (
+            consume_folder(inputs=make_dir(name="a"))
+            if folder_annotation
+            else consume(inputs=[str(tmp_path)])
         )
-
-    def test_a_folder_annotation_is_not_warned_about(self, tmp_path: Path) -> None:
-        expr = consume_folder(inputs=make_dir(name="a"))
+        resolved = {"inputs": str(tmp_path) if folder_annotation else [str(tmp_path)]}
 
         assert (
             untracked_directory_notices(
-                task_def=expr.task_def,
-                args=expr.args,
-                resolved_args={"inputs": str(tmp_path)},
-                warned=set(),
+                task_def=expr.task_def, args=expr.args, resolved_args=resolved, warned=set()
             )
             == []
         )
