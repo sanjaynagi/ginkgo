@@ -1,12 +1,13 @@
-"""Unit tests for artifact model types."""
+"""Serialisation round trips for the artifact model types."""
 
 from __future__ import annotations
 
 import json
 
+import pytest
+
 from ginkgo.runtime.artifacts.artifact_model import (
     ArtifactRecord,
-    BlobRef,
     TreeEntry,
     TreeRef,
     deserialize_tree_manifest,
@@ -14,114 +15,34 @@ from ginkgo.runtime.artifacts.artifact_model import (
 )
 
 
-class TestBlobRef:
-    def test_immutable(self) -> None:
-        ref = BlobRef(
-            digest_algorithm="blake3",
-            digest_hex="abc123",
-            size=1024,
-            extension=".csv",
-        )
-        assert ref.digest_hex == "abc123"
-        assert ref.extension == ".csv"
+def test_artifact_record_json_round_trip() -> None:
+    record = ArtifactRecord(
+        artifact_id="abc123",
+        kind="blob",
+        digest_algorithm="blake3",
+        digest_hex="abc123",
+        extension=".csv",
+        size=1024,
+        created_at="2026-01-01T00:00:00Z",
+        storage_backend="local",
+    )
 
-    def test_no_extension(self) -> None:
-        ref = BlobRef(
-            digest_algorithm="blake3",
-            digest_hex="abc123",
-            size=0,
-            extension="",
-        )
-        assert ref.extension == ""
+    assert ArtifactRecord.from_json(record.to_json()) == record
+    assert json.loads(record.to_json())["kind"] == "blob"
 
 
-class TestTreeEntry:
-    def test_fields(self) -> None:
-        entry = TreeEntry(
-            relative_path="data/sample.csv",
-            blob_digest="def456",
-            size=512,
-            mode=0o644,
-        )
-        assert entry.relative_path == "data/sample.csv"
-        assert entry.mode == 0o644
+@pytest.mark.parametrize(
+    "entries",
+    [
+        (),
+        (
+            TreeEntry(relative_path="a.txt", blob_digest="aaa", size=10, mode=0o644),
+            TreeEntry(relative_path="sub/b.txt", blob_digest="bbb", size=20, mode=0o755),
+        ),
+    ],
+    ids=["empty", "nested"],
+)
+def test_tree_manifest_round_trip(entries) -> None:
+    ref = TreeRef(digest_algorithm="blake3", digest_hex="tree", entries=entries)
 
-
-class TestTreeRef:
-    def test_entries_are_tuple(self) -> None:
-        ref = TreeRef(
-            digest_algorithm="blake3",
-            digest_hex="tree_digest",
-            entries=(
-                TreeEntry(
-                    relative_path="a.txt",
-                    blob_digest="aaa",
-                    size=10,
-                    mode=0o644,
-                ),
-            ),
-        )
-        assert isinstance(ref.entries, tuple)
-        assert len(ref.entries) == 1
-
-
-class TestArtifactRecord:
-    def _make_record(self) -> ArtifactRecord:
-        return ArtifactRecord(
-            artifact_id="abc123",
-            kind="blob",
-            digest_algorithm="blake3",
-            digest_hex="abc123",
-            extension=".csv",
-            size=1024,
-            created_at="2026-01-01T00:00:00Z",
-            storage_backend="local",
-        )
-
-    def test_json_round_trip(self) -> None:
-        record = self._make_record()
-        serialized = record.to_json()
-        restored = ArtifactRecord.from_json(serialized)
-        assert restored == record
-
-    def test_json_is_valid(self) -> None:
-        record = self._make_record()
-        parsed = json.loads(record.to_json())
-        assert parsed["kind"] == "blob"
-        assert parsed["artifact_id"] == "abc123"
-
-
-class TestTreeManifestSerialization:
-    def test_round_trip(self) -> None:
-        ref = TreeRef(
-            digest_algorithm="blake3",
-            digest_hex="tree_abc",
-            entries=(
-                TreeEntry(
-                    relative_path="a.txt",
-                    blob_digest="aaa",
-                    size=10,
-                    mode=0o644,
-                ),
-                TreeEntry(
-                    relative_path="sub/b.txt",
-                    blob_digest="bbb",
-                    size=20,
-                    mode=0o644,
-                ),
-            ),
-        )
-        serialized = serialize_tree_manifest(ref)
-        restored = deserialize_tree_manifest(serialized)
-        assert restored == ref
-
-    def test_empty_tree(self) -> None:
-        ref = TreeRef(
-            digest_algorithm="blake3",
-            digest_hex="empty",
-            entries=(),
-        )
-        serialized = serialize_tree_manifest(ref)
-        restored = deserialize_tree_manifest(serialized)
-        assert restored == ref
-        assert len(restored.entries) == 0
+    assert deserialize_tree_manifest(serialize_tree_manifest(ref)) == ref

@@ -104,15 +104,11 @@ class TestBuiltin:
 
 
 class TestLookup:
-    def test_an_unknown_key_names_what_is_available(self) -> None:
+    def test_an_unknown_key_names_what_is_available_or_the_package_to_install(self) -> None:
         registry = PluginRegistry(plugins=(BUILTIN, _FAKE))
 
         with pytest.raises(PluginNotFoundError, match="executor type 'slurm'. Available: 'fake'"):
             registry.get(ExecutorType, "slurm")
-
-    def test_a_first_party_key_names_the_package_that_provides_it(self) -> None:
-        registry = PluginRegistry(plugins=(BUILTIN,))
-
         with pytest.raises(PluginNotFoundError, match="Install ginkgo-k8s to add it"):
             registry.get(ExecutorType, "k8s")
 
@@ -160,10 +156,7 @@ class TestLookup:
 
         assert registry.get(EnvironmentType, "docker") is registry.get(EnvironmentType, "oci")
         assert registry.all(EnvironmentType) == [registry.get(EnvironmentType, "docker")]
-
-    def test_a_bare_env_name_without_ginkgo_pixi_names_the_plugin(self) -> None:
-        registry = PluginRegistry(plugins=(BUILTIN,))
-
+        # A bare env name without ginkgo-pixi names the plugin.
         with pytest.raises(
             PluginNotFoundError,
             match=r"environment for scheme \(bare name\)\. Available: 'docker', 'oci'\. "
@@ -242,15 +235,11 @@ class TestPluginContributionsReachCore:
         assert executor.settings == {"queue": "q1"}
         assert registry.label("queue") == "queue (Fake)"
 
-    def test_a_plugin_executor_type_checks_its_required_settings(
-        self, with_fake_plugin: PluginRegistry
-    ) -> None:
-        registry = ExecutorRegistry.from_config(
+        unset = ExecutorRegistry.from_config(
             {"remote": {"executors": {"queue": {"type": "fake"}}}}, default="queue"
         )
-
         with pytest.raises(ValueError, match="Fake executor 'queue' requires a queue"):
-            registry.validate_settings(names=["queue"])
+            unset.validate_settings(names=["queue"])
 
     def test_a_plugin_secret_backend_resolves_its_refs(
         self, with_fake_plugin: PluginRegistry, tmp_path: Path
@@ -259,12 +248,6 @@ class TestPluginContributionsReachCore:
 
         assert resolver.resolve(ref=SecretRef(name="token", backend="vault")) == "vault:token"
         assert resolver.resolve(ref=SecretRef(name="A", backend="env")) == "1"
-
-    def test_a_secret_naming_an_uninstalled_backend_says_so(
-        self, with_fake_plugin: PluginRegistry, tmp_path: Path
-    ) -> None:
-        resolver = build_secret_resolver(project_root=tmp_path, config={}, environ={})
-
         with pytest.raises(PluginNotFoundError, match="secret backend 'gcp'"):
             resolver.resolve(ref=SecretRef(name="token", backend="gcp"))
 

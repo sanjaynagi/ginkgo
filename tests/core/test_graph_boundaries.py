@@ -165,271 +165,131 @@ def _notices(collector: EventCollector) -> list[str]:
     return [event.message for event in collector.events if isinstance(event, TaskNotice)]
 
 
-class TestWrittenStrInputsAreFlagged:
+def _write_rows(path: str, rows: int) -> None:
+    Path(path).write_text("".join(f"{index}\n" for index in range(rows)), encoding="utf-8")
+
+
+def test_only_a_written_str_input_is_flagged_and_reruns(event_collector: EventCollector) -> None:
     """A file a task writes through a plain ``str`` path is flagged.
 
     Plain ``str`` path inputs are content-hashed (#281), so a task that writes
-    one invalidates its own cache entry and re-runs every time. That is
-    reported with a notice naming the fix: ``Out[file]`` or ``untracked``.
+    one invalidates its own cache entry and re-runs every time; the notice
+    names the fix (``Out[file]`` or ``untracked``). A path the task only reads,
+    or returns, stays content-tracked and silent.
+    """
+    Path("in.txt").write_text("original\n", encoding="utf-8")
+    _write_rows("rows.csv", 2)
+
+    def run() -> None:
+        evaluate(
+            (
+                append_to_log(n=3, log_path="run.log"),
+                append_to_untracked_log(n=3, log_path="untracked.log"),
+                pass_through(path="in.txt"),
+                summarise_str(coords="rows.csv", output_path="summary.csv"),
+            ),
+            event_bus=event_collector.bus,
+        )
+
+    run()
+    run()
+    Path("in.txt").write_text("changed\n", encoding="utf-8")
+    run()
+
+    assert Path("run.log").read_text(encoding="utf-8") == "ran 3\n" * 3
+    assert Path("untracked.log").read_text(encoding="utf-8") == "ran 3\n"
+    assert Path("pass_through_runs.txt").read_text(encoding="utf-8") == "ran\nran\n"
+    notices = _notices(event_collector)
+    assert notices and all("Out[file]" in notice and "run.log" in notice for notice in notices)
+
+
+def test_tracked_path_boundaries_rerun_and_only_a_str_directory_warns(
+    event_collector: EventCollector,
+) -> None:
+    """What a path handed between two tasks invalidates (#121, #281, #307).
+
+    A ``str`` or ``file`` boundary naming an existing *file* is content-hashed,
+    so a change re-runs the consumer, silently. A *directory* behind a ``str``
+    is never auto-hashed: it serves stale output and is the one shape that
+    warns, suggesting ``folder``. ``untracked`` opts out deliberately and
+    silently.
     """
 
-    def test_a_task_appending_to_a_str_log_is_flagged_and_reruns(
-        self, event_collector: EventCollector
-    ) -> None:
-        for _ in range(2):
-            evaluate(append_to_log(n=3, log_path="run.log"), event_bus=event_collector.bus)
-
-        assert Path("run.log").read_text(encoding="utf-8") == "ran 3\nran 3\n"
-        notices = _notices(event_collector)
-        assert notices and all("Out[file]" in notice for notice in notices)
-        assert "run.log" in notices[0]
-
-    def test_an_untracked_log_is_not_flagged_and_caches(
-        self, event_collector: EventCollector
-    ) -> None:
-        for _ in range(3):
-            evaluate(
-                append_to_untracked_log(n=3, log_path="run.log"), event_bus=event_collector.bus
-            )
-
-        assert Path("run.log").read_text(encoding="utf-8") == "ran 3\n"
-        assert _notices(event_collector) == []
-
-    def test_a_returned_input_the_task_only_read_stays_content_tracked(self) -> None:
-        """Returning an input path does not make it look like an output."""
-        Path("in.txt").write_text("original\n", encoding="utf-8")
-        evaluate(pass_through(path="in.txt"))
-        evaluate(pass_through(path="in.txt"))
-        Path("in.txt").write_text("changed\n", encoding="utf-8")
-        evaluate(pass_through(path="in.txt"))
-
-        assert Path("pass_through_runs.txt").read_text(encoding="utf-8") == "ran\nran\n"
-
-    def test_a_file_the_task_only_reads_is_not_flagged(
-        self, event_collector: EventCollector
-    ) -> None:
-        Path("rows.csv").write_text("0\n1\n", encoding="utf-8")
+    def run(*, rows: int, tag: str) -> None:
         evaluate(
-            summarise_str(coords="rows.csv", output_path="summary.csv"),
+            (
+                summarise_str(
+                    coords=write_rows_str(rows=rows, output_path="str.csv"),
+                    output_path="str_summary.csv",
+                ),
+                summarise_file(
+                    coords=write_rows_file(rows=rows, output_path="file.csv"),
+                    output_path="file_summary.csv",
+                ),
+                summarise_untracked(
+                    coords=write_rows_untracked(rows=rows, output_path="untracked.csv"),
+                    output_path="untracked_summary.csv",
+                ),
+                summarise_str(coords="literal.csv", output_path="literal_summary.csv"),
+                summarise_dir_str(
+                    readings=write_dir_str(tag=tag, output_dir="readings"),
+                    output_path="dir_summary.csv",
+                ),
+            ),
             event_bus=event_collector.bus,
         )
 
-        assert not any("rows.csv" in notice for notice in _notices(event_collector))
+    _write_rows("literal.csv", 3)
+    run(rows=3, tag="a")
+    _write_rows("literal.csv", 4)
+    run(rows=5, tag="b")
+
+    def summary(name: str) -> str:
+        return Path(f"{name}_summary.csv").read_text(encoding="utf-8")
+
+    assert summary("str") == "rows,5\n"  # the #121 repro
+    assert summary("file") == "rows,5\n"
+    assert summary("literal") == "rows,4\n"  # the #281 repro: a literal root input
+    assert summary("untracked") == "rows,3\n"
+    # A second file landed in the directory, but the key is still its path string.
+    assert summary("dir") == "entries,1\n"
+
+    notices = _notices(event_collector)
+    assert notices
+    for message in notices:
+        assert "write_dir_str" in message and "readings" in message and "folder" in message
 
 
-class TestFilePathBoundaryIsTracked:
-    """#121/#281 closed — a ``str`` boundary naming an existing *file* is
-    content-hashed by default now, so it no longer warns and no longer goes
-    stale."""
-
-    def test_str_boundary_is_silent(self, event_collector: EventCollector) -> None:
-        coords = write_rows_str(rows=3, output_path="rows.csv")
-        evaluate(
-            summarise_str(coords=coords, output_path="summary.csv"),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_file_boundary_is_silent(self, event_collector: EventCollector) -> None:
-        coords = write_rows_file(rows=3, output_path="rows.csv")
-        evaluate(
-            summarise_file(coords=coords, output_path="summary.csv"),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_literal_path_argument_is_not_warned_about(
-        self, event_collector: EventCollector
-    ) -> None:
-        Path("rows.csv").write_text("0\n1\n", encoding="utf-8")
-
-        evaluate(
-            summarise_str(coords="rows.csv", output_path="summary.csv"),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_str_boundary_no_longer_serves_stale_downstream_output(self) -> None:
-        """The #121 repro: the upstream task returns a path as ``str`` and the
-        consumer receives it through a plain ``str`` parameter. Before #307
-        phase 2 this stayed cached on the path string; now the content
-        change re-runs the consumer."""
-        evaluate(
-            summarise_str(
-                coords=write_rows_str(rows=3, output_path="rows.csv"),
-                output_path="summary.csv",
-            )
-        )
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
-
-        evaluate(
-            summarise_str(
-                coords=write_rows_str(rows=5, output_path="rows.csv"),
-                output_path="summary.csv",
-            )
-        )
-        assert len(Path("rows.csv").read_text(encoding="utf-8").strip().split("\n")) == 5
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,5\n"
-
-    def test_str_boundary_invalidates_on_a_literal_root_input_edit(self) -> None:
-        """#281's own repro: a literal root input, not routed through the
-        graph at all — editing the file directly must still invalidate."""
-        Path("rows.csv").write_text("0\n1\n2\n", encoding="utf-8")
-        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
-
-        Path("rows.csv").write_text("0\n1\n2\n3\n", encoding="utf-8")
-        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,4\n"
-
-    def test_file_boundary_invalidates_downstream(self) -> None:
-        evaluate(
-            summarise_file(
-                coords=write_rows_file(rows=3, output_path="rows.csv"),
-                output_path="summary.csv",
-            )
-        )
-        evaluate(
-            summarise_file(
-                coords=write_rows_file(rows=5, output_path="rows.csv"),
-                output_path="summary.csv",
-            )
-        )
-
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,5\n"
-
-
-class TestUntrackedDirectoryBoundary:
-    """The narrowed #121 case: a directory is never auto-hashed, so a ``str``
-    boundary naming one still warns — now suggesting ``folder``."""
-
-    def test_str_boundary_to_a_directory_warns_and_names_both_ends(
-        self, event_collector: EventCollector
-    ) -> None:
-        readings = write_dir_str(tag="a", output_dir="readings")
-        evaluate(
-            summarise_dir_str(readings=readings, output_path="summary.csv"),
-            event_bus=event_collector.bus,
-        )
-
-        messages = _notices(event_collector)
-        assert len(messages) == 1, messages
-        assert "write_dir_str" in messages[0]
-        assert "readings" in messages[0]
-        assert "folder" in messages[0]
-
-    def test_str_boundary_to_a_directory_serves_stale_downstream_output(self) -> None:
-        evaluate(
-            summarise_dir_str(
-                readings=write_dir_str(tag="a", output_dir="readings"),
-                output_path="summary.csv",
-            )
-        )
-        assert Path("summary.csv").read_text(encoding="utf-8") == "entries,1\n"
-
-        evaluate(
-            summarise_dir_str(
-                readings=write_dir_str(tag="b", output_dir="readings"),
-                output_path="summary.csv",
-            )
-        )
-        # A second file was added to the same directory, but the consumer's
-        # cache key is still the directory's path string only.
-        assert Path("summary.csv").read_text(encoding="utf-8") == "entries,1\n"
-
-
-class TestExplicitlyUntrackedBoundary:
-    """``untracked`` opts a path out of content tracking deliberately, and
-    never warns — the #121 notice exists to flag a *silent* trap, not a
-    declared one."""
-
-    def test_untracked_boundary_is_silent(self, event_collector: EventCollector) -> None:
-        coords = write_rows_untracked(rows=3, output_path="rows.csv")
-        evaluate(
-            summarise_untracked(coords=coords, output_path="summary.csv"),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_untracked_boundary_does_not_invalidate_on_content_change(self) -> None:
-        evaluate(
-            summarise_untracked(
-                coords=write_rows_untracked(rows=3, output_path="rows.csv"),
-                output_path="summary.csv",
-            )
-        )
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
-
-        evaluate(
-            summarise_untracked(
-                coords=write_rows_untracked(rows=5, output_path="rows.csv"),
-                output_path="summary.csv",
-            )
-        )
-        assert len(Path("rows.csv").read_text(encoding="utf-8").strip().split("\n")) == 5
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
-
-
-class TestUntrackedPathsInsideContainers:
-    """The fan-in shape: expressions nested inside a list argument."""
-
-    def test_paths_inside_a_list_argument_are_silent(
-        self, event_collector: EventCollector
-    ) -> None:
-        evaluate(
+def test_paths_nested_in_containers_are_silent(event_collector: EventCollector) -> None:
+    evaluate(
+        (
             summarise_many_str(
                 coords=[
                     write_rows_str(rows=2, output_path="a.csv"),
                     write_rows_str(rows=3, output_path="b.csv"),
                 ],
-                output_path="summary.csv",
+                output_path="list_summary.csv",
             ),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_paths_inside_a_list_of_file_are_silent(self, event_collector: EventCollector) -> None:
-        evaluate(
             summarise_many_file(
                 coords=[
-                    write_rows_file(rows=2, output_path="a.csv"),
-                    write_rows_file(rows=3, output_path="b.csv"),
+                    write_rows_file(rows=2, output_path="c.csv"),
+                    write_rows_file(rows=3, output_path="d.csv"),
                 ],
-                output_path="summary.csv",
+                output_path="file_list_summary.csv",
             ),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_paths_from_a_fan_out_are_silent(self, event_collector: EventCollector) -> None:
-        evaluate(
             summarise_many_str(
-                coords=write_rows_str(rows=2).map(output_path=["a.csv", "b.csv"]),
-                output_path="summary.csv",
+                coords=write_rows_str(rows=2).map(output_path=["e.csv", "f.csv"]),
+                output_path="fan_out_summary.csv",
             ),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_paths_inside_a_dict_argument_are_silent(
-        self, event_collector: EventCollector
-    ) -> None:
-        evaluate(
             summarise_mapping_str(
-                coords={"first": write_rows_str(rows=2, output_path="a.csv")},
-                output_path="summary.csv",
+                coords={"first": write_rows_str(rows=2, output_path="g.csv")},
+                output_path="dict_summary.csv",
             ),
-            event_bus=event_collector.bus,
-        )
+        ),
+        event_bus=event_collector.bus,
+    )
 
-        assert _notices(event_collector) == []
+    assert _notices(event_collector) == []
 
 
 class TestIsUntrackedPathValue:
@@ -513,22 +373,15 @@ class TestIsContentTrackablePathValue:
         assert is_content_trackable_path_value(annotation=annotation, value=value) is expected
 
 
-class TestIsUntrackedDirectoryValue:
+@pytest.mark.parametrize(
+    ("annotation", "value", "expected"),
+    [(str, "present_dir", True), (str, "present.csv", False), (folder, "present_dir", False)],
+)
+def test_is_untracked_directory_value(annotation: Any, value: str, expected: bool) -> None:
     """The predicate behind the narrowed evaluator notice."""
-
-    @pytest.fixture(autouse=True)
-    def existing_paths(self) -> None:
-        Path("present.csv").write_text("x\n", encoding="utf-8")
-        Path("present_dir").mkdir()
-
-    def test_directory_is_flagged(self) -> None:
-        assert is_untracked_directory_value(annotation=str, value="present_dir") is True
-
-    def test_file_is_no_longer_flagged(self) -> None:
-        assert is_untracked_directory_value(annotation=str, value="present.csv") is False
-
-    def test_folder_annotation_is_not_flagged(self) -> None:
-        assert is_untracked_directory_value(annotation=folder, value="present_dir") is False
+    Path("present.csv").write_text("x\n", encoding="utf-8")
+    Path("present_dir").mkdir()
+    assert is_untracked_directory_value(annotation=annotation, value=value) is expected
 
 
 def _validated_evaluator(build: Any) -> tuple[ConcurrentEvaluator, list[ConstructedCall]]:
@@ -544,219 +397,109 @@ def _validated_evaluator(build: Any) -> tuple[ConcurrentEvaluator, list[Construc
     return evaluator, evaluator.graph.unreachable_calls(constructed_calls)
 
 
+def _drop_one_label():
+    kept = make_label(text="kept")
+    make_label(text="dropped")
+    return kept
+
+
+def _drop_a_literal_replaced_producer():
+    """Case 2 of #122: a literal path in place of the upstream expression."""
+    write_rows_str(rows=3, output_path="rows.csv")
+    return summarise_str(coords="rows.csv", output_path="summary.csv")
+
+
+def _drop_a_fan_out():
+    make_label().map(text=["a", "b", "c"])
+    return make_label(text="kept")
+
+
+def _drop_an_empty_fan_out():
+    make_label().map(text=[])
+    return join_labels(left="a", right="b")
+
+
+def _map_one_partial_twice():
+    partial = join_labels(left="a")
+    return partial.map(right=["x"]), partial.map(right=["y"])
+
+
 class TestUnreachableCalls:
     """#122 — calls not reachable from the flow return value are dropped."""
 
-    def test_bare_call_is_dropped_from_the_graph_and_reported(self) -> None:
-        @flow
-        def main():
-            kept = make_label(text="kept")
-            make_label(text="dropped")
-            return kept
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert len(evaluator.task_nodes) == 1
-        assert [call.label for call in unreachable] == ["make_label()"]
-
-    def test_returned_calls_are_all_reachable(self) -> None:
-        @flow
-        def main():
-            return join_labels(
-                left=make_label(text="a"),
-                right=make_label(text="b"),
-            )
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert len(evaluator.task_nodes) == 3
-        assert unreachable == []
-
-    def test_calls_returned_inside_a_tuple_are_reachable(self) -> None:
-        @flow
-        def main():
-            return make_label(text="a"), make_label(text="b")
-
-        assert _validated_evaluator(main)[1] == []
-
-    def test_dropped_producer_is_reported_when_a_literal_replaces_it(self) -> None:
-        """Case 2 of #122: a literal path in place of the upstream expression."""
+    @pytest.mark.parametrize(
+        ("build", "task_count", "dropped"),
+        [
+            (_drop_one_label, 1, ["make_label()"]),
+            (_drop_a_literal_replaced_producer, 1, ["write_rows_str()"]),
+            (_drop_a_fan_out, 1, ["make_label() × 3"]),
+            # No branches were built, so no call was dropped.
+            (_drop_an_empty_fan_out, 1, []),
+            (lambda: make_label().map(text=[]), 0, []),
+            (lambda: join_labels(left=make_label(text="a"), right=make_label(text="b")), 3, []),
+            (lambda: (make_label(text="a"), make_label(text="b")), 2, []),
+            (lambda: join_labels().map(left=["a", "b"]).map(right=["x", "y"]), 4, []),
+            # #332: .map() and .product_map() complete a partial call.
+            (lambda: join_labels(left="a").map(right=["x", "y"]), 2, []),
+            (lambda: join_labels().product_map(left=["a", "b"], right=["x", "y"]), 4, []),
+            (_map_one_partial_twice, 2, []),
+        ],
+    )
+    def test_reachability(self, build: Any, task_count: int, dropped: list[str]) -> None:
         Path("rows.csv").write_text("0\n", encoding="utf-8")
 
-        @flow
-        def main():
-            write_rows_str(rows=3, output_path="rows.csv")
-            return summarise_str(coords="rows.csv", output_path="summary.csv")
+        evaluator, unreachable = _validated_evaluator(build)
 
-        evaluator, unreachable = _validated_evaluator(main)
+        assert len(evaluator.task_nodes) == task_count
+        assert [call.label for call in unreachable] == dropped
 
-        assert [call.label for call in unreachable] == ["write_rows_str()"]
-
-    def test_fan_out_branches_are_reported_as_one_call(self) -> None:
-        @flow
-        def main():
-            make_label().map(text=["a", "b", "c"])
-            return make_label(text="kept")
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert [call.label for call in unreachable] == ["make_label() × 3"]
-
-    def test_chained_map_does_not_report_superseded_branches(self) -> None:
-        @flow
-        def main():
-            return join_labels().map(left=["a", "b"]).map(right=["x", "y"])
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert len(evaluator.task_nodes) == 4
-        assert unreachable == []
-
-    def test_an_empty_fan_out_is_not_reported(self) -> None:
-        """No branches were built, so no call was dropped."""
-
-        @flow
-        def main():
-            make_label().map(text=[])
-            return join_labels(left="a", right="b")
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert unreachable == []
-
-    def test_an_empty_fan_out_returned_by_the_flow_is_not_reported(self) -> None:
-        @flow
-        def main():
-            return make_label().map(text=[])
-
-        assert _validated_evaluator(main)[1] == []
-
-    def test_diagnostics_are_warnings_that_name_the_call(self) -> None:
-        @flow
+    def test_dropped_calls_are_warnings_and_appear_in_the_dry_run_plan(self) -> None:
         def main():
             make_label(text="dropped")
-            return join_labels(left="a", right="b")
-
-        evaluator, unreachable = _validated_evaluator(main)
-        diagnostics = unreachable_call_diagnostics(calls=unreachable)
-
-        assert len(diagnostics) == 1
-        assert diagnostics[0].severity == "warning"
-        assert diagnostics[0].code == UNREACHABLE_CALL_CODE
-        assert "make_label()" in diagnostics[0].message
-        assert diagnostics[0].location.endswith("make_label")
-
-    def test_dry_run_plan_lists_dropped_calls(self) -> None:
-        @flow
-        def main():
-            make_label(text="dropped")
-            return make_label(text="kept")
-
-        evaluator, unreachable = _validated_evaluator(main)
-        plan = build_dry_run_plan(
-            evaluator=evaluator, workflow_label="workflow.py", unreachable_calls=unreachable
-        )
-
-        assert plan.task_count == 1
-        assert plan.dropped_labels == ("make_label()",)
-
-    def test_dry_run_plan_names_what_a_dropped_partial_call_is_missing(self) -> None:
-        @flow
-        def main():
             join_labels(left="a")
             return make_label(text="kept")
 
         evaluator, unreachable = _validated_evaluator(main)
+        diagnostics = unreachable_call_diagnostics(calls=unreachable)
         plan = build_dry_run_plan(
             evaluator=evaluator, workflow_label="workflow.py", unreachable_calls=unreachable
         )
 
-        assert plan.dropped_labels == ("join_labels() (missing required argument(s): right)",)
+        assert {d.severity for d in diagnostics} == {"warning"}
+        assert {d.code for d in diagnostics} == {UNREACHABLE_CALL_CODE}
+        assert diagnostics[0].location.endswith("make_label")
+        assert any("missing required argument" in d.message for d in diagnostics)
+        assert plan.task_count == 1
+        assert set(plan.dropped_labels) == {
+            "make_label()",
+            "join_labels() (missing required argument(s): right)",
+        }
 
 
 class TestPartialCalls:
     """#332 — a call missing a required argument is a ``PartialCall``, not a task."""
 
-    def test_returned_partial_call_is_a_build_error(self) -> None:
-        @flow
-        def main():
-            return join_labels(left="a")
-
-        with pytest.raises(IncompleteCallError, match=r"join_labels\(\) .*right"):
-            _validated_evaluator(main)
+    @pytest.mark.parametrize(
+        ("build", "match"),
+        [
+            (lambda: join_labels(left="a"), r"join_labels\(\) .*right"),
+            (lambda: [make_label(text="a"), make_label()], r"make_label\(\) .*text"),
+            # Consumed: the message names the consumer too.
+            (
+                lambda: join_labels(left=make_label(), right="b"),
+                r"make_label\(\)(.|\n)*text(.|\n)*join_labels\(\)",
+            ),
+        ],
+    )
+    def test_a_returned_or_consumed_partial_call_is_a_build_error(
+        self, build: Any, match: str
+    ) -> None:
+        with pytest.raises(IncompleteCallError, match=match):
+            _validated_evaluator(build)
 
     def test_returned_partial_call_fails_evaluate(self) -> None:
         with pytest.raises(IncompleteCallError, match=r"join_labels\(\) .*right"):
             evaluate(join_labels(left="a"))
-
-    def test_partial_call_inside_a_returned_container_is_a_build_error(self) -> None:
-        @flow
-        def main():
-            return [make_label(text="a"), make_label()]
-
-        with pytest.raises(IncompleteCallError, match=r"make_label\(\) .*text"):
-            _validated_evaluator(main)
-
-    def test_consumed_partial_call_is_a_build_error_naming_the_consumer(self) -> None:
-        @flow
-        def main():
-            return join_labels(left=make_label(), right="b")
-
-        with pytest.raises(IncompleteCallError) as excinfo:
-            _validated_evaluator(main)
-
-        message = str(excinfo.value)
-        assert "make_label()" in message
-        assert "text" in message
-        assert "join_labels()" in message
-
-    def test_discarded_partial_call_is_reported_as_dropped(self) -> None:
-        @flow
-        def main():
-            make_label()
-            return make_label(text="kept")
-
-        evaluator, unreachable = _validated_evaluator(main)
-        diagnostics = unreachable_call_diagnostics(calls=unreachable)
-
-        assert len(evaluator.task_nodes) == 1
-        assert [call.label for call in unreachable] == ["make_label()"]
-        assert len(diagnostics) == 1
-        assert diagnostics[0].severity == "warning"
-        assert diagnostics[0].code == UNREACHABLE_CALL_CODE
-        assert "missing required argument" in diagnostics[0].message
-        assert "text" in diagnostics[0].message
-
-    def test_map_completes_a_partial_call(self) -> None:
-        @flow
-        def main():
-            return join_labels(left="a").map(right=["x", "y"])
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert len(evaluator.task_nodes) == 2
-        assert unreachable == []
-
-    def test_product_map_completes_a_partial_call(self) -> None:
-        @flow
-        def main():
-            return join_labels().product_map(left=["a", "b"], right=["x", "y"])
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert len(evaluator.task_nodes) == 4
-        assert unreachable == []
-
-    def test_partial_call_mapped_twice_is_not_reported(self) -> None:
-        @flow
-        def main():
-            partial = join_labels(left="a")
-            return partial.map(right=["x"]), partial.map(right=["y"])
-
-        evaluator, unreachable = _validated_evaluator(main)
-
-        assert len(evaluator.task_nodes) == 2
-        assert unreachable == []
 
 
 # --------------------------------------------------------------------------
@@ -905,28 +648,36 @@ class TestOutPathEdgeInference:
         assert agg_node.node_id in rep_node.dependency_ids
         assert agg_node.node_id in rep_node.inferred_dependency_ids
         assert unreachable == []
-
-    def test_dry_run_shows_two_waves(self) -> None:
-        @flow
-        def main():
-            return aggregate(rows=3, output_path="agg.csv"), report(csv_path="agg.csv")
-
-        evaluator, unreachable = _validated_evaluator(main)
         plan = build_dry_run_plan(
             evaluator=evaluator, workflow_label="workflow.py", unreachable_calls=unreachable
         )
-
         assert plan.wave_count == 2
 
-    def test_real_run_orders_producer_before_consumer(self) -> None:
-        """The #280 repro: without the edge, ``report`` races ``aggregate``."""
-        _, count = evaluate(
+    def test_real_run_orders_producers_before_consumers(
+        self, event_collector: EventCollector
+    ) -> None:
+        """The #280 repro: without the edge, ``report`` races ``aggregate``.
+
+        ``summarise_file`` is the reverse direction: its ``file`` argument is
+        validated for existence right before dispatch, which must wait too.
+        """
+        _, count, _ = evaluate(
             (
                 aggregate(rows=5, output_path="agg.csv"),
                 report(csv_path="agg.csv"),
-            )
+                summarise_file(coords="agg.csv", output_path="summary.csv"),
+            ),
+            event_bus=event_collector.bus,
         )
+
         assert count == 5
+        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,5\n"
+        registered = [
+            event for event in event_collector.events if isinstance(event, GraphNodeRegistered)
+        ]
+        agg_event = next(event for event in registered if "aggregate" in event.task_name)
+        rep_event = next(event for event in registered if "report" in event.task_name)
+        assert agg_event.task_id in rep_event.inferred_dependency_ids
 
     def test_producer_reachable_only_via_a_separate_use_still_gets_the_edge(self) -> None:
         """Producer's Expr is not returned directly, but stays in the graph."""
@@ -1065,26 +816,6 @@ class TestOutPathEdgeInference:
         assert node.dependency_ids == frozenset()
         assert node.inferred_dependency_ids == frozenset()
 
-    def test_graph_node_registered_event_carries_the_inferred_edge(
-        self, event_collector: EventCollector
-    ) -> None:
-        evaluate(
-            (
-                aggregate(rows=2, output_path="agg.csv"),
-                report(csv_path="agg.csv"),
-            ),
-            event_bus=event_collector.bus,
-        )
-
-        registered = [
-            event for event in event_collector.events if isinstance(event, GraphNodeRegistered)
-        ]
-        agg_event = next(event for event in registered if "aggregate" in event.task_name)
-        rep_event = next(event for event in registered if "report" in event.task_name)
-
-        assert agg_event.task_id in rep_event.dependency_ids
-        assert agg_event.task_id in rep_event.inferred_dependency_ids
-
     def test_no_out_params_means_no_behaviour_change(self) -> None:
         """A graph with no ``Out[...]`` parameters is untouched by inference."""
 
@@ -1095,25 +826,6 @@ class TestOutPathEdgeInference:
         evaluator, unreachable = _validated_evaluator(main)
         for node in evaluator.graph.nodes.values():
             assert node.inferred_dependency_ids == frozenset()
-
-    def test_file_annotated_consumer_waits_for_the_out_file_producer(self) -> None:
-        """The reverse direction of #280: existence validation must wait too.
-
-        ``summarise_file`` requires its ``coords`` argument to already exist
-        (``file`` is validated at prepare time, right before dispatch). Without
-        the inferred edge this task could be prepared — and its existence
-        check run — before ``aggregate`` has written anything.
-        """
-
-        @flow
-        def main():
-            return (
-                aggregate(rows=3, output_path="agg.csv"),
-                summarise_file(coords="agg.csv", output_path="summary.csv"),
-            )
-
-        evaluate(main())
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
 
     def test_dry_run_does_not_reject_a_not_yet_existing_out_path(self) -> None:
         """Static validation must not reject a `file` input this graph produces."""
@@ -1131,18 +843,16 @@ class TestOutPathEdgeInference:
         assert len(evaluator.task_nodes) == 2
 
     def test_dynamic_expansion_infers_edges_among_newly_registered_nodes(self) -> None:
-        """A producer/consumer pair built at runtime (dynamic graph expansion)."""
-        _, count = evaluate(build_and_link(rows=4))
-        assert count == 4
+        """A producer/consumer pair built at runtime, and an expanding task whose
+        children write inside its folder: the expanding task is itself a consumer
+        of its children's paths."""
+        Path("res").mkdir()
 
-    def test_expanding_task_may_spawn_children_writing_inside_its_folder(
-        self, tmp_path: Path
-    ) -> None:
-        """The expanding task is itself a consumer of its children's paths."""
-        results_dir = tmp_path / "res"
-        results_dir.mkdir()
-        assert evaluate(spawn_into_folder(d=str(results_dir))) == (1, 2)
-        assert (results_dir / "b.txt").read_text(encoding="utf-8") == "2\n"
+        (_, count), spawned = evaluate((build_and_link(rows=4), spawn_into_folder(d="res")))
+
+        assert count == 4
+        assert spawned == (1, 2)
+        assert Path("res/b.txt").read_text(encoding="utf-8") == "2\n"
 
     def test_dynamic_producer_retroactively_gates_a_pending_consumer(self) -> None:
         """A reader registered earlier waits for a producer registered later."""

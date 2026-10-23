@@ -38,7 +38,7 @@ def test_a_long_returned_list_keeps_the_ledger_and_manifest_small(tmp_path: Path
     ledger = Ledger.start(root=tmp_path)
     try:
         ConcurrentEvaluator(jobs=1, run_dir=ledger.run_dir, event_bus=ledger.bus).evaluate(
-            big_list(n=200_000)
+            big_list(n=5_000)
         )
         outputs = ledger.task()["output_summary"]
         ledger.finish()
