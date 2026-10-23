@@ -457,8 +457,8 @@ JSON shape (`--json`):
     {
       "component": "inputs.samples",
       "status": "changed",
-      "current": {"type": "str", "sha256": "2f64dc9d…"},
-      "prior": {"type": "str", "sha256": "f7a9858a…"}
+      "current": {"type": "str", "digest": "2f64dc9d…"},
+      "prior": {"type": "str", "digest": "f7a9858a…"}
     }
   ]
 }

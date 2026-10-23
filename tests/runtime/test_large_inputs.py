@@ -70,9 +70,9 @@ def test_a_container_without_paths_hashes_as_one_digest(tmp_path: Path) -> None:
     changed = store._hash_value(annotation=list[int], value=[*range(999), -1])
     mapping = store._hash_value(annotation=dict, value={"a": [1, 2], "b": "text"})
 
-    assert set(digest) == {"sha256", "type"}
+    assert set(digest) == {"digest", "type"}
     assert digest != changed
-    assert set(mapping) == {"sha256", "type"}
+    assert set(mapping) == {"digest", "type"}
     assert store._hash_value(annotation=list, value=[1]) != store._hash_value(
         annotation=tuple, value=(1,)
     )

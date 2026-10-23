@@ -2314,23 +2314,11 @@ class ConcurrentEvaluator:
 
 
 def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Return one entry per hashed input, digests spelled ``digest``.
-
-    The cache key's own payload still says ``sha256`` — renaming it there would
-    invalidate every entry on disk for no gain — but the ledger records what
-    the value is, and it is a BLAKE3 digest.
-    """
-    entries: list[dict[str, Any]] = []
-    for param, value in (input_hashes or {}).items():
-        entry: dict[str, Any] = {"param": str(param)}
-        if isinstance(value, dict):
-            entry.update(
-                {("digest" if key == "sha256" else key): item for key, item in value.items()}
-            )
-        else:
-            entry["digest"] = value
-        entries.append(entry)
-    return entries
+    """Return one entry per hashed input: its parameter name and key component."""
+    return [
+        {"param": str(param), **(value if isinstance(value, dict) else {"digest": value})}
+        for param, value in (input_hashes or {}).items()
+    ]
 
 
 def _classify_access_method(*, value: Any) -> str:

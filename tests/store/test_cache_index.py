@@ -51,7 +51,7 @@ def _record(index: CacheIndex, cache_key: str, **overrides) -> None:
         "env_hash": {"env": "bio", "pixi_lock": "lock-1"},
         "env_materialized_digest": "sha-1",
         "inputs": {"n": 3},
-        "input_hashes": {"n": {"sha256": "h", "type": "int"}},
+        "input_hashes": {"n": {"digest": "h", "type": "int"}},
         "extra": None,
         "created_at": "2026-08-28T10:00:00+00:00",
     }
@@ -108,7 +108,7 @@ class TestEntries:
         assert entry["function"] == "pkg.produce"
         assert entry.env_materialized_digest == "sha-1"
         assert entry.artifact_ids == {"/out/a.txt": "artifact-1"}
-        assert entry["input_hashes"] == {"n": {"sha256": "h", "type": "int"}}
+        assert entry["input_hashes"] == {"n": {"digest": "h", "type": "int"}}
         assert _components(db_path, "key-1")["source_hash"] == "src-1"
 
     def test_a_missing_entry_is_none(self, index: CacheIndex, db_path: Path) -> None:

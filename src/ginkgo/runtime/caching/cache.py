@@ -66,12 +66,13 @@ come from unpickling a value whose task or class has been renamed or removed
 since it was stored.
 """
 
-_KEY_FORMAT = 2
+_KEY_FORMAT = 3
 """Version of what a cache entry holds, folded into every key.
 
 Bumped when an entry written by an older version can no longer be trusted, so
 those entries miss once instead. Format 2 stores a dynamic task's returned
-expressions rather than the value they resolved to.
+expressions rather than the value they resolved to. Format 3 names each
+component's BLAKE3 digest ``digest`` rather than ``sha256``.
 """
 
 MISSING = object()
@@ -1188,14 +1189,14 @@ class CacheStore:
                 resolved_key = str(Path(str(value)).resolve())
                 known = known_digests.get(resolved_key)
                 if known is not None:
-                    return {"sha256": known, "type": "file"}
-            return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
+                    return {"digest": known, "type": "file"}
+            return {"digest": self._hash_file_contents(Path(str(value))), "type": "file"}
 
         if annotation_includes(annotation=annotation, expected=folder) or isinstance(
             value, folder
         ):
             require_path_value(value=value, annotation_label="folder", label=label)
-            return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
+            return {"digest": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
             return self._hash_mapping(
@@ -1222,22 +1223,22 @@ class CacheStore:
             if known_digests is not None:
                 known = known_digests.get(resolved_key)
                 if known is not None:
-                    return {"sha256": known, "type": "file"}
-            return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
+                    return {"digest": known, "type": "file"}
+            return {"digest": self._hash_file_contents(Path(str(value))), "type": "file"}
 
         # Exact types only, as ``encode_value`` stores them: a subclass such as
         # ``np.float64`` is hashed by its bytes, so the fresh value and the one
         # restored from the cache hash the same.
         if value is None or type(value) in (bool, int, float, str):
             return {
-                "sha256": hash_str(repr(value)),
+                "digest": hash_str(repr(value)),
                 "type": type(value).__name__,
             }
 
         codec_name, digest = hash_value_bytes(value)
         return {
             "codec": codec_name,
-            "sha256": digest,
+            "digest": digest,
             "type": _qualified_type_name(value),
         }
 
@@ -1256,7 +1257,7 @@ class CacheStore:
                 "items": [self._hash_path_string_leaf(value=item) for item in value],
                 "type": type(value).__name__,
             }
-        return {"sha256": hash_str(repr(value)), "type": type(value).__name__}
+        return {"digest": hash_str(repr(value)), "type": type(value).__name__}
 
     def _hash_sequence(
         self,
@@ -1279,7 +1280,7 @@ class CacheStore:
             label=label,
         )
         if not names_path:
-            return {"sha256": _digest_of_tokens(items), "type": type_name}
+            return {"digest": _digest_of_tokens(items), "type": type_name}
         return {"items": items, "type": type_name}
 
     def _hash_mapping(
@@ -1304,7 +1305,7 @@ class CacheStore:
             label=label,
         )
         if not names_path:
-            return {"sha256": _digest_of_tokens(items), "type": type_name}
+            return {"digest": _digest_of_tokens(items), "type": type_name}
         return {
             "items": [
                 {"key": items[index], "value": items[index + 1]}
@@ -1632,7 +1633,7 @@ def _plain_container_hash(value: Any) -> dict[str, str]:
             tokens.append(_plain_token(item))
     else:
         tokens = [_plain_token(item) for item in value]
-    return {"sha256": _digest_of_tokens(tokens), "type": value_type.__name__}
+    return {"digest": _digest_of_tokens(tokens), "type": value_type.__name__}
 
 
 def _plain_token(value: Any) -> Any:
