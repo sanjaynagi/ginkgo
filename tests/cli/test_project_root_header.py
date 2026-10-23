@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
+
+from tests.cli.conftest import run_ok, write
 
 FLOW = """\
 from ginkgo import flow, task
@@ -22,21 +22,12 @@ def main():
 
 
 def _dry_run(cwd: Path) -> str:
-    result = subprocess.run(
-        [sys.executable, "-m", "ginkgo.cli", "run", "--dry-run"],
-        cwd=cwd,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout
+    return run_ok("run", "--dry-run", cwd=cwd).stdout
 
 
 def _project(tmp_path: Path) -> Path:
-    (tmp_path / "ginkgo.toml").write_text("", encoding="utf-8")
-    (tmp_path / "workflow").mkdir()
-    (tmp_path / "workflow" / "flow.py").write_text(FLOW, encoding="utf-8")
+    write(tmp_path / "ginkgo.toml")
+    write(tmp_path / "workflow" / "flow.py", FLOW)
     return tmp_path
 
 

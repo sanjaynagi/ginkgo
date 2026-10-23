@@ -47,19 +47,11 @@ def test_runs_show_lists_the_rendered_page(
     ledger = _run_with_a_rendered_page(root=tmp_path)
 
     assert main(["runs", "show", "run-page"]) == 0
-
     out = capsys.readouterr().out
     assert "Rendered pages" in out
     assert str((ledger.path / "notebooks" / "task_0000.html").resolve()) in out.replace("\n", "")
 
-
-def test_runs_show_json_carries_the_rendered_page(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _run_with_a_rendered_page(root=tmp_path)
-
     assert main(["runs", "show", "run-page", "--json"]) == 0
-
     (task,) = json.loads(capsys.readouterr().out)["tasks"]
     assert task["rendered_html"] == "notebooks/task_0000.html"
     assert task["rendered_html_run_id"] == "run-page"

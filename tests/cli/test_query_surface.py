@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 import yaml
+from rich.console import Console
 
 import ginkgo.query as query
+from ginkgo.cli.commands.history import _table
 from ginkgo.workspace_layout import WorkspaceLayout
-
-PYTHON = Path(sys.executable)
+from tests.cli.conftest import write
+from tests.conftest import run_cli
 
 WORKFLOW = """
 from pathlib import Path
@@ -30,41 +30,38 @@ def main():
 """
 
 
-def _run_cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", *args],
-        cwd=cwd or Path.cwd(),
-        check=False,
-        text=True,
-        capture_output=True,
-    )
+def _ok(*args: str, cwd: Path) -> str:
+    result = run_cli(*args, cwd=cwd)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
 
 
-@pytest.fixture(scope="class")
-def workspace(tmp_path_factory) -> Path:
-    """Build a workspace by running one workflow twice, so the second run is cached."""
-    root = tmp_path_factory.mktemp("workspace")
-    (root / "workflow.py").write_text(WORKFLOW.strip() + "\n", encoding="utf-8")
-    for _ in range(2):
-        result = _run_cli("run", "workflow.py", cwd=root)
-        assert result.returncode == 0, result.stderr
+def _json(*args: str, cwd: Path):
+    return json.loads(_ok(*args, "--json", cwd=cwd))
+
+
+def _workspace(root: Path, source: str, *args: str, code: int = 0, runs: int = 1) -> Path:
+    write(root / "workflow.py", source)
+    for _ in range(runs):
+        assert run_cli("run", "workflow.py", *args, cwd=root).returncode == code
     return root
 
 
-@pytest.fixture(scope="class")
+@pytest.fixture(scope="module")
+def workspace(tmp_path_factory) -> Path:
+    """A workspace that ran one workflow twice, so the second run is cached."""
+    return _workspace(tmp_path_factory.mktemp("workspace"), WORKFLOW, runs=2)
+
+
+@pytest.fixture(scope="module")
 def run_ids(workspace: Path) -> list[str]:
-    """Return the workspace's run ids, newest first."""
-    result = _run_cli("runs", "ls", "--json", cwd=workspace)
-    assert result.returncode == 0, result.stderr
-    return [row["run_id"] for row in json.loads(result.stdout)]
+    """The workspace's run ids, newest first."""
+    return [row["run_id"] for row in _json("runs", "ls", cwd=workspace)]
 
 
 class TestRunsAndHistory:
-    def test_runs_ls_json_lists_both_runs_newest_first(self, workspace: Path) -> None:
-        result = _run_cli("runs", "ls", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
+    def test_runs_ls(self, workspace: Path, run_ids) -> None:
+        payload = _json("runs", "ls", cwd=workspace)
         assert len(payload) == 2
         assert [row["status"] for row in payload] == ["succeeded", "succeeded"]
         assert all(row["workflow"].endswith("workflow.py") for row in payload)
@@ -80,58 +77,41 @@ class TestRunsAndHistory:
             "parent_run_id",
         }
 
-    def test_runs_ls_filters_narrow_the_index(self, workspace: Path, run_ids) -> None:
-        limited = _run_cli("runs", "ls", "--limit", "1", "--json", cwd=workspace)
-        assert [row["run_id"] for row in json.loads(limited.stdout)] == run_ids[:1]
+        def ids(*args: str) -> list[str]:
+            return [row["run_id"] for row in _json("runs", "ls", *args, cwd=workspace)]
 
-        missed = _run_cli("runs", "ls", "--status", "failed", "--json", cwd=workspace)
-        assert json.loads(missed.stdout) == []
+        assert ids("--limit", "1") == run_ids[:1]
+        assert ids("--status", "failed") == []
+        assert ids("--workflow", "workflow.py") == run_ids
+        assert ids("--workflow", "%") == []  # matched literally, not as a LIKE wildcard
+        assert ids("--since", "2000-01-01") == run_ids
 
-        matched = _run_cli("runs", "ls", "--workflow", "workflow.py", "--json", cwd=workspace)
-        assert len(json.loads(matched.stdout)) == 2
-
-    def test_runs_ls_table_names_the_workflow_file(self, workspace: Path) -> None:
-        result = _run_cli("runs", "ls", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo runs" in result.stdout
-        assert "workflow.py" in result.stdout
+        table = _ok("runs", "ls", cwd=workspace)
+        assert "🌿 ginkgo runs" in table and "workflow.py" in table
+        bad_since = run_cli("runs", "ls", "--since", "last tuesday", cwd=workspace)
+        assert bad_since.returncode == 1
+        assert "not an ISO-8601 timestamp" in bad_since.stderr
 
     def test_runs_show_json_is_the_run_manifest(self, workspace: Path, run_ids) -> None:
-        result = _run_cli("runs", "show", run_ids[0], "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["run_id"] == run_ids[0]
-        assert payload["status"] == "succeeded"
+        payload = _json("runs", "show", run_ids[0], cwd=workspace)
+        assert (payload["run_id"], payload["status"]) == (run_ids[0], "succeeded")
         assert [task["status"] for task in payload["tasks"]] == ["cached"]
+        manifest = workspace / ".ginkgo" / "runs" / run_ids[0] / "manifest.yaml"
+        assert payload == json.loads(json.dumps(yaml.safe_load(manifest.read_text())))
+        # Without a run id, the latest run.
+        assert _json("runs", "show", cwd=workspace)["run_id"] == run_ids[0]
 
-        written = yaml.safe_load(
-            (workspace / ".ginkgo" / "runs" / run_ids[0] / "manifest.yaml").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert payload == json.loads(json.dumps(written))
+        inspect = run_cli("inspect", "run", run_ids[0], cwd=workspace)
+        assert inspect.returncode == 2
+        assert "invalid choice: 'run'" in inspect.stderr
 
-    def test_runs_show_without_a_run_id_takes_the_latest(self, workspace: Path, run_ids) -> None:
-        result = _run_cli("runs", "show", "--json", cwd=workspace)
-
-        assert json.loads(result.stdout)["run_id"] == run_ids[0]
-
-    def test_inspect_no_longer_answers_for_a_run(self, workspace: Path, run_ids) -> None:
-        result = _run_cli("inspect", "run", run_ids[0], cwd=workspace)
-
-        assert result.returncode == 2
-        assert "invalid choice: 'run'" in result.stderr
-
-    def test_history_json_has_one_row_per_run(self, workspace: Path, run_ids) -> None:
-        result = _run_cli("history", "greet", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
+    def test_history(self, workspace: Path, run_ids) -> None:
+        payload = _json("history", "greet", cwd=workspace)
         assert [row["run_id"] for row in payload] == run_ids
-        assert [row["cached"] for row in payload] == [True, False]
-        assert [row["status"] for row in payload] == ["cached", "succeeded"]
+        assert [(row["cached"], row["status"]) for row in payload] == [
+            (True, "cached"),
+            (False, "succeeded"),
+        ]
         # The second run hit the entry the first one wrote.
         assert payload[0]["cache_key"] == payload[1]["cache_key"]
         assert {(row["task_name"], row["qualified_name"]) for row in payload} == {
@@ -139,32 +119,21 @@ class TestRunsAndHistory:
         }
         assert all(row["attempts"] == 1 for row in payload)
         assert payload[1]["duration_s"] >= 0
+        # The cached run's row is present, and null where it measured nothing.
+        assert payload[0]["peak_rss_bytes"] is None and payload[0]["cpu_seconds"] is None
+        assert payload[1]["peak_rss_bytes"] is not None
 
-    def test_history_limit_is_honoured(self, workspace: Path, run_ids) -> None:
-        result = _run_cli("history", "greet", "--limit", "1", "--json", cwd=workspace)
+        limited = _json("history", "greet", "--limit", "1", cwd=workspace)
+        assert [row["run_id"] for row in limited] == run_ids[:1]
+        # `history "%"` asks for a task called `%`, not for every task.
+        assert _json("history", "%", cwd=workspace) == []
 
-        assert [row["run_id"] for row in json.loads(result.stdout)] == run_ids[:1]
-
-    def test_history_table_shows_a_cache_key_prefix(self, workspace: Path) -> None:
-        result = _run_cli("history", "greet", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert "Cache Key" in result.stdout
-        assert "Attempts" in result.stdout
-
-    def test_history_names_the_task_in_its_own_column(self, workspace: Path) -> None:
-        result = _run_cli("history", "greet", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert "Task" in result.stdout
-        assert "greet" in result.stdout
+        table = _ok("history", "greet", cwd=workspace)
+        assert "Cache Key" in table and "Attempts" in table and "Task" in table
+        assert "No run has a task named absent." in _ok("history", "absent", cwd=workspace)
 
     def test_history_table_keeps_a_fan_out_label(self) -> None:
         """`[central]` is a label, not Rich markup; the table must print it."""
-        from rich.console import Console
-
-        from ginkgo.cli.commands.history import _table
-
         row = query.TaskRow(
             run_id="r1",
             task_id="task_0001",
@@ -180,289 +149,124 @@ class TestRunsAndHistory:
         )
         console = Console(record=True, width=200)
         console.print(_table([row]))
-
         assert "report[central]" in console.export_text()
 
-    def test_history_resources_summarises_across_runs(self, workspace: Path) -> None:
+    def test_history_resources_summarises_across_runs(self, workspace: Path, run_ids) -> None:
         """The workspace ran twice: once for real, once from the cache."""
-        result = _run_cli("history", "greet", "--resources", cwd=workspace)
+        text = _ok("history", "greet", "--resources", cwd=workspace)
+        assert "Peak RSS over 1 execution" in text and "(2 runs, 1 cached)" in text
 
-        assert result.returncode == 0, result.stderr
-        assert "Peak RSS over 1 execution" in result.stdout
-        assert "(2 runs, 1 cached)" in result.stdout
-
-    def test_history_resources_json_carries_the_aggregate_beside_the_rows(
-        self, workspace: Path, run_ids
-    ) -> None:
-        result = _run_cli("history", "greet", "--resources", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
+        payload = _json("history", "greet", "--resources", cwd=workspace)
         assert payload["task"] == "greet"
         assert [row["run_id"] for row in payload["runs"]] == run_ids
         summary = payload["resources"][0]
-        assert summary["n"] == 1
-        assert summary["cached"] == 1
-        assert summary["runs"] == 2
+        assert (summary["n"], summary["cached"], summary["runs"]) == (1, 1, 2)
         assert summary["peak_rss_bytes"]["max"] >= 0
 
-    def test_a_cache_hit_carries_no_measurement(self, workspace: Path) -> None:
-        """The cached run's row is present, and null where it measured nothing."""
-        result = _run_cli("history", "greet", "--json", cwd=workspace)
-
-        payload = json.loads(result.stdout)
-        cached_row, executed_row = payload[0], payload[1]
-        assert cached_row["cached"] is True
-        assert cached_row["peak_rss_bytes"] is None
-        assert cached_row["cpu_seconds"] is None
-        assert executed_row["peak_rss_bytes"] is not None
-
-    def test_history_json_without_resources_is_still_a_bare_list(self, workspace: Path) -> None:
-        """The aggregate is opt-in; existing consumers keep their array."""
-        result = _run_cli("history", "greet", "--json", cwd=workspace)
-
-        assert isinstance(json.loads(result.stdout), list)
-
-    def test_the_aggregate_covers_all_history_not_the_printed_window(
-        self, workspace: Path
-    ) -> None:
-        """A p95 that moved with --limit would be a p95 of nothing in particular."""
-        result = _run_cli(
-            "history", "greet", "--resources", "--limit", "1", "--json", cwd=workspace
-        )
-
-        payload = json.loads(result.stdout)
-        assert len(payload["runs"]) == 1
-        assert payload["resources"][0]["runs"] == 2
-
-    def test_a_like_wildcard_is_matched_literally(self, workspace: Path) -> None:
-        """`history "%"` asks for a task called `%`, not for every task."""
-        result = _run_cli("history", "%", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == []
-
-    def test_runs_ls_workflow_filter_matches_literally(self, workspace: Path) -> None:
-        result = _run_cli("runs", "ls", "--workflow", "%", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == []
-
-    def test_runs_ls_rejects_a_since_that_is_not_a_timestamp(self, workspace: Path) -> None:
-        result = _run_cli("runs", "ls", "--since", "last tuesday", cwd=workspace)
-
-        assert result.returncode == 1
-        assert "not an ISO-8601 timestamp" in result.stderr
-
-    def test_runs_ls_since_accepts_a_bare_date(self, workspace: Path) -> None:
-        result = _run_cli("runs", "ls", "--since", "2000-01-01", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert len(json.loads(result.stdout)) == 2
-
-    def test_history_of_an_unknown_task_is_an_answer(self, workspace: Path) -> None:
-        result = _run_cli("history", "absent", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert "No run has a task named absent." in result.stdout
+        # A p95 that moved with --limit would be a p95 of nothing in particular.
+        limited = _json("history", "greet", "--resources", "--limit", "1", cwd=workspace)
+        assert len(limited["runs"]) == 1 and limited["resources"][0]["runs"] == 2
 
 
 class TestQueryVerb:
-    def test_json_rows_carry_column_names(self, workspace: Path, run_ids) -> None:
-        result = _run_cli(
-            "query",
-            "SELECT run_id, status FROM runs ORDER BY started_at DESC",
-            "--json",
-            cwd=workspace,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == {
+    def test_rows_csv_and_truncation(self, workspace: Path, run_ids) -> None:
+        statement = "SELECT run_id, status FROM runs ORDER BY started_at DESC"
+        assert _json("query", statement, cwd=workspace) == {
             "columns": ["run_id", "status"],
             "rows": [{"run_id": run_id, "status": "succeeded"} for run_id in run_ids],
             "truncated": False,
             "limit": 1000,
         }
+        assert _ok("query", "SELECT status FROM runs", "--csv", cwd=workspace).splitlines() == [
+            "status",
+            "succeeded",
+            "succeeded",
+        ]
+        assert len(_json("query", "VALUES(1),(2)", cwd=workspace)["rows"]) == 2
 
-    def test_csv_leads_with_a_header(self, workspace: Path) -> None:
-        result = _run_cli("query", "SELECT status FROM runs", "--csv", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.splitlines() == ["status", "succeeded", "succeeded"]
-
-    def test_the_limit_truncates_and_says_so(self, workspace: Path) -> None:
-        result = _run_cli("query", "SELECT run_id FROM runs", "--limit", "1", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert "Stopped at 1 rows" in result.stdout
-
-    def test_json_carries_the_truncation_signal(self, workspace: Path) -> None:
-        result = _run_cli(
-            "query", "SELECT run_id FROM runs", "--limit", "1", "--json", cwd=workspace
-        )
-
-        payload = json.loads(result.stdout)
-        assert payload["truncated"] is True
-        assert payload["limit"] == 1
-        assert len(payload["rows"]) == 1
-
-    def test_csv_keeps_stdout_clean_and_warns_on_stderr(self, workspace: Path) -> None:
-        result = _run_cli(
-            "query", "SELECT run_id FROM runs", "--limit", "1", "--csv", cwd=workspace
-        )
-
-        assert result.returncode == 0
-        # stdout stays CSV a spreadsheet can open; the warning goes elsewhere.
-        assert len(result.stdout.splitlines()) == 2
-        assert "Stopped at 1 rows" in result.stderr
-        assert "Stopped at" not in result.stdout
+        limited = ("query", "SELECT run_id FROM runs", "--limit", "1")
+        assert "Stopped at 1 rows" in _ok(*limited, cwd=workspace)
+        payload = _json(*limited, cwd=workspace)
+        assert (payload["truncated"], payload["limit"], len(payload["rows"])) == (True, 1, 1)
+        # CSV stdout stays something a spreadsheet can open; the warning goes elsewhere.
+        csv = run_cli(*limited, "--csv", cwd=workspace)
+        assert len(csv.stdout.splitlines()) == 2 and "Stopped at" not in csv.stdout
+        assert "Stopped at 1 rows" in csv.stderr
 
     @pytest.mark.parametrize(
-        "statement",
+        ("statement", "phrases"),
         [
-            "DELETE FROM runs",
-            "UPDATE runs SET status = 'x'",
-            "PRAGMA table_list",
-            "WITH t AS (SELECT 1) DELETE FROM runs",
+            ("DELETE FROM runs", ["is not a read"]),
+            ("UPDATE runs SET status = 'x'", ["is not a read"]),
+            ("PRAGMA table_list", ["is not a read"]),
+            ("WITH t AS (SELECT 1) DELETE FROM runs", ["is not a read"]),
+            ("SELECT 1; DELETE FROM runs", ["more than one statement"]),
+            ("SELECT nope FROM runs", ["no such column: nope"]),
+            (
+                "SELECT task_name FROM tasks",
+                ["tasks has run_id, task_id", "`ginkgo query --schema` lists every table."],
+            ),
+            ("SELECT name FROM task_runs", ["no such table: task_runs", "The tables are"]),
         ],
     )
-    def test_a_write_is_refused_by_name(self, workspace: Path, statement: str) -> None:
-        result = _run_cli("query", statement, cwd=workspace)
-
-        assert result.returncode == 1
-        assert "is not a read" in result.stderr
-
-    def test_a_second_statement_is_refused(self, workspace: Path) -> None:
-        result = _run_cli("query", "SELECT 1; DELETE FROM runs", cwd=workspace)
-
-        assert result.returncode == 1
-        assert "more than one statement" in result.stderr
-
-    def test_an_unknown_column_is_reported(self, workspace: Path) -> None:
-        result = _run_cli("query", "SELECT nope FROM runs", cwd=workspace)
-
-        assert result.returncode == 1
-        assert "no such column: nope" in result.stderr
-
-    def test_a_rejected_query_lists_the_columns_it_could_have_had(self, workspace: Path) -> None:
-        result = _run_cli("query", "SELECT task_name FROM tasks", cwd=workspace)
-
+    def test_a_rejected_statement_says_why(
+        self, workspace: Path, statement: str, phrases: list[str]
+    ) -> None:
+        result = run_cli("query", statement, cwd=workspace)
         assert result.returncode == 1
         message = " ".join(result.stderr.split())
-        assert "tasks has run_id, task_id" in message
-        assert "`ginkgo query --schema` lists every table." in message
+        assert all(phrase in message for phrase in phrases)
         # The old error sent people to docs that are not published.
         assert "documentation" not in message
+        assert _json("query", "SELECT count(*) AS n FROM runs", cwd=workspace)["rows"] == [
+            {"n": 2}
+        ]
 
-    def test_a_rejected_table_lists_the_tables_there_are(self, workspace: Path) -> None:
-        result = _run_cli("query", "SELECT name FROM task_runs", cwd=workspace)
+    def test_schema(self, workspace: Path) -> None:
+        printed = " ".join(_ok("query", "--schema", cwd=workspace).split())
+        assert "tasks" in printed and "display_label" in printed and "parent_run_id" in printed
+        schema = _json("query", "--schema", cwd=workspace)
+        assert schema["runs"][0] == "run_id" and "name" in schema["tasks"]
 
-        assert result.returncode == 1
-        message = " ".join(result.stderr.split())
-        assert "no such table: task_runs" in message
-        assert "The tables are" in message and "tasks" in message
-
-    def test_schema_prints_the_tables_and_their_columns(self, workspace: Path) -> None:
-        result = _run_cli("query", "--schema", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        printed = " ".join(result.stdout.split())
-        assert "tasks" in printed and "display_label" in printed
-        assert "runs" in printed and "parent_run_id" in printed
-
-    def test_schema_as_json_maps_tables_to_columns(self, workspace: Path) -> None:
-        result = _run_cli("query", "--schema", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        schema = json.loads(result.stdout)
-        assert schema["runs"][0] == "run_id"
-        assert "name" in schema["tasks"]
-
-    def test_no_statement_and_no_schema_says_what_to_pass(self, workspace: Path) -> None:
-        result = _run_cli("query", cwd=workspace)
-
-        assert result.returncode == 2
-        assert "--schema" in result.stderr
-
-    def test_values_without_a_space_is_a_read(self, workspace: Path) -> None:
-        result = _run_cli("query", "VALUES(1),(2)", "--json", cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert len(json.loads(result.stdout)["rows"]) == 2
-
-    def test_a_refused_write_left_the_ledger_alone(self, workspace: Path) -> None:
-        _run_cli("query", "DELETE FROM runs", cwd=workspace)
-
-        counted = _run_cli("query", "SELECT count(*) AS n FROM runs", "--json", cwd=workspace)
-
-        assert json.loads(counted.stdout)["rows"] == [{"n": 2}]
+        missing = run_cli("query", cwd=workspace)
+        assert missing.returncode == 2 and "--schema" in missing.stderr
 
 
 class TestExport:
-    def test_events_round_trip_and_match_the_ledger(self, workspace: Path, run_ids) -> None:
-        result = _run_cli("export", "events", run_ids[0], cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        lines = result.stdout.splitlines()
-        payloads = [json.loads(line) for line in lines]
-
+    def test_events_round_trip_and_match_the_ledger(
+        self, workspace: Path, run_ids, tmp_path: Path
+    ) -> None:
+        piped = _ok("export", "events", run_ids[0], cwd=workspace)
+        payloads = [json.loads(line) for line in piped.splitlines()]
         with query.open(WorkspaceLayout(root=workspace / ".ginkgo")) as reader:
-            expected = [event.payload for event in reader.events(run_ids[0])]
-        assert payloads == expected
+            assert payloads == [event.payload for event in reader.events(run_ids[0])]
         assert payloads[0]["event"] == "run_started"
         assert all(payload["run_id"] == run_ids[0] for payload in payloads)
 
-    def test_events_out_writes_the_same_bytes(self, workspace: Path, run_ids, tmp_path) -> None:
         destination = tmp_path / "events.jsonl"
+        _ok("export", "events", run_ids[0], "--out", str(destination), cwd=workspace)
+        assert destination.read_text(encoding="utf-8") == piped
 
-        written = _run_cli(
-            "export", "events", run_ids[0], "--out", str(destination), cwd=workspace
-        )
-        piped = _run_cli("export", "events", run_ids[0], cwd=workspace)
-
-        assert written.returncode == 0, written.stderr
-        assert destination.read_text(encoding="utf-8") == piped.stdout
-
-    def test_manifest_equals_the_file_the_run_wrote(self, workspace: Path, run_ids) -> None:
-        result = _run_cli("export", "manifest", run_ids[0], cwd=workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == (
-            workspace / ".ginkgo" / "runs" / run_ids[0] / "manifest.yaml"
-        ).read_text(encoding="utf-8")
-
-    def test_manifest_out_writes_the_same_document(
-        self, workspace: Path, run_ids, tmp_path
+    def test_manifest_equals_the_file_the_run_wrote(
+        self, workspace: Path, run_ids, tmp_path: Path
     ) -> None:
+        written = (workspace / ".ginkgo" / "runs" / run_ids[0] / "manifest.yaml").read_text()
+        assert _ok("export", "manifest", run_ids[0], cwd=workspace) == written
         destination = tmp_path / "nested" / "manifest.yaml"
-
-        result = _run_cli(
-            "export", "manifest", run_ids[0], "--out", str(destination), cwd=workspace
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert destination.read_text(encoding="utf-8") == (
-            workspace / ".ginkgo" / "runs" / run_ids[0] / "manifest.yaml"
-        ).read_text(encoding="utf-8")
+        _ok("export", "manifest", run_ids[0], "--out", str(destination), cwd=workspace)
+        assert destination.read_text(encoding="utf-8") == written
 
     @pytest.mark.parametrize("subcommand", ["events", "manifest"])
     def test_out_writes_atomically_into_a_new_directory(
-        self, workspace: Path, run_ids, tmp_path, subcommand: str
+        self, workspace: Path, run_ids, tmp_path: Path, subcommand: str
     ) -> None:
         """Both exports land the same way: a temporary file, renamed over."""
         destination = tmp_path / subcommand / "export.out"
-
-        result = _run_cli(
-            "export", subcommand, run_ids[0], "--out", str(destination), cwd=workspace
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert destination.is_file()
+        _ok("export", subcommand, run_ids[0], "--out", str(destination), cwd=workspace)
         assert list(destination.parent.iterdir()) == [destination]
 
     def test_an_unknown_run_is_reported(self, workspace: Path) -> None:
-        result = _run_cli("export", "events", "no-such-run", cwd=workspace)
-
+        result = run_cli("export", "events", "no-such-run", cwd=workspace)
         assert result.returncode == 1
         assert "Run not found: no-such-run" in result.stderr
 
@@ -472,217 +276,133 @@ class TestEmptyWorkspace:
 
     @pytest.fixture
     def empty(self, tmp_path: Path) -> Path:
-        (tmp_path / "ginkgo.toml").write_text("", encoding="utf-8")
+        write(tmp_path / "ginkgo.toml")
         return tmp_path
 
-    def test_runs_ls_is_an_empty_list(self, empty: Path) -> None:
-        result = _run_cli("runs", "ls", "--json", cwd=empty)
+    def test_every_read_verb_answers_without_creating_a_database(self, empty: Path) -> None:
+        assert _json("runs", "ls", cwd=empty) == []
+        assert _json("history", "greet", cwd=empty) == []
+        selected = _json("query", "SELECT run_id FROM runs", cwd=empty)
+        assert (selected["rows"], selected["columns"]) == ([], ["run_id"])
+        assert "name" in _json("query", "--schema", cwd=empty)["tasks"]
+        listed = _ok("runs", "ls", cwd=empty)
+        assert "No runs recorded in this workspace." in listed and "no database" not in listed
 
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == []
-
-    def test_history_is_an_empty_list(self, empty: Path) -> None:
-        result = _run_cli("history", "greet", "--json", cwd=empty)
-
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == []
-
-    def test_query_selects_no_rows(self, empty: Path) -> None:
-        result = _run_cli("query", "SELECT run_id FROM runs", "--json", cwd=empty)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["rows"] == []
-        assert payload["columns"] == ["run_id"]
-
-    def test_schema_answers_before_anything_has_been_run(self, empty: Path) -> None:
-        result = _run_cli("query", "--schema", "--json", cwd=empty)
-
-        assert result.returncode == 0, result.stderr
-        assert "name" in json.loads(result.stdout)["tasks"]
-
-    def test_a_write_is_refused_the_same_way_as_on_a_real_ledger(self, empty: Path) -> None:
-        result = _run_cli("query", "WITH t AS (SELECT 1) DELETE FROM runs", cwd=empty)
-
-        assert result.returncode == 1
-        assert "is not a read" in result.stderr
-
-    def test_export_names_the_missing_database(self, empty: Path) -> None:
-        result = _run_cli("export", "events", cwd=empty)
-
-        assert result.returncode == 1
-        assert "No runs recorded" in result.stderr
-
-    def test_runs_ls_says_nothing_has_run(self, empty: Path) -> None:
-        """The reassuring answer, for the workspace it is true of."""
-        result = _run_cli("runs", "ls", cwd=empty)
-
-        assert result.returncode == 0, result.stderr
-        assert "No runs recorded in this workspace." in result.stdout
-        assert "no database" not in result.stdout
+        refused = run_cli("query", "WITH t AS (SELECT 1) DELETE FROM runs", cwd=empty)
+        assert refused.returncode == 1 and "is not a read" in refused.stderr
+        exported = run_cli("export", "events", cwd=empty)
+        assert exported.returncode == 1 and "No runs recorded" in exported.stderr
+        for args in (("runs", "show"), ("history", "greet"), ("export", "manifest")):
+            run_cli(*args, cwd=empty)
+        assert not (empty / ".ginkgo").exists()
 
     def test_runs_ls_warns_when_run_directories_outlived_the_ledger(self, empty: Path) -> None:
         """An empty listing must not affirm an empty workspace (issue #282)."""
         (empty / ".ginkgo" / "runs" / "20260101_000000_000000_deadbeef").mkdir(parents=True)
-
-        result = _run_cli("runs", "ls", cwd=empty)
-
-        assert result.returncode == 0, result.stderr
-        assert "1 run directory under .ginkgo/runs but no database" in result.stdout
+        assert "1 run directory under .ginkgo/runs but no database" in _ok("runs", "ls", cwd=empty)
         assert not (empty / ".ginkgo" / "ginkgo.db").exists()
-
-    def test_no_read_verb_created_a_database(self, empty: Path) -> None:
-        for args in (
-            ("runs", "ls"),
-            ("runs", "show"),
-            ("history", "greet"),
-            ("query", "SELECT 1"),
-            ("query", "--schema"),
-            ("export", "events"),
-            ("export", "manifest"),
-        ):
-            _run_cli(*args, cwd=empty)
-
-        assert not (empty / ".ginkgo").exists()
 
 
 def test_the_agent_stream_and_the_export_share_a_wire_shape(tmp_path: Path) -> None:
     """``export events`` replays what ``run --agent-output`` printed live."""
-    (tmp_path / "workflow.py").write_text(WORKFLOW.strip() + "\n", encoding="utf-8")
-
-    live = _run_cli("run", "workflow.py", "--agent-output", cwd=tmp_path)
-    assert live.returncode == 0, live.stderr
-    streamed = [json.loads(line) for line in live.stdout.splitlines() if line.strip()]
-    run_id = streamed[0]["run_id"]
-
-    exported = _run_cli("export", "events", run_id, cwd=tmp_path)
-    assert exported.returncode == 0, exported.stderr
-    replayed = [json.loads(line) for line in exported.stdout.splitlines()]
+    write(tmp_path / "workflow.py", WORKFLOW)
+    streamed = [
+        json.loads(line)
+        for line in _ok("run", "workflow.py", "--agent-output", cwd=tmp_path).splitlines()
+        if line.strip()
+    ]
+    exported = _ok("export", "events", streamed[0]["run_id"], cwd=tmp_path)
+    replayed = {(e["event"], e["ts"]): e for e in map(json.loads, exported.splitlines())}
 
     # The stream carries events the ledger does not store, and the ledger holds
-    # the run's completion, which the stream printed after this comparison
-    # point. What both hold is identical.
-    by_key = {(event["event"], event["ts"]): event for event in replayed}
-    shared = [event for event in streamed if (event["event"], event["ts"]) in by_key]
+    # the run's completion, printed after this point. What both hold is identical.
+    shared = [event for event in streamed if (event["event"], event["ts"]) in replayed]
     assert shared, "no event reached both the live stream and the export"
-    for event in shared:
-        assert by_key[(event["event"], event["ts"])] == event
+    assert all(replayed[(event["event"], event["ts"])] == event for event in shared)
 
 
-class TestHistoryOfBlockedTask:
-    @pytest.fixture(scope="class")
-    def blocked_workspace(self, tmp_path_factory) -> Path:
-        """Build a workspace whose run failed upstream of ``after``, so it never started."""
-        root = tmp_path_factory.mktemp("blocked")
-        (root / "workflow.py").write_text(
-            "from ginkgo import flow, task\n\n"
-            "@task()\n"
-            "def bad() -> int:\n"
-            '    raise RuntimeError("boom")\n\n'
-            "@task()\n"
-            "def after(x: int) -> int:\n"
-            "    return x\n\n"
-            "@flow\n"
-            "def main():\n"
-            "    return after(x=bad())\n",
-            encoding="utf-8",
-        )
-        assert _run_cli("run", "workflow.py", cwd=root).returncode == 1
-        return root
+def test_history_of_a_task_that_never_started(tmp_path: Path) -> None:
+    root = _workspace(
+        tmp_path,
+        """
+        from ginkgo import flow, task
 
-    def test_a_task_that_never_started_is_not_listed(self, blocked_workspace: Path) -> None:
-        result = _run_cli("history", "after", "--json", cwd=blocked_workspace)
+        @task()
+        def bad() -> int:
+            raise RuntimeError("boom")
 
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == []
+        @task()
+        def after(x: int) -> int:
+            return x
 
-    def test_include_unstarted_lists_it(self, blocked_workspace: Path) -> None:
-        result = _run_cli(
-            "history", "after", "--include-unstarted", "--json", cwd=blocked_workspace
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert [row["status"] for row in json.loads(result.stdout)] == ["skipped"]
-
-    def test_the_resource_aggregate_skips_it_too(self, blocked_workspace: Path) -> None:
-        result = _run_cli("history", "after", "--resources", "--json", cwd=blocked_workspace)
-
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout)["resources"][0]["runs"] == 0
+        @flow
+        def main():
+            return after(x=bad())
+        """,
+        code=1,
+    )
+    assert _json("history", "after", cwd=root) == []
+    unstarted = _json("history", "after", "--include-unstarted", cwd=root)
+    assert [row["status"] for row in unstarted] == ["skipped"]
+    assert _json("history", "after", "--resources", cwd=root)["resources"][0]["runs"] == 0
 
 
-class TestFailedFanOutRun:
-    """A run whose result was lost to one fan-out branch failing."""
+def test_a_failed_fan_out_run_names_the_failed_branch(tmp_path: Path) -> None:
+    # 3: the run continued past the failure, then lost its result to it.
+    root = _workspace(
+        tmp_path,
+        """
+        from ginkgo import flow, task
 
-    @pytest.fixture(scope="class")
-    def failed_workspace(self, tmp_path_factory) -> Path:
-        root = tmp_path_factory.mktemp("failed")
-        (root / "workflow.py").write_text(
-            "from ginkgo import flow, task\n\n"
-            "@task()\n"
-            "def check(item: str) -> str:\n"
-            "    if item == 'omega':\n"
-            '        raise ValueError("bad seed")\n'
-            "    return item\n\n"
-            "@task()\n"
-            "def gather(items: list[str]) -> int:\n"
-            "    return len(items)\n\n"
-            "@flow\n"
-            "def main():\n"
-            "    return gather(items=check().map(item=['alpha', 'omega']))\n",
-            encoding="utf-8",
-        )
-        # 3: the run continued past the failure, then lost its result to it.
-        assert _run_cli("run", "workflow.py", "--keep-going", cwd=root).returncode == 3
-        return root
+        @task()
+        def check(item: str) -> str:
+            if item == "omega":
+                raise ValueError("bad seed")
+            return item
 
-    def test_runs_show_names_the_failed_branch_by_its_full_label(
-        self, failed_workspace: Path
-    ) -> None:
-        shown = _run_cli("runs", "show", cwd=failed_workspace)
-        recorded = json.loads(_run_cli("runs", "show", "--json", cwd=failed_workspace).stdout)
+        @task()
+        def gather(items: list[str]) -> int:
+            return len(items)
 
-        assert "check[omega]" in recorded["error"]
-        assert recorded["error"] in " ".join(shown.stdout.split())
+        @flow
+        def main():
+            return gather(items=check().map(item=["alpha", "omega"]))
+        """,
+        "--keep-going",
+        code=3,
+    )
+    recorded = _json("runs", "show", cwd=root)
+    assert "check[omega]" in recorded["error"]
+    assert recorded["error"] in " ".join(_ok("runs", "show", cwd=root).split())
 
-    def test_a_task_name_given_for_a_run_id_is_pointed_out(self, failed_workspace: Path) -> None:
-        result = _run_cli("cache", "explain", "gather", cwd=failed_workspace)
-
-        assert result.returncode == 1
-        assert "'gather' is a task, not a run" in " ".join(result.stderr.split())
+    explain = run_cli("cache", "explain", "gather", cwd=root)
+    assert explain.returncode == 1
+    assert "'gather' is a task, not a run" in " ".join(explain.stderr.split())
 
 
-class TestDeclaredMemoryAsWritten:
-    def test_the_sizing_ratio_is_of_the_declaration_not_the_rounded_budget(
-        self, tmp_path: Path
-    ) -> None:
-        (tmp_path / "workflow.py").write_text(
-            "from ginkgo import flow, task\n\n"
-            '@task(memory="512Mi")\n'
-            "def hold() -> int:\n"
-            "    return len(bytearray(1))\n\n"
-            "@flow\n"
-            "def main():\n"
-            "    return hold()\n",
-            encoding="utf-8",
-        )
-        assert _run_cli("run", "workflow.py", cwd=tmp_path).returncode == 0
+def test_the_sizing_ratio_is_of_the_declaration_not_the_rounded_budget(tmp_path: Path) -> None:
+    root = _workspace(
+        tmp_path,
+        """
+        from ginkgo import flow, task
 
-        text = _run_cli("history", "hold", "--resources", cwd=tmp_path).stdout
-        payload = json.loads(
-            _run_cli("history", "hold", "--resources", "--json", cwd=tmp_path).stdout
-        )
+        @task(memory="512Mi")
+        def hold() -> int:
+            return len(bytearray(1))
 
-        assert "declared 0.5 GiB" in text
-        assert "after escalation" not in text
-        assert payload["resources"][0]["declared_memory_gb"] == 0.5
+        @flow
+        def main():
+            return hold()
+        """,
+    )
+    text = _ok("history", "hold", "--resources", cwd=root)
+    assert "declared 0.5 GiB" in text and "after escalation" not in text
+    payload = _json("history", "hold", "--resources", cwd=root)
+    assert payload["resources"][0]["declared_memory_gb"] == 0.5
 
 
-def test_a_flag_of_another_command_is_refused_with_the_commands_own_usage(
-    tmp_path: Path,
-) -> None:
+def test_a_flag_of_another_command_is_refused_with_the_commands_own_usage() -> None:
     # A core command's flag, so the test holds without the plugins installed.
-    result = _run_cli("run", "--include-unstarted", cwd=tmp_path)
-
+    result = run_cli("run", "--include-unstarted")
     assert result.returncode == 2
     assert "ginkgo run: error: unrecognized arguments: --include-unstarted" in result.stderr

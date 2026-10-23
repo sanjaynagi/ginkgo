@@ -37,19 +37,11 @@ def test_a_large_run_lists_its_first_tasks_and_every_failure(
     _run_with_tasks(root=tmp_path, count=80)
 
     assert main(["runs", "show", "run-big"]) == 0
-
     out = capsys.readouterr().out
     assert "Tasks: 80 (79 succeeded, 1 failed)" in out
-    assert "step[0]" in out and "step[79]" in out
-    assert "step[60]" not in out
+    assert "step[0]" in out and "step[79]" in out and "step[60]" not in out
     assert "… 30 more tasks, all succeeded or cached — `--all` lists every one." in out
 
-
-def test_all_lists_every_task(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    _run_with_tasks(root=tmp_path, count=80)
-
     assert main(["runs", "show", "run-big", "--all"]) == 0
-
     out = capsys.readouterr().out
-    assert "step[60]" in out
-    assert "more tasks" not in out
+    assert "step[60]" in out and "more tasks" not in out

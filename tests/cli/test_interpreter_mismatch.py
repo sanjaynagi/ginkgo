@@ -133,239 +133,128 @@ class TestImportScan:
         assert workflow_import_roots(workflow_path=Path("workflow.py")) == ("ginkgo",)
 
 
-class TestImportsThatDoNotRun:
-    """Imports the environment does not have to supply, so they must not count.
+@pytest.mark.parametrize(
+    ("text", "roots"),
+    [
+        # Shapes that read like an import in raw text but never execute, or are
+        # optional by construction. The scan parses instead of matching lines.
+        ('"""Example:\n\nimport seaborn\n"""\n', set()),
+        ('SNIPPET = "import seaborn"\n', set()),
+        (
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n"
+            "    import pandas\n    from numpy import ndarray\n",
+            {"typing"},
+        ),
+        ("import typing\nif typing.TYPE_CHECKING:\n    import pandas\n", {"typing"}),
+        ("if TYPE_CHECKING:\n    import pandas\nelse:\n    import polars\n", {"polars"}),
+        ("try:\n    import seaborn\nexcept ImportError:\n    seaborn = None\n", set()),
+        ("try:\n    import seaborn\nexcept (ModuleNotFoundError, OSError):\n    pass\n", set()),
+        ("try:\n    import pandas\nexcept ValueError:\n    pass\n", {"pandas"}),
+        ("def load():\n    import pandas\n", {"pandas"}),
+        ("from .modules import prep\n", set()),
+    ],
+)
+def test_source_import_roots(text: str, roots: set[str]) -> None:
+    assert source_import_roots(text=text) == roots
 
-    Each of these is a shape that reads like an import in raw text but either
-    never executes or is optional by construction. The scan parses instead of
-    matching lines, which is what keeps them out.
-    """
 
-    def test_an_import_inside_a_docstring_is_not_an_import(self) -> None:
-        assert source_import_roots(text='"""Example:\n\nimport seaborn\n"""\n') == frozenset()
+def _detect():
+    return detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())
 
-    def test_an_import_inside_a_string_literal_is_not_an_import(self) -> None:
-        assert source_import_roots(text='SNIPPET = "import seaborn"\n') == frozenset()
 
-    def test_a_type_checking_import_is_not_a_runtime_import(self) -> None:
-        text = (
-            "from typing import TYPE_CHECKING\n\n"
-            "if TYPE_CHECKING:\n"
-            "    import pandas\n"
-            "    from numpy import ndarray\n"
-        )
-
-        assert source_import_roots(text=text) == {"typing"}
-
-    def test_a_qualified_type_checking_guard_is_recognised_too(self) -> None:
-        assert source_import_roots(
-            text="import typing\nif typing.TYPE_CHECKING:\n    import pandas\n"
-        ) == {"typing"}
-
-    def test_the_else_branch_of_a_type_checking_guard_still_counts(self) -> None:
-        text = "if TYPE_CHECKING:\n    import pandas\nelse:\n    import polars\n"
-
-        assert source_import_roots(text=text) == {"polars"}
-
-    def test_an_optional_dependency_guarded_by_import_error_does_not_count(self) -> None:
-        text = "try:\n    import seaborn\nexcept ImportError:\n    seaborn = None\n"
-
-        assert source_import_roots(text=text) == frozenset()
-
-    def test_a_module_not_found_guard_counts_the_same_way(self) -> None:
-        text = "try:\n    import seaborn\nexcept (ModuleNotFoundError, OSError):\n    pass\n"
-
-        assert source_import_roots(text=text) == frozenset()
-
-    def test_a_try_guarding_something_else_still_declares_its_imports(self) -> None:
-        text = "try:\n    import pandas\nexcept ValueError:\n    pass\n"
-
-        assert source_import_roots(text=text) == {"pandas"}
-
-    def test_a_deferred_import_inside_a_function_body_still_counts(self) -> None:
-        assert source_import_roots(text="def load():\n    import pandas\n") == {"pandas"}
-
-    def test_a_relative_import_is_the_project_satisfying_itself(self) -> None:
-        assert source_import_roots(text="from .modules import prep\n") == frozenset()
-
-    def test_a_docstring_example_does_not_trip_the_scan(self) -> None:
-        """The end-to-end version: doctor's finding, not just the extractor."""
+@pytest.mark.parametrize(
+    ("manifest", "source"),
+    [
+        (True, f'"""Docs.\n\nExample::\n\n    import {ABSENT}\n"""\n'),
+        (True, f"try:\n    import {ABSENT}\nexcept ImportError:\n    {ABSENT} = None\n"),
+        (True, f"from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import {ABSENT}\n"),
+        # The ``pixi run`` case: the interpreter *is* the declared environment.
+        (True, "import ginkgo\n"),
+        # No manifest means no check.
+        (False, f"import {ABSENT}\n"),
+    ],
+    ids=["docstring", "optional", "type-checking", "importable", "no-manifest"],
+)
+def test_nothing_is_reported_when_nothing_is_missing(manifest: bool, source: str) -> None:
+    if manifest:
         _manifest()
-        _workflow(imports='"""Docs.\n\nExample::\n\n    import seaborn\n"""\n')
+    _workflow()
+    Path("extra.py").write_text(source, encoding="utf-8")
 
-        assert (
-            detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())
-            is None
-        )
-
-    def test_an_optional_import_does_not_trip_the_scan(self) -> None:
-        _manifest()
-        _workflow()
-        Path("optional.py").write_text(
-            f"try:\n    import {ABSENT}\nexcept ImportError:\n    {ABSENT} = None\n",
-            encoding="utf-8",
-        )
-
-        assert (
-            detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())
-            is None
-        )
-
-    def test_a_type_checking_import_does_not_trip_the_scan(self) -> None:
-        _manifest()
-        _workflow()
-        Path("typed.py").write_text(
-            f"from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import {ABSENT}\n",
-            encoding="utf-8",
-        )
-
-        assert (
-            detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())
-            is None
-        )
+    assert _detect() is None
 
 
-class TestDetectImportProblem:
-    def test_missing_import_beside_a_manifest_is_reported(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _outside_project_env(monkeypatch)
-        _manifest()
-        _workflow(imports=f"import {ABSENT}\n")
+@pytest.mark.parametrize(
+    ("tasks", "command"),
+    [
+        ('run = "ginkgo run"\n', "pixi run run"),
+        # Without a plain run task, the advice falls back to the full command.
+        ('check = "ginkgo run --dry-run"\n', "pixi run ginkgo run"),
+    ],
+)
+def test_missing_import_beside_a_manifest_is_reported(
+    monkeypatch: pytest.MonkeyPatch, tasks: str, command: str
+) -> None:
+    _outside_project_env(monkeypatch)
+    _manifest(tasks=tasks)
+    _workflow(imports=f"import {ABSENT}\n")
 
-        finding = detect_import_problem(
-            workflow_path=Path("workflow.py"),
-            project_root=Path.cwd(),
-        )
+    finding = _detect()
 
-        assert isinstance(finding, InterpreterMismatch)
-        assert finding.missing == (ABSENT,)
-        assert finding.code == "interpreter_env_mismatch"
-        assert finding.severity == "error"
-        assert "cannot import: " + ABSENT in finding.message
-        assert "pixi.toml" in finding.message
-        assert str(finding.interpreter) in finding.suggestion
-        assert "pixi run run" in finding.suggestion
-
-    def test_no_manifest_means_no_check(self) -> None:
-        _workflow(imports=f"import {ABSENT}\n")
-
-        assert (
-            detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())
-            is None
-        )
-
-    def test_an_interpreter_that_imports_everything_is_silent(self) -> None:
-        """The ``pixi run`` case: the interpreter *is* the declared environment."""
-        _manifest()
-        _workflow(imports="import ginkgo\n")
-
-        assert (
-            detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())
-            is None
-        )
-
-    def test_a_manifest_without_a_plain_run_task_falls_back_to_the_full_command(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _outside_project_env(monkeypatch)
-        _manifest(tasks='check = "ginkgo run --dry-run"\n')
-        _workflow(imports=f"import {ABSENT}\n")
-
-        finding = detect_import_problem(
-            workflow_path=Path("workflow.py"),
-            project_root=Path.cwd(),
-        )
-
-        assert isinstance(finding, InterpreterMismatch)
-        assert finding.project_command == "pixi run ginkgo run"
+    assert isinstance(finding, InterpreterMismatch)
+    assert (finding.missing, finding.code, finding.severity) == (
+        (ABSENT,),
+        "interpreter_env_mismatch",
+        "error",
+    )
+    assert "cannot import: " + ABSENT in finding.message and "pixi.toml" in finding.message
+    assert str(finding.interpreter) in finding.suggestion
+    assert finding.project_command == command
+    # A recorded ModuleNotFoundError is explained the same way.
+    explained = explain_import_failure(
+        message=f"No module named '{ABSENT}'", project_root=Path.cwd()
+    )
+    assert isinstance(explained, InterpreterMismatch) and explained.missing == (ABSENT,)
 
 
-class TestInsideTheProjectEnvironment:
+def test_other_failures_are_not_explained_away() -> None:
+    """A recorded failure from some other interpreter is not this mismatch."""
+    _manifest()
+
+    for message in ("No module named 'ginkgo'", "exit code 1", None):
+        assert explain_import_failure(message=message, project_root=Path.cwd()) is None
+
+
+@pytest.mark.parametrize("signal", ["env-var", "prefix"])
+def test_inside_the_project_env_a_missing_import_is_a_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch, signal: str
+) -> None:
     """Running from the manifest's own environment: right interpreter, short manifest.
 
-    ``pixi run`` advice would be a no-op here, so the finding has to say
-    something else — and must never claim the interpreter is wrong.
+    ``pixi run`` advice would be a no-op here, so the finding must never claim
+    the interpreter is wrong. Either ``PIXI_PROJECT_MANIFEST`` names the
+    manifest, or ``sys.prefix`` sits in its ``.pixi/envs``.
     """
-
-    def test_a_missing_import_is_a_missing_dependency_not_a_wrong_interpreter(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        manifest = _manifest()
+    _outside_project_env(monkeypatch)
+    manifest = _manifest()
+    if signal == "env-var":
         _inside_project_env(monkeypatch, manifest=manifest)
-        _workflow(imports=f"import {ABSENT}\n")
-
-        finding = detect_import_problem(
-            workflow_path=Path("workflow.py"),
-            project_root=Path.cwd(),
-        )
-
-        assert isinstance(finding, MissingDependency)
-        assert finding.code == "missing_dependency"
-        assert finding.missing == (ABSENT,)
-        assert "pixi run" not in "\n".join(finding.hint_lines)
-        assert "pixi install" in finding.suggestion
-        assert "pixi.toml" in finding.suggestion
-
-    def test_a_prefix_under_the_manifest_pixi_directory_counts_as_the_project_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The other signal: no env var, but ``sys.prefix`` sits in ``.pixi/envs``."""
-        _outside_project_env(monkeypatch)
-        manifest = _manifest()
+    else:
         prefix = manifest.parent.resolve() / ".pixi" / "envs" / "default"
         prefix.mkdir(parents=True)
         monkeypatch.setattr("ginkgo.envs.interpreter.sys.prefix", str(prefix))
-        _workflow(imports=f"import {ABSENT}\n")
+    _workflow(imports=f"import {ABSENT}\n")
 
-        finding = detect_import_problem(
-            workflow_path=Path("workflow.py"),
-            project_root=Path.cwd(),
-        )
+    finding = _detect()
 
-        assert isinstance(finding, MissingDependency)
-
-    def test_a_reported_failure_is_explained_without_the_interpreter_framing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        manifest = _manifest()
-        _inside_project_env(monkeypatch, manifest=manifest)
-
-        finding = explain_import_failure(
-            message=f"No module named '{ABSENT}'",
-            project_root=Path.cwd(),
-        )
-
-        assert isinstance(finding, MissingDependency)
-
-
-class TestExplainImportFailure:
-    def test_a_missing_module_message_is_explained(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _outside_project_env(monkeypatch)
-        _manifest()
-
-        finding = explain_import_failure(
-            message=f"No module named '{ABSENT}'",
-            project_root=Path.cwd(),
-        )
-
-        assert isinstance(finding, InterpreterMismatch)
-        assert finding.missing == (ABSENT,)
-
-    def test_an_importable_module_is_not_explained_away(self) -> None:
-        """A recorded failure from some other interpreter is not this mismatch."""
-        _manifest()
-
-        assert (
-            explain_import_failure(message="No module named 'ginkgo'", project_root=Path.cwd())
-            is None
-        )
-
-    def test_other_failures_are_left_alone(self) -> None:
-        _manifest()
-
-        assert explain_import_failure(message="exit code 1", project_root=Path.cwd()) is None
-        assert explain_import_failure(message=None, project_root=Path.cwd()) is None
+    assert isinstance(finding, MissingDependency)
+    assert (finding.code, finding.missing) == ("missing_dependency", (ABSENT,))
+    assert "pixi run" not in "\n".join(finding.hint_lines)
+    assert "pixi install" in finding.suggestion and "pixi.toml" in finding.suggestion
+    explained = explain_import_failure(
+        message=f"No module named '{ABSENT}'", project_root=Path.cwd()
+    )
+    assert isinstance(explained, MissingDependency)
 
 
 def _renderer() -> _RunLayoutRenderer:
@@ -411,50 +300,29 @@ def _failures_text(details: list[FailureDetails]) -> str:
 
 
 class TestRenderedFailure:
-    def test_the_hint_is_attached_to_a_python_task_import_failure(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("manifest", "kind", "env_label", "hinted"),
+        [
+            (True, "python", "local", True),
+            # A shell body ran in a subprocess, where this interpreter is not the issue.
+            (True, "shell", "local", False),
+            (True, "python", "analysis_tools", False),
+            (False, "python", "local", False),
+        ],
+    )
+    def test_the_hint_goes_only_to_an_in_process_import_failure(
+        self, monkeypatch: pytest.MonkeyPatch, manifest: bool, kind: str, env_label: str, hinted
     ) -> None:
         _outside_project_env(monkeypatch)
-        _manifest()
+        if manifest:
+            _manifest()
+        failure = _failure(error=f"No module named '{ABSENT}'", kind=kind, env_label=env_label)
 
-        text = _failures_text([_failure(error=f"No module named '{ABSENT}'")])
+        # However many tasks failed, the hint is rendered once.
+        text = _failures_text([failure] * 3)
 
-        assert "cannot import: " + ABSENT in text
-        assert "pixi run run" in text
-
-    def test_a_shell_task_gets_no_interpreter_advice(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Its body ran in a subprocess, where this interpreter is not the issue."""
-        _outside_project_env(monkeypatch)
-        _manifest()
-
-        text = _failures_text([_failure(error=f"No module named '{ABSENT}'", kind="shell")])
-
-        assert "cannot import" not in text
-        assert "pixi run" not in text
-
-    def test_a_python_task_in_a_declared_environment_gets_no_advice_either(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _outside_project_env(monkeypatch)
-        _manifest()
-
-        text = _failures_text(
-            [_failure(error=f"No module named '{ABSENT}'", env_label="analysis_tools")]
-        )
-
-        assert "cannot import" not in text
-
-    def test_the_hint_is_rendered_once_however_many_tasks_failed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _outside_project_env(monkeypatch)
-        _manifest()
-
-        text = _failures_text([_failure(error=f"No module named '{ABSENT}'") for _ in range(3)])
-
-        assert text.count("Try: pixi run run") == 1
+        assert ("cannot import: " + ABSENT in text) is hinted
+        assert text.count("Try: pixi run run") == int(hinted)
 
     def test_the_hinted_failure_keeps_its_panel_past_the_ignored_cap(
         self, monkeypatch: pytest.MonkeyPatch
@@ -475,17 +343,13 @@ class TestRenderedFailure:
         assert "cannot import: " + ABSENT in text
         assert "and 2 more" in text
 
-    def test_no_manifest_leaves_the_failure_panel_alone(self) -> None:
-        text = _failures_text([_failure(error=f"No module named '{ABSENT}'")])
-
-        assert "cannot import" not in text
-        assert "pixi run" not in text
-
-    def test_a_top_level_import_failure_is_explained(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("manifest", [True, False])
+    def test_a_top_level_import_failure_is_explained_inside_a_project(
+        self, monkeypatch: pytest.MonkeyPatch, manifest: bool
     ) -> None:
         _outside_project_env(monkeypatch)
-        _manifest()
+        if manifest:
+            _manifest()
         stream = StringIO()
 
         report_failure(
@@ -494,17 +358,5 @@ class TestRenderedFailure:
             show_traceback=False,
         )
 
-        text = stream.getvalue()
-        assert "cannot import: " + ABSENT in text
-        assert "Try: pixi run run" in text
-
-    def test_a_top_level_import_failure_outside_a_project_stays_bare(self) -> None:
-        stream = StringIO()
-
-        report_failure(
-            exc=ModuleNotFoundError(f"No module named '{ABSENT}'"),
-            stream=stream,
-            show_traceback=False,
-        )
-
-        assert "pixi run" not in stream.getvalue()
+        assert ("Try: pixi run run" in stream.getvalue()) is manifest
+        assert ("cannot import: " + ABSENT in stream.getvalue()) is manifest
