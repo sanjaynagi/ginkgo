@@ -43,3 +43,49 @@ jobs:
 
       - name: Run core test suite
         run: pixi run -e core test-core
+
+  kind:
+    # A real run on a throwaway cluster: the driver here, a task in a pod, and
+    # an in-cluster S3 server standing in for the object store. See
+    # tests/integration/test_kind.py.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.8
+        with:
+          cache: true
+          locked: true
+
+      - uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: ginkgo
+
+      - name: Build and load the worker image
+        run: |
+          docker build -t ginkgo-worker:kind .
+          kind load docker-image ginkgo-worker:kind --name ginkgo
+
+      - name: Start the S3 server
+        run: |
+          kubectl apply -f tests/integration/kind/
+          kubectl rollout status deployment/s3 --timeout=180s
+
+      - name: Run the kind test
+        env:
+          GINKGO_KIND: "1"
+          AWS_ENDPOINT_URL: http://localhost:5000
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing # pragma: allowlist secret
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          kubectl port-forward service/s3 5000:5000 > /dev/null 2>&1 &
+          timeout 30 bash -c 'until curl -s -o /dev/null http://localhost:5000; do sleep 1; done'
+          pixi run pytest tests/integration/test_kind.py -v
+
+      - name: Show the cluster's pods
+        if: failure()
+        run: |
+          kubectl get jobs,pods -o wide
+          kubectl describe pods
+          kubectl logs -l app=ginkgo --all-containers --tail=200 --prefix || true

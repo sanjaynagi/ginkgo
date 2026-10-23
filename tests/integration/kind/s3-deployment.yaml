@@ -1,0 +1,25 @@
+# An S3 server for the kind test (moto, in memory): the object store both the
+# driver (through a port-forward) and the worker pods (through the Service)
+# reach. Any credentials are accepted.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: s3
+  template:
+    metadata:
+      labels:
+        app: s3
+    spec:
+      containers:
+        - name: moto
+          image: motoserver/moto:5.2.3
+          ports:
+            - containerPort: 5000
+          readinessProbe:
+            tcpSocket:
+              port: 5000
