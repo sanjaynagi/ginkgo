@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import json
 import shutil
 import sys
@@ -27,6 +28,8 @@ import pandas as pd
 import pytest
 
 from ginkgo import Out, file, folder, task
+from ginkgo.core.remote import remote_file
+from ginkgo.remote.staging import RemoteIdentityError
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
@@ -58,17 +61,23 @@ class _LocalDirObjectStore:
     def _path(self, *, bucket: str, key: str) -> Path:
         return self.root / bucket / key
 
+    def _meta(self, *, bucket: str, key: str) -> RemoteObjectMeta:
+        # An S3-style ETag: the MD5 of the bytes.
+        data = self._path(bucket=bucket, key=key).read_bytes()
+        return RemoteObjectMeta(
+            uri=f"s3://{bucket}/{key}", size=len(data), etag=hashlib.md5(data).hexdigest()
+        )
+
     def head(self, *, bucket: str, key: str) -> RemoteObjectMeta:
-        path = self._path(bucket=bucket, key=key)
-        if not path.exists():
+        if not self._path(bucket=bucket, key=key).exists():
             raise FileNotFoundError(key)
-        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=path.stat().st_size)
+        return self._meta(bucket=bucket, key=key)
 
     def download(self, *, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
         src = self._path(bucket=bucket, key=key)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest_path)
-        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=src.stat().st_size)
+        return self._meta(bucket=bucket, key=key)
 
     def upload(self, *, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
         dest = self._path(bucket=bucket, key=key)
@@ -159,6 +168,7 @@ def _configure_remote_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(tempfile, "tempdir", str(driver_tmp))
     fake_backend = _LocalDirObjectStore(root=object_root)
     monkeypatch.setattr("ginkgo.remote.resolve.resolve_backend", lambda scheme, **kw: fake_backend)
+    monkeypatch.setattr("ginkgo.remote.staging.resolve_backend", lambda scheme, **kw: fake_backend)
     monkeypatch.setattr("ginkgo.remote.worker._scratch_root", lambda: pod_scratch)
     return pod_scratch
 
@@ -264,6 +274,16 @@ def remote_chatty(value: int) -> int:
 @task(remote=True)
 def remote_double(frame: pd.DataFrame) -> pd.DataFrame:
     return frame * 2
+
+
+@task(remote=True)
+def remote_read(path: file) -> str:
+    return Path(str(path)).read_text(encoding="utf-8")
+
+
+@task(remote=True, retries=2)
+def remote_read_with_retries(path: file) -> str:
+    return Path(str(path)).read_text(encoding="utf-8")
 
 
 @task(remote=True)
@@ -438,3 +458,53 @@ class TestRemoteOutInferredReturn:
         call = remote_write_output(payload="named", out_path=str(out_path))
         result = _evaluate(call.output["out_path"])
         assert Path(str(result)) == out_path
+
+
+class TestDirectRemoteInputs:
+    """A remote task reads its remote inputs itself, straight from the source."""
+
+    def _put_source(self, tmp_path: Path, content: bytes) -> str:
+        source = tmp_path / "object-store" / "data-bucket" / "in.txt"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(content)
+        return "s3://data-bucket/in.txt"
+
+    def _artifact_blobs(self, tmp_path: Path) -> list[bytes]:
+        artifacts = tmp_path / "object-store" / "test-bucket"
+        return [path.read_bytes() for path in artifacts.rglob("*") if path.is_file()]
+
+    def test_the_driver_neither_downloads_nor_uploads_a_direct_input(self, tmp_path: Path) -> None:
+        uri = self._put_source(tmp_path, b"from the source")
+
+        assert _evaluate(remote_read(path=remote_file(uri))) == "from the source"
+
+        assert not (tmp_path / ".ginkgo" / "staging").exists()
+        assert b"from the source" not in self._artifact_blobs(tmp_path)
+
+    def test_an_input_marked_stage_goes_through_the_driver(self, tmp_path: Path) -> None:
+        uri = self._put_source(tmp_path, b"staged by the driver")
+
+        result = _evaluate(remote_read(path=remote_file(uri, access="stage")))
+
+        assert result == "staged by the driver"
+        assert (tmp_path / ".ginkgo" / "staging").exists()
+        assert b"staged by the driver" in self._artifact_blobs(tmp_path)
+
+    def test_a_change_before_the_worker_reads_fails_without_retries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uri = self._put_source(tmp_path, b"before")
+        submits = 0
+        real_submit = _RoundTripExecutor.submit
+
+        def overwrite_then_submit(self, *, attempt: dict) -> RemoteJobHandle:
+            nonlocal submits
+            submits += 1
+            (tmp_path / "object-store" / "data-bucket" / "in.txt").write_bytes(b"after")
+            return real_submit(self, attempt=attempt)
+
+        monkeypatch.setattr(_RoundTripExecutor, "submit", overwrite_then_submit)
+
+        with pytest.raises(RemoteIdentityError, match="changed after its cache key"):
+            _evaluate(remote_read_with_retries(path=remote_file(uri)))
+        assert submits == 1

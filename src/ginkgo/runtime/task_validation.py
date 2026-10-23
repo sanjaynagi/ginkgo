@@ -340,12 +340,9 @@ def label_input_value(
     if isinstance(value, RemoteRef):
         return "version"
 
-    from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
+    from ginkgo.remote.access.protocol import is_remote_input
 
-    if isinstance(value, dict) and value.get("__ginkgo_type__") in {
-        FUSE_FILE_TYPE,
-        FUSE_FOLDER_TYPE,
-    }:
+    if is_remote_input(value):
         return "version"
     if isinstance(value, SecretRef):
         return "value"
@@ -462,8 +459,8 @@ def _validate_scalar(*, annotation: type, value: Any, label: str) -> None:
 def is_remote_path_value(value: Any) -> bool:
     """Return whether a value is a remote reference or supported remote URI.
 
-    Also accepts fuse-streamed marker dicts produced by
-    :func:`ginkgo.remote.access.protocol.encode_fuse_ref` — those stand
+    Also accepts remote-input marker dicts produced by
+    :func:`ginkgo.remote.access.protocol.encode_remote_input` — those stand
     in for a ``file`` / ``folder`` value from the driver's perspective
     and are resolved to a local path on the worker.
     """
@@ -471,9 +468,9 @@ def is_remote_path_value(value: Any) -> bool:
         return True
     if isinstance(value, str) and is_remote_uri(value):
         return True
-    from ginkgo.remote.access.protocol import is_fuse_ref
+    from ginkgo.remote.access.protocol import is_remote_input
 
-    return is_fuse_ref(value)
+    return is_remote_input(value)
 
 
 def declared_output_paths(

@@ -273,9 +273,9 @@ def run_task(
                 for name, value in payload["args"].items()
             }
             if mounted_access is not None:
-                from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+                from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
 
-                decoded_args, _ = hydrate_fuse_refs(
+                decoded_args, _ = hydrate_remote_inputs(
                     args=decoded_args, mounted_access=mounted_access
                 )
             # Measured from here, once the workflow module is imported, so
@@ -337,7 +337,7 @@ def _local_fuse_access(*, args: dict[str, Any], base_dir: Path) -> Any:
     Returns ``None`` when no fuse markers are present so non-streaming
     tasks pay no import or setup cost.
     """
-    if not _args_have_fuse_markers(args):
+    if not _args_have_fuse_inputs(args):
         return None
 
     from ginkgo.remote.access.mounted import MountedAccess
@@ -348,16 +348,20 @@ def _local_fuse_access(*, args: dict[str, Any], base_dir: Path) -> Any:
     )
 
 
-def _args_have_fuse_markers(value: Any) -> bool:
-    """Return whether ``value`` contains any fuse marker dict."""
-    from ginkgo.remote.access.protocol import is_fuse_ref
+def _args_have_fuse_inputs(value: Any) -> bool:
+    """Return whether ``value`` contains any remote-input marker to mount.
 
-    if is_fuse_ref(value):
+    A local task's other remote inputs were staged on the driver, so only
+    ``fuse`` markers reach it.
+    """
+    from ginkgo.remote.access.protocol import is_fuse_input
+
+    if is_fuse_input(value):
         return True
     if isinstance(value, dict):
-        return any(_args_have_fuse_markers(item) for item in value.values())
+        return any(_args_have_fuse_inputs(item) for item in value.values())
     if isinstance(value, (list, tuple)):
-        return any(_args_have_fuse_markers(item) for item in value)
+        return any(_args_have_fuse_inputs(item) for item in value)
     return False
 
 

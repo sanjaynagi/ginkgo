@@ -340,14 +340,17 @@ All of this is visible in `ginkgo runs show <run_id>`.
 
 ## Remote-Input Access: Stage or Stream
 
-Remote inputs reach a worker in one of two modes. Each scheme comes from a
+Remote inputs reach a worker in one of three modes. Each scheme comes from a
 plugin, which provides both the object store and its FUSE driver: `s3://` from
 `ginkgo-aws` (mountpoint-s3), `gs://` from `ginkgo-gcp` (gcsfuse) and `oci://`
 from `ginkgo-oci` (rclone). See
 [Plugins](../getting-started/installation.md#plugins).
 
-**Stage** (default) downloads the whole object to local disk before
-the task starts. **Fuse** mounts the bucket in-container and streams reads
+**Direct** (default) has the worker download the whole object from its
+source before the task starts, so the worker needs read access to the
+bucket. **Stage** has the driver download it instead and hand it over
+through the artifact store, for workers that cannot read the source.
+**Fuse** mounts the bucket in-container and streams reads
 on demand — useful for sparse random access (BAM index lookups, Parquet
 column projection) or whole-file reads that would otherwise block on a
 multi-GB download.
@@ -376,7 +379,7 @@ Config defaults live under `[remote.access]`:
 
 ```toml
 [remote.access]
-default = "stage"          # or "fuse"
+default = "direct"         # or "stage", "fuse"
 auto_fuse = false          # enable the size-based auto-fuse heuristic
 auto_fuse_min_bytes = 2147483648  # 2GiB default; threshold for auto_fuse
 default_for_pattern = [    # optional, first match wins over `default`

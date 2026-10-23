@@ -136,6 +136,10 @@ def _reconstruct_worker_error(error_payload: dict[str, Any]) -> BaseException:
         if isinstance(exc_type, type) and issubclass(exc_type, BaseException):
             return exc_type(*args)
 
+    # Rebuilt as itself so the scheduler knows not to retry it.
+    if (module_name, type_name) == (RemoteIdentityError.__module__, RemoteIdentityError.__name__):
+        return RemoteIdentityError(*args)
+
     return RuntimeError(error_payload["message"])
 
 
@@ -515,7 +519,6 @@ class ConcurrentEvaluator:
             expr=node.node.expr,
             task_def=node.task_def,
             include_tmp_dirs=False,
-            stage_remote_refs=False,
         )
 
     def expand_probed_template(self, *, node: NodeRun, template: Any) -> list[int]:
@@ -755,7 +758,6 @@ class ConcurrentEvaluator:
             expr=node.node.expr,
             task_def=node.task_def,
             include_tmp_dirs=False,
-            stage_remote_refs=False,
         )
         # Before the cache-hit branch, so the warning appears on the run that
         # serves the stale result.
@@ -950,7 +952,6 @@ class ConcurrentEvaluator:
                 include_tmp_dirs=True,
                 existing_args=node.resolved_args,
                 tmp_paths=node.tmp_paths,
-                stage_remote_refs=False,
             )
             if count_remote_inputs(node.resolved_args) > 0:
                 node.state = "staging"
@@ -1364,7 +1365,6 @@ class ConcurrentEvaluator:
         expr: Expr,
         task_def: TaskDef,
         include_tmp_dirs: bool,
-        stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
@@ -1402,12 +1402,6 @@ class ConcurrentEvaluator:
                 continue
 
             raise TypeError(f"{task_def.fn.__name__}() missing required argument: '{name}'")
-
-        if stage_remote_refs:
-            resolved_args = self._stager.stage_remote_refs(
-                task_def=task_def,
-                resolved_args=resolved_args,
-            )
 
         return resolved_args
 

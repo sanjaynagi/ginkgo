@@ -4,7 +4,8 @@ Provides a uniform protocol (:class:`RemoteInputAccess`) for materialising
 a remote object inside a worker pod, with two concrete strategies:
 
 - :class:`StagedAccess` — downloads the full object into local disk before
-  the task runs. This is the historical behaviour and the default.
+  the task runs: on the driver for ``stage``, or in the worker for ``direct``,
+  the default for a task dispatched to a remote executor.
 - :class:`MountedAccess` — mounts the remote prefix through a FUSE driver
   (``gcsfuse``, ``mountpoint-s3``, ``rclone mount``) and exposes the
   mount path as a normal filesystem path. Bytes are pulled on demand.
@@ -20,14 +21,15 @@ from __future__ import annotations
 from ginkgo.remote.access.doctor import local_streaming_available
 from ginkgo.remote.access.mounted import MountedAccess
 from ginkgo.remote.access.protocol import (
-    FUSE_FILE_TYPE,
-    FUSE_FOLDER_TYPE,
+    REMOTE_FILE_TYPE,
+    REMOTE_FOLDER_TYPE,
     AccessStats,
     PerInputStats,
     RemoteInputAccess,
-    decode_fuse_ref,
-    encode_fuse_ref,
-    is_fuse_ref,
+    decode_remote_input,
+    encode_remote_input,
+    is_fuse_input,
+    is_remote_input,
 )
 from ginkgo.remote.access.resolver import (
     AccessConfig,
@@ -40,16 +42,17 @@ from ginkgo.remote.access.staged import StagedAccess
 __all__ = [
     "AccessConfig",
     "AccessStats",
-    "FUSE_FILE_TYPE",
-    "FUSE_FOLDER_TYPE",
     "MountedAccess",
     "PerInputStats",
+    "REMOTE_FILE_TYPE",
+    "REMOTE_FOLDER_TYPE",
     "RemoteInputAccess",
     "StagedAccess",
     "TaskAccessPolicy",
-    "decode_fuse_ref",
-    "encode_fuse_ref",
-    "is_fuse_ref",
+    "decode_remote_input",
+    "encode_remote_input",
+    "is_fuse_input",
+    "is_remote_input",
     "load_access_config",
     "local_streaming_available",
     "resolve_access",

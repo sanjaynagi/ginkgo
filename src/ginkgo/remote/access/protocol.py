@@ -8,24 +8,28 @@ from typing import Any, Iterable, Protocol, runtime_checkable
 
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef
 
-# Payload tags for fuse-streamed inputs. Driver side emits these instead
-# of staging the object locally; worker side detects them and routes
-# through :class:`MountedAccess` to produce a local mount path.
-FUSE_FILE_TYPE = "fuse_file"
-FUSE_FOLDER_TYPE = "fuse_folder"
+# Payload tags for a remote input the worker reads itself. The driver emits
+# one instead of staging the object locally; the marker's policy says how the
+# worker reads it: ``direct`` downloads it from the source, ``fuse`` mounts its
+# bucket through :class:`MountedAccess`.
+REMOTE_FILE_TYPE = "remote_input_file"
+REMOTE_FOLDER_TYPE = "remote_input_folder"
 
 
-def encode_fuse_ref(*, ref: RemoteRef, policy: str) -> dict[str, Any]:
-    """Serialise a fuse-marked ref into a JSON-safe payload dict.
+def encode_remote_input(*, ref: RemoteRef, policy: str) -> dict[str, Any]:
+    """Serialise a remote input the worker will read into a JSON-safe payload dict.
+
+    The marker carries the ref's identity, so it keys and is checked exactly
+    as the ref would be.
 
     Parameters
     ----------
     ref : RemoteRef
-        The reference being streamed.
+        The remote input.
     policy : str
-        Resolved policy string (``"fuse"`` or ``"fuse (auto)"``).
+        Resolved access policy: ``"direct"``, ``"fuse"`` or ``"fuse (auto)"``.
     """
-    tag = FUSE_FILE_TYPE if isinstance(ref, RemoteFileRef) else FUSE_FOLDER_TYPE
+    tag = REMOTE_FILE_TYPE if isinstance(ref, RemoteFileRef) else REMOTE_FOLDER_TYPE
     identity = (
         {"etag": ref.etag, "size": ref.size}
         if isinstance(ref, RemoteFileRef)
@@ -44,16 +48,22 @@ def encode_fuse_ref(*, ref: RemoteRef, policy: str) -> dict[str, Any]:
     }
 
 
-def is_fuse_ref(value: Any) -> bool:
-    """Return True when ``value`` is a dict marking a fuse-streamed ref."""
+def is_remote_input(value: Any) -> bool:
+    """Return True when ``value`` is a remote-input marker dict."""
     return isinstance(value, dict) and value.get("__ginkgo_type__") in {
-        FUSE_FILE_TYPE,
-        FUSE_FOLDER_TYPE,
+        REMOTE_FILE_TYPE,
+        REMOTE_FOLDER_TYPE,
     }
 
 
-def decode_fuse_ref(value: dict[str, Any]) -> tuple[RemoteRef, str]:
-    """Rehydrate a fuse payload dict into a :class:`RemoteRef` + policy."""
+def is_fuse_input(value: Any) -> bool:
+    """Return True when ``value`` is a remote-input marker the worker mounts."""
+    return is_remote_input(value) and value["policy"].startswith("fuse")
+
+
+def decode_remote_input(value: dict[str, Any]) -> tuple[RemoteRef, str]:
+    """Rehydrate a remote-input marker into its :class:`RemoteRef` and policy."""
+    policy = value["policy"]
     common = {
         "uri": value["uri"],
         "scheme": value["scheme"],
@@ -61,13 +71,13 @@ def decode_fuse_ref(value: dict[str, Any]) -> tuple[RemoteRef, str]:
         "key": value["key"],
         "namespace": value.get("namespace"),
         "version_id": value.get("version_id"),
-        "access": "fuse",
+        "access": "fuse" if policy.startswith("fuse") else "direct",
     }
-    if value["__ginkgo_type__"] == FUSE_FILE_TYPE:
+    if value["__ginkgo_type__"] == REMOTE_FILE_TYPE:
         ref: RemoteRef = RemoteFileRef(**common, etag=value.get("etag"), size=value.get("size"))
     else:
         ref = RemoteFolderRef(**common, listing_digest=value.get("listing_digest"))
-    return ref, value.get("policy", "fuse")
+    return ref, policy
 
 
 @dataclass(kw_only=True)
@@ -105,8 +115,8 @@ class AccessStats:
     Parameters
     ----------
     policy : str
-        Canonical policy string (``"stage"``, ``"fuse"``,
-        ``"fuse (auto)"``, ``"stage (fallback)"``).
+        Canonical policy string (``"direct"``, ``"stage"``, ``"fuse"`` or
+        ``"fuse (auto)"``).
     mount_seconds : float
         Wall time spent mounting (fuse only).
     unmount_seconds : float

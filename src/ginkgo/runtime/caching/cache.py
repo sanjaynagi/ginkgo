@@ -1133,12 +1133,12 @@ class CacheStore:
             return self._hash_path_string_leaf(value=value)
         if is_untracked_annotation(annotation):
             return self._hash_path_string_leaf(value=value)
-        # A fuse-streamed input's marker carries the ref it stands for, so it
-        # keys exactly as that ref does, whatever the access mode.
-        from ginkgo.remote.access.protocol import decode_fuse_ref, is_fuse_ref
+        # A remote-input marker carries the ref it stands for, so it keys
+        # exactly as that ref does, whatever the access mode.
+        from ginkgo.remote.access.protocol import decode_remote_input, is_remote_input
 
-        if is_fuse_ref(value):
-            value, _policy = decode_fuse_ref(value)
+        if is_remote_input(value):
+            value, _policy = decode_remote_input(value)
         if isinstance(value, RemoteRef):
             return _remote_ref_component(value)
         if isinstance(value, SecretRef):
@@ -1474,11 +1474,11 @@ class CacheStore:
             return self._hash_path_string_leaf(value=value)
 
         # A remote input is represented by its identity, as in the content
-        # key; a fuse marker by the ref it stands for.
-        from ginkgo.remote.access.protocol import decode_fuse_ref, is_fuse_ref
+        # key; a marker by the ref it stands for.
+        from ginkgo.remote.access.protocol import decode_remote_input, is_remote_input
 
-        if is_fuse_ref(value):
-            value, _policy = decode_fuse_ref(value)
+        if is_remote_input(value):
+            value, _policy = decode_remote_input(value)
         if isinstance(value, RemoteRef):
             return _remote_ref_component(value)
 

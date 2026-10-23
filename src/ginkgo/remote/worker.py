@@ -88,8 +88,8 @@ def run_worker_payload(payload: dict) -> dict:
         if output_param_entries:
             _resolve_output_param_paths(payload, entries=output_param_entries)
 
-        # Hydrate fuse-marked inputs by mounting their buckets on the pod.
-        mounted_access = _hydrate_fuse_inputs(payload)
+        # Read the inputs the driver left to the worker: download or mount them.
+        mounted_access = _hydrate_remote_markers(payload)
 
         from ginkgo.runtime.worker import run_task
 
@@ -251,34 +251,37 @@ def _worker_remote_store(config: dict[str, str]) -> RemoteArtifactStore:
     )
 
 
-def _hydrate_fuse_inputs(payload: dict):
-    """Mount fuse-marked inputs and replace markers with local paths.
+def _hydrate_remote_markers(payload: dict):
+    """Read the inputs the driver left to the worker, replacing markers with paths.
 
-    Returns the :class:`MountedAccess` instance used (or ``None`` when
-    the payload contained no fuse markers) so the caller can close the
-    mounts and collect stats.
+    A ``direct`` input is downloaded into the pod's scratch area; a ``fuse``
+    input is mounted. Returns the :class:`MountedAccess` used (or ``None``
+    when nothing was mounted) so the caller can close the mounts and collect
+    stats.
     """
     args = payload.get("args")
-    if not isinstance(args, dict) or not _payload_has_fuse_markers(args):
+    if not isinstance(args, dict) or not _payload_has_remote_markers(args):
         return None
 
-    from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+    from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
 
-    rewritten, mounted_access = hydrate_fuse_refs(args=args)
+    rewritten, mounted_access = hydrate_remote_inputs(
+        args=args, staging_root=_scratch_root() / "ginkgo-staging"
+    )
     payload["args"] = rewritten
     return mounted_access
 
 
-def _payload_has_fuse_markers(value) -> bool:
-    """Shallow/recursive scan for the fuse marker tag."""
-    from ginkgo.remote.access.protocol import is_fuse_ref
+def _payload_has_remote_markers(value) -> bool:
+    """Shallow/recursive scan for a remote-input marker."""
+    from ginkgo.remote.access.protocol import is_remote_input
 
-    if is_fuse_ref(value):
+    if is_remote_input(value):
         return True
     if isinstance(value, dict):
-        return any(_payload_has_fuse_markers(v) for v in value.values())
+        return any(_payload_has_remote_markers(v) for v in value.values())
     if isinstance(value, (list, tuple)):
-        return any(_payload_has_fuse_markers(v) for v in value)
+        return any(_payload_has_remote_markers(v) for v in value)
     return False
 
 

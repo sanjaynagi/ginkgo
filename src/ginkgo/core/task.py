@@ -25,6 +25,7 @@ from ginkgo.core.expr import (
     record_partial_call,
     supersede_call,
 )
+from ginkgo.core.remote import _VALID_ACCESS_MODES
 from ginkgo.core.resources import Resources
 from ginkgo.core.source_hash import compute_own_source_hash, compute_source_hash
 from ginkgo.core.types import (
@@ -1225,9 +1226,10 @@ def task(
     if _kind is not None and kind != "python" and _kind != kind:
         raise ValueError(f"task kind specified twice: positional {_kind!r} and keyword {kind!r}")
 
-    if remote_input_access is not None and remote_input_access not in {"stage", "fuse"}:
+    if remote_input_access is not None and remote_input_access not in _VALID_ACCESS_MODES:
         raise ValueError(
-            f"remote_input_access must be 'stage' or 'fuse', got {remote_input_access!r}"
+            "remote_input_access must be one of "
+            f"{', '.join(sorted(_VALID_ACCESS_MODES))}, got {remote_input_access!r}"
         )
 
     prefetch_map = tuple(sorted((fuse_prefetch or {}).items()))

@@ -25,7 +25,7 @@ class StagedAccess:
         when ``None``.
     policy : str
         Label used in :attr:`AccessStats.policy` (``"stage"`` or
-        ``"stage (fallback)"``).
+        ``"direct"``).
     """
 
     def __init__(
