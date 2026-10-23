@@ -51,23 +51,16 @@ def _started_labels(collector: EventCollector) -> list[str]:
     return sorted(event.display_label or "" for event in collector.started())
 
 
-def test_returned_calls_are_labelled_by_the_argument_that_differs() -> None:
-    collector = EventCollector()
+def test_returned_calls_are_labelled_and_rerun_by_the_argument_that_differs() -> None:
+    first, rerun = EventCollector(), EventCollector()
 
-    evaluate(score_all(names=["ann", "bo"]), event_bus=collector.bus)
-
-    assert _started_labels(collector) == ["", "score[ann]", "score[bo]"]
-
-
-def test_rerun_names_one_returned_call_by_its_label() -> None:
-    evaluate(score_all(names=["ann", "bo"]))
-    collector = EventCollector()
-
-    ConcurrentEvaluator(rerun=frozenset({"score[bo]"}), event_bus=collector.bus).evaluate(
+    evaluate(score_all(names=["ann", "bo"]), event_bus=first.bus)
+    ConcurrentEvaluator(rerun=frozenset({"score[bo]"}), event_bus=rerun.bus).evaluate(
         score_all(names=["ann", "bo"])
     )
 
-    assert _started_labels(collector) == ["score[bo]"]
+    assert _started_labels(first) == ["", "score[ann]", "score[bo]"]
+    assert _started_labels(rerun) == ["score[bo]"]
 
 
 @task()

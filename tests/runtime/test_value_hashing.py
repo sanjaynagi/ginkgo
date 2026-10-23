@@ -23,6 +23,28 @@ def store(tmp_path: Path) -> CacheStore:
     return CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
 
 
+def test_a_container_of_plain_data_hashes_as_one_digest(store) -> None:
+    digest = store._hash_value(annotation=list[int], value=list(range(1_000)))
+
+    assert set(digest) == {"digest", "type"}
+    assert digest != store._hash_value(annotation=list[int], value=[*range(999), -1])
+    assert set(store._hash_value(annotation=dict, value={"a": [1, 2], "b": "t"})) == {
+        "digest",
+        "type",
+    }
+    assert store._hash_value(annotation=list, value=[1]) != store._hash_value(
+        annotation=tuple, value=(1,)
+    )
+
+
+def test_a_container_holding_a_file_keeps_an_entry_per_element(store, tmp_path) -> None:
+    (tmp_path / "a.txt").write_text("a")
+
+    hashed = store._hash_value(annotation=list, value=[file(tmp_path / "a.txt"), 3])
+
+    assert [item["type"] for item in hashed["items"]] == ["file", "int"]
+
+
 class TestContainerSubclasses:
     @pytest.mark.parametrize(
         ("subclass_value", "builtin_value"),

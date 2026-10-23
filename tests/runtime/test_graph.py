@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ginkgo import Out, file, folder, task
 from ginkgo.core.expr import record_constructed_calls
+from ginkgo.runtime.display_labels import render_label_value
 from ginkgo.runtime.graph import CycleError, IncompleteCallError, TaskGraph
 
 
@@ -45,21 +48,14 @@ def split(*, split_dir: Out[folder]) -> list:
 
 
 class TestRegistration:
-    def test_a_caller_takes_a_lower_id_than_its_arguments(self) -> None:
+    def test_a_caller_takes_a_lower_id_but_is_held_after_its_arguments(self) -> None:
         graph = TaskGraph.build(join(left=label(text="a"), right=label(text="b")))
 
         assert graph.nodes[0].label == "join"
         assert graph.nodes[0].dependency_ids == {1, 2}
-
-    def test_nodes_are_held_after_their_dependencies(self) -> None:
         # A scheduler pass over the nodes then resolves a cached chain at once.
-        graph = TaskGraph.build(join(left=label(text="a"), right=label(text="b")))
-
         assert list(graph.nodes) == [1, 2, 0]
-
-    def test_a_repeated_call_label_takes_an_ordinal(self) -> None:
-        graph = TaskGraph.build(join(left=label(text="a"), right=label(text="b")))
-
+        # A repeated call label takes an ordinal.
         assert [graph.nodes[node_id].label for node_id in (1, 2)] == ["label", "label[2]"]
 
     def test_a_chain_s_ordinals_follow_the_order_it_runs(self) -> None:
@@ -174,3 +170,7 @@ class TestUnreachableCalls:
         graph = TaskGraph.build(kept)
 
         assert [call.label for call in graph.unreachable_calls(calls)] == ["label()"]
+
+
+def test_a_path_argument_is_labelled_by_its_file_name() -> None:
+    assert render_label_value(Path("results/sample_a.tsv")) == "sample_a.tsv"

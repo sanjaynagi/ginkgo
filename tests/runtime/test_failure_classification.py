@@ -34,16 +34,16 @@ class TestUserCodeClassification:
         # retrying/failed events already show; the summary makes no claim.
         assert set(failure) == {"kind", "message", "code"}
 
-    def test_the_message_leads_with_the_exception_type(self) -> None:
-        """N5: a bare ``'PRODUCT_TAG'`` does not say a key was missing."""
-        assert classify_failure(exc=KeyError("PRODUCT_TAG"))["message"] == (
-            "KeyError: 'PRODUCT_TAG'"
-        )
-
-    def test_a_ginkgo_error_message_stands_alone(self) -> None:
-        exc = DeclaredOutputNotWrittenError("t.out was not written")
-
-        assert classify_failure(exc=exc)["message"] == "t.out was not written"
+    @pytest.mark.parametrize(
+        ("exc", "message"),
+        [
+            # N5: a bare 'PRODUCT_TAG' does not say a key was missing.
+            (KeyError("PRODUCT_TAG"), "KeyError: 'PRODUCT_TAG'"),
+            (DeclaredOutputNotWrittenError("t.out was not written"), "t.out was not written"),
+        ],
+    )
+    def test_the_message(self, exc: Exception, message: str) -> None:
+        assert classify_failure(exc=exc)["message"] == message
 
     def test_a_key_error_from_a_worker_keeps_its_message(self) -> None:
         """The KeyError rebuilt from a worker must not quote its key twice."""
@@ -88,12 +88,10 @@ class TestFrameworkClassification:
     def test_framework_exceptions_keep_their_kind(self, exc: Exception, kind: str) -> None:
         assert classify_failure(exc=exc)["kind"] == kind
 
-    def test_an_exception_declaring_its_kind_classifies_itself(self) -> None:
+    def test_a_declared_kind_classifies_itself_but_a_name_alone_does_not(self) -> None:
         class PluginEnvError(Exception):
             failure_kind = "env_mismatch"
 
         assert classify_failure(exc=PluginEnvError("failed"))["kind"] == "env_mismatch"
-
-    def test_a_framework_sounding_name_alone_is_user_code(self) -> None:
-        exc = type("EnvResolutionError", (Exception,), {})("failed")
-        assert classify_failure(exc=exc)["kind"] == "user_code_error"
+        lookalike = type("EnvResolutionError", (Exception,), {})("failed")
+        assert classify_failure(exc=lookalike)["kind"] == "user_code_error"
