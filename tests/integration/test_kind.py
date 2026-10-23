@@ -1,10 +1,10 @@
-"""A run on a real Kubernetes cluster: kind, with MinIO as the object store.
+"""A run on a real Kubernetes cluster: kind, with an in-cluster S3 server.
 
 The driver runs here and dispatches a task to a pod. The pod reads its input
-straight from MinIO, and its output comes back through the artifact store.
-CI's ``kind`` job creates the cluster, loads the worker image and
-port-forwards MinIO (see ``.github/workflows/tests.yml``); elsewhere the test
-is skipped.
+straight from that server, and its output comes back through the artifact
+store. CI's ``kind`` job creates the cluster, loads the worker image and
+port-forwards the server (see ``.github/workflows/tests.yml``); elsewhere the
+test is skipped.
 """
 
 from __future__ import annotations
@@ -33,9 +33,9 @@ unschedulable_timeout = 60.0
 fuse_annotations = {}
 
 [remote.executors.kind.env]
-AWS_ENDPOINT_URL = "http://minio.default.svc.cluster.local:9000"
-AWS_ACCESS_KEY_ID = "minioadmin"
-AWS_SECRET_ACCESS_KEY = "minioadmin"  # pragma: allowlist secret
+AWS_ENDPOINT_URL = "http://s3.default.svc.cluster.local:5000"
+AWS_ACCESS_KEY_ID = "testing"
+AWS_SECRET_ACCESS_KEY = "testing"  # pragma: allowlist secret
 AWS_DEFAULT_REGION = "us-east-1"
 
 [remote.executors.kind.code]
@@ -71,13 +71,13 @@ def main():
 
 
 def _put_input() -> None:
-    """Create the bucket and the task's input in MinIO."""
+    """Create the bucket and the task's input in the S3 server."""
     import s3fs
 
     fs = s3fs.S3FileSystem()
     if not fs.exists("ginkgo"):
         fs.mkdir("ginkgo")
-    fs.pipe("ginkgo/inputs/greeting.txt", b"hello from minio")
+    fs.pipe("ginkgo/inputs/greeting.txt", b"hello from s3")
 
 
 def test_a_task_runs_in_a_pod_and_its_output_comes_back(tmp_path: Path) -> None:
@@ -100,7 +100,7 @@ def test_a_task_runs_in_a_pod_and_its_output_comes_back(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (tmp_path / "result.txt").read_text() == "HELLO FROM MINIO"
+    assert (tmp_path / "result.txt").read_text() == "HELLO FROM S3"
     jobs = subprocess.run(
         ["kubectl", "get", "jobs", "-l", f"ginkgo/parent-run-id={run_id}", "-o", "name"],
         text=True,

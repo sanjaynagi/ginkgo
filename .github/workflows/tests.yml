@@ -46,7 +46,8 @@ jobs:
 
   kind:
     # A real run on a throwaway cluster: the driver here, a task in a pod, and
-    # MinIO standing in for the object store. See tests/integration/test_kind.py.
+    # an in-cluster S3 server standing in for the object store. See
+    # tests/integration/test_kind.py.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,21 +66,21 @@ jobs:
           docker build -t ginkgo-worker:kind .
           kind load docker-image ginkgo-worker:kind --name ginkgo
 
-      - name: Start MinIO
+      - name: Start the S3 server
         run: |
           kubectl apply -f tests/integration/kind/
-          kubectl rollout status deployment/minio --timeout=180s
+          kubectl rollout status deployment/s3 --timeout=180s
 
       - name: Run the kind test
         env:
           GINKGO_KIND: "1"
-          AWS_ENDPOINT_URL: http://localhost:9000
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin # pragma: allowlist secret
+          AWS_ENDPOINT_URL: http://localhost:5000
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing # pragma: allowlist secret
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          kubectl port-forward service/minio 9000:9000 > /dev/null 2>&1 &
-          timeout 30 bash -c 'until curl -sf http://localhost:9000/minio/health/ready; do sleep 1; done'
+          kubectl port-forward service/s3 5000:5000 > /dev/null 2>&1 &
+          timeout 30 bash -c 'until curl -s -o /dev/null http://localhost:5000; do sleep 1; done'
           pixi run pytest tests/integration/test_kind.py -v
 
       - name: Show the cluster's pods
