@@ -146,6 +146,9 @@ class FsspecBackend:
 
         def _do() -> list[RemoteObjectMeta]:
             fs = self._get_filesystem()
+            # fsspec shares a filesystem, and its cached listings, across the
+            # process: a listing identifies inputs, so it must be current.
+            fs.invalidate_cache(base)
             found = fs.find(base, detail=True)
             return _list_results_to_meta(scheme=self._scheme, results=found)
 

@@ -258,18 +258,25 @@ def _worker_remote_store(config: dict[str, str]) -> RemoteArtifactStore:
 def _hydrate_remote_markers(payload: dict):
     """Read the inputs the driver left to the worker, replacing markers with paths.
 
-    A ``direct`` input is downloaded into the pod's scratch area; a ``fuse``
-    input is mounted. Returns the :class:`Hydration`, holding the mounts for
-    the caller to close and the downloads' digests, or ``None`` when the
-    payload has no markers.
+    A ``direct`` input is downloaded into the pod's scratch area, the run's
+    ``staging_jobs`` at a time; a ``fuse`` input is mounted. Returns the
+    :class:`Hydration`, holding the mounts for the caller to close and the
+    downloads' digests, or ``None`` when the payload has no markers.
     """
     args = payload.get("args")
     if not isinstance(args, dict) or not _payload_has_remote_markers(args):
         return None
 
-    from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
+    from ginkgo.remote.access.worker_hydration import (
+        DEFAULT_HYDRATION_JOBS,
+        hydrate_remote_inputs,
+    )
 
-    hydration = hydrate_remote_inputs(args=args, staging_root=_scratch_root() / "ginkgo-staging")
+    hydration = hydrate_remote_inputs(
+        args=args,
+        staging_root=_scratch_root() / "ginkgo-staging",
+        jobs=payload.get("staging_jobs") or DEFAULT_HYDRATION_JOBS,
+    )
     payload["args"] = hydration.args
     return hydration
 

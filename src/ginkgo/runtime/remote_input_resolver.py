@@ -2,14 +2,16 @@
 
 The ``RemoteStager`` resolves ``RemoteFileRef``/``RemoteFolderRef``
 arguments (and bare remote URI strings under ``file``/``folder``
-annotations) into local paths via the worker-local staging cache. It
-also owns in-flight deduplication so that two tasks asking for the same
-remote ref share a single download.
+annotations) into local paths via the worker-local staging cache.
 
 Before staging, it resolves each remote input's identity from its store's
-metadata (one HEAD or LIST), so the evaluator can look the task up in the
-cache without downloading anything. :func:`remote_value_needs_identity`
-answers whether an argument still needs that.
+metadata, so the evaluator can look the task up in the cache without
+downloading anything.
+
+The unit of work in both steps is one remote input, not one task: each
+unique input is one job on the staging pool, and a task continues once all of
+its inputs' jobs are done. A URI that several tasks or list items name is
+fetched once.
 """
 
 from __future__ import annotations
@@ -18,7 +20,10 @@ from __future__ import annotations
 import json
 import os
 import time
-from concurrent.futures import Future
+from collections import defaultdict
+from collections.abc import Callable
+from concurrent.futures import CancelledError, Executor, Future, InvalidStateError
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Lock
@@ -42,57 +47,65 @@ from ginkgo.core.types import (
     rebuild_sequence,
 )
 from ginkgo.remote.access.doctor import local_streaming_available
-from ginkgo.remote.access.protocol import encode_remote_input, is_fuse_policy
+from ginkgo.remote.access.protocol import encode_remote_input, is_fuse_policy, is_remote_input
 from ginkgo.remote.access.resolver import (
     AccessConfig,
     TaskAccessPolicy,
     load_access_config,
     resolve_access,
 )
-from ginkgo.remote.staging import StagingCache, resolve_identity
+from ginkgo.remote.staging import StagingCache, resolve_identities
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
-def remote_value_needs_identity(*, annotation: Any, value: Any) -> bool:
-    """Return whether a value holds a remote input whose identity is not known yet.
+def map_remote_inputs(*, annotation: Any, value: Any, fn: Callable[[RemoteRef], Any]) -> Any:
+    """Return *value* with each remote input in it replaced by ``fn(ref)``.
 
-    Such an input is resolved, with one HEAD or LIST on its store, before the
-    task's cache key can be built. A remote URI string counts only under a
-    ``file`` or ``folder`` annotation; anywhere else it is a plain string.
+    A remote input is a ``RemoteFileRef`` or ``RemoteFolderRef`` anywhere in
+    the value's lists, tuples and dict values, or a remote URI string under a
+    ``file`` or ``folder`` annotation, which becomes the ref it names. A
+    remote-input marker is left as it is. A container none of whose items
+    changed is returned as it is, so its type survives.
     """
-    if type(value) in PLAIN_SCALAR_TYPES:
-        return False
+    if type(value) in PLAIN_SCALAR_TYPES or is_remote_input(value):
+        return value
     # A large plain value is settled by its distinct strings alone.
     strings = plain_data_strings(value)
     if strings is not None and not any(is_remote_uri(text) for text in strings):
-        return False
+        return value
     if isinstance(value, RemoteRef):
-        return value.identity() is None
+        return fn(value)
     if isinstance(value, str):
-        return is_remote_uri(value) and (
-            annotation_includes(annotation=annotation, expected=file)
-            or annotation_includes(annotation=annotation, expected=folder)
-        )
+        if not is_remote_uri(value):
+            return value
+        if annotation_includes(annotation=annotation, expected=file):
+            return fn(remote_file(value))
+        if annotation_includes(annotation=annotation, expected=folder):
+            return fn(remote_folder(value))
+        return value
 
     item_annotation, value_annotation = _element_annotations(annotation)
     if isinstance(value, list | tuple):
-        return any(
-            remote_value_needs_identity(annotation=item_annotation, value=item) for item in value
-        )
+        items = [map_remote_inputs(annotation=item_annotation, value=v, fn=fn) for v in value]
+        if all(new is old for new, old in zip(items, value)):
+            return value
+        return rebuild_sequence(like=value, items=items)
     if isinstance(value, dict):
-        return any(
-            remote_value_needs_identity(annotation=value_annotation, value=item)
-            for item in value.values()
-        )
-    return False
+        mapped = {
+            key: map_remote_inputs(annotation=value_annotation, value=item, fn=fn)
+            for key, item in value.items()
+        }
+        if all(mapped[key] is item for key, item in value.items()):
+            return value
+        return mapped
+    return value
 
 
 def _element_annotations(annotation: Any) -> tuple[Any, Any]:
     """Return the annotation of a typed container's items and of a dict's values.
 
-    An untyped container keeps its own annotation for its items, as the
-    walk above always has.
+    An untyped container keeps its own annotation for its items.
     """
     origin = get_origin(annotation)
     args = get_args(annotation)
@@ -103,9 +116,82 @@ def _element_annotations(annotation: Any) -> tuple[Any, Any]:
     return annotation, Any
 
 
+def _map_args(*, task_def: Any, args: dict[str, Any], fn: Callable[[RemoteRef], Any]) -> dict:
+    """Apply :func:`map_remote_inputs` to each argument, under its parameter's annotation."""
+    return {
+        name: map_remote_inputs(
+            annotation=_param_annotation(task_def=task_def, name=name), value=value, fn=fn
+        )
+        for name, value in args.items()
+    }
+
+
+def _remote_inputs(*, task_def: Any, args: dict[str, Any]) -> list[RemoteRef]:
+    """Return every remote input in a task's arguments, in order."""
+    found: list[RemoteRef] = []
+
+    def collect(ref: RemoteRef) -> RemoteRef:
+        found.append(ref)
+        return ref
+
+    _map_args(task_def=task_def, args=args, fn=collect)
+    return found
+
+
 def _param_annotation(*, task_def: Any, name: str) -> Any:
-    """Return a task parameter's resolved annotation."""
-    return task_def.type_hints.get(name, task_def.signature.parameters[name].annotation)
+    """Return a task parameter's resolved annotation, or ``Any`` for an unknown name."""
+    parameter = task_def.signature.parameters.get(name)
+    return task_def.type_hints.get(name, parameter.annotation if parameter else Any)
+
+
+def _gather(futures: dict[Any, Future[Any]], then: Callable[[dict[Any, Any]], Any]) -> Future[Any]:
+    """Return a future of ``then`` applied to every future's result, by key.
+
+    The first of *futures* to fail fails it. ``then`` runs on the thread that
+    finishes the last of them, so no thread ever waits for the others.
+    """
+    gathered: Future[Any] = Future()
+    remaining = len(futures)
+    lock = Lock()
+
+    def settle(set_outcome: Callable[[Any], None], outcome: Any) -> None:
+        with suppress(InvalidStateError):  # cancelled, or failed already
+            set_outcome(outcome)
+
+    def finish() -> None:
+        try:
+            result = then({key: future.result() for key, future in futures.items()})
+        except BaseException as exc:
+            settle(gathered.set_exception, exc)
+        else:
+            settle(gathered.set_result, result)
+
+    def on_done(future: Future[Any]) -> None:
+        nonlocal remaining
+        with lock:
+            remaining -= 1
+            last = remaining == 0
+        error = CancelledError() if future.cancelled() else future.exception()
+        if error is not None:
+            settle(gathered.set_exception, error)
+        elif last:
+            finish()
+
+    if not futures:
+        finish()
+    for future in futures.values():
+        future.add_done_callback(on_done)
+    return gathered
+
+
+def _list_group(key: Any, ref: RemoteRef) -> Any:
+    """Return the group a ref's identity is resolved with: one LIST serves a group of files.
+
+    Files group by parent prefix. A folder, and a file at a bucket's root
+    (rather than list the whole bucket), is a group of its own.
+    """
+    parent = ref.key.rpartition("/")[0]
+    return (ref.scheme, ref.bucket, parent) if isinstance(ref, RemoteFileRef) and parent else key
 
 
 def count_remote_inputs(value: Any) -> int:
@@ -216,7 +302,7 @@ class StagedInputs:
 
 @dataclass(kw_only=True)
 class RemoteStager:
-    """Stage remote inputs into local paths with in-flight deduplication.
+    """Stage remote inputs into local paths, fetching each URI once.
 
     Parameters
     ----------
@@ -231,150 +317,126 @@ class RemoteStager:
     timing_recorder: Any = None
     access_config: AccessConfig | None = None
     _staging_cache: Any = field(default=None, init=False, repr=False)
-    _staging_lock: Lock = field(default_factory=Lock, init=False, repr=False)
-    _staging_inflight: dict[str, Future[Path]] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
+    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    # Downloads in flight, by ``remote_ref_identity``: a later task stages
+    # through the staging cache again, which finds the bytes there.
+    _staging: dict[str, Future[Path]] = field(default_factory=dict, init=False, repr=False)
+    # Identities for the whole run, by ref type and URI, so every task reading
+    # a URI keys on, and reads, the same version of it.
     _identities: dict[tuple[str, str], Future[RemoteRef]] = field(
         default_factory=dict, init=False, repr=False
     )
-    _identity_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     # Per-task entry points --------------------------------------------------
-
-    def stage_task_inputs(self, *, node: Any) -> StagedInputs:
-        """Stage remote inputs for one task in the reserved worker slot."""
-        assert node.resolved_args is not None
-        stage_started = time.perf_counter()
-        digests: dict[str, str] = {}
-        args = self.stage_remote_refs(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-            dispatches_remote=node.executor_name is not None,
-            digests=digests,
-        )
-        if self.timing_recorder is not None:
-            self.timing_recorder(
-                node_id=node.node_id,
-                phase="remote_stage_seconds",
-                started=stage_started,
-            )
-        return StagedInputs(args=args, digests=digests)
 
     def needs_identity(self, *, node: Any) -> bool:
         """Return whether any of the node's remote inputs still needs its identity."""
         assert node.resolved_args is not None
-        return any(
-            remote_value_needs_identity(
-                annotation=_param_annotation(task_def=node.task_def, name=name), value=value
-            )
-            for name, value in node.resolved_args.items()
-        )
+        refs = _remote_inputs(task_def=node.task_def, args=node.resolved_args)
+        return any(ref.identity() is None for ref in refs)
 
-    def resolve_task_identities(self, *, node: Any) -> dict[str, Any]:
-        """Return the node's arguments with each remote input's identity resolved.
+    def resolve_task_identities(self, *, node: Any, pool: Executor) -> Future[dict[str, Any]]:
+        """Return a future of the node's arguments with each remote input's identity resolved.
 
-        Runs on the staging pool, since it asks the store: one HEAD per file
-        and one LIST per folder. A remote URI string under a ``file`` or
-        ``folder`` annotation becomes the ref it names.
+        Each unresolved URI is asked about once per run, on *pool*: files
+        sharing a parent prefix with another of the node's files from one LIST
+        of it, any other file with a HEAD, and a folder with a LIST of its
+        own. A remote URI string under a ``file`` or ``folder`` annotation
+        becomes the ref it names.
         """
         assert node.resolved_args is not None
-        return {
-            name: self._resolve_identities(
-                annotation=_param_annotation(task_def=node.task_def, name=name), value=value
-            )
-            for name, value in node.resolved_args.items()
+        refs = {
+            _identity_key(ref): ref
+            for ref in _remote_inputs(task_def=node.task_def, args=node.resolved_args)
+            if ref.identity() is None
         }
+        futures = self._fetch_once(
+            pool=pool,
+            memo=self._identities,
+            refs=refs,
+            group=_list_group,
+            fetch=lambda batch: resolve_identities(refs=batch),
+            keep=True,
+        )
 
-    def _resolve_identities(self, *, annotation: Any, value: Any) -> Any:
-        """Resolve the remote inputs in one value, leaving everything else as is."""
-        if not remote_value_needs_identity(annotation=annotation, value=value):
-            return value
-        if isinstance(value, RemoteRef):
-            return self._resolve_ref(ref=value)
-        if isinstance(value, str):
-            names_file = annotation_includes(annotation=annotation, expected=file)
-            ref = remote_file(value) if names_file else remote_folder(value)
-            return self._resolve_ref(ref=ref)
-
-        item_annotation, value_annotation = _element_annotations(annotation)
-        if isinstance(value, list | tuple):
-            return rebuild_sequence(
-                like=value,
-                items=[
-                    self._resolve_identities(annotation=item_annotation, value=item)
-                    for item in value
-                ],
+        def resolved(identities: dict[tuple[str, str], RemoteRef]) -> dict[str, Any]:
+            return _map_args(
+                task_def=node.task_def,
+                args=node.resolved_args,
+                fn=lambda ref: (
+                    ref
+                    if ref.identity() is not None
+                    else replace(identities[_identity_key(ref)], access=ref.access)
+                ),
             )
-        return {
-            key: self._resolve_identities(annotation=value_annotation, value=item)
-            for key, item in value.items()
-        }
 
-    def _resolve_ref(self, *, ref: RemoteRef) -> RemoteRef:
-        """Resolve one ref, asking the store once per URI in a run.
+        return _gather(futures, resolved)
 
-        Every task in a run that reads a URI sees the same identity, so they
-        all key on, and read, the same version of it.
-        """
-        if ref.identity() is not None:
-            return ref
-        key = (type(ref).__name__, ref.uri)
-        with self._identity_lock:
-            resolved = self._identities.get(key)
-            should_resolve = resolved is None
-            if should_resolve:
-                resolved = self._identities[key] = Future()
-
-        if should_resolve:
-            try:
-                resolved.set_result(resolve_identity(ref=ref))
-            except BaseException as exc:
-                # Forget a failed lookup, so a retry asks the store again.
-                with self._identity_lock:
-                    self._identities.pop(key, None)
-                resolved.set_exception(exc)
-                raise
-        return replace(resolved.result(), access=ref.access)
-
-    # Argument-walking helpers ----------------------------------------------
-
-    def stage_remote_refs(
-        self,
-        *,
-        task_def: Any,
-        resolved_args: dict[str, Any],
-        dispatches_remote: bool,
-        digests: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        """Stage the remote inputs in a resolved argument map, or leave them to the worker.
+    def stage_task_inputs(self, *, node: Any, pool: Executor) -> Future[StagedInputs]:
+        """Return a future of the node's arguments with every remote input staged or marked.
 
         A ``fuse`` input, and a ``direct`` one when the task is dispatched to a
         remote executor, becomes a marker dict (see
         :func:`ginkgo.remote.access.protocol.encode_remote_input`) that the
-        worker reads itself. Every other input is downloaded here.
+        worker reads itself. Every other input is downloaded on *pool*, one
+        job per URI not already in flight.
+        """
+        assert node.resolved_args is not None
+        started = time.perf_counter()
+        marker_for = self._marker_for(
+            task_def=node.task_def, dispatches_remote=node.executor_name is not None
+        )
+        refs = {
+            remote_ref_identity(ref=ref): ref
+            for ref in _remote_inputs(task_def=node.task_def, args=node.resolved_args)
+            if marker_for(ref) is None
+        }
+        futures = self._fetch_once(
+            pool=pool,
+            memo=self._staging,
+            refs=refs,
+            group=lambda key, ref: key,
+            fetch=lambda batch: [self._stage(ref=ref) for ref in batch],
+            keep=False,
+        )
 
-        Parameters
-        ----------
-        task_def : Any
-            The task the arguments belong to.
-        resolved_args : dict[str, Any]
-            Its resolved arguments.
-        dispatches_remote : bool
-            Whether the task runs on a remote executor rather than this host.
-        digests : dict[str, str] | None
-            When given, receives the digest of each input staged here, by URI.
+        def staged(paths: dict[str, Path]) -> StagedInputs:
+            digests: dict[str, str] = {}
 
-        Returns
-        -------
-        dict[str, Any]
-            The arguments with every remote input staged or marked.
+            def place(ref: RemoteRef) -> Any:
+                marker = marker_for(ref)
+                if marker is not None:
+                    return marker
+                path = paths[remote_ref_identity(ref=ref)]
+                digests[ref.uri] = StagingCache.digest_of(path)
+                return file(str(path)) if isinstance(ref, RemoteFileRef) else folder(str(path))
+
+            args = _map_args(task_def=node.task_def, args=node.resolved_args, fn=place)
+            if self.timing_recorder is not None:
+                self.timing_recorder(
+                    node_id=node.node_id, phase="remote_stage_seconds", started=started
+                )
+            return StagedInputs(args=args, digests=digests)
+
+        return _gather(futures, staged)
+
+    def default_access(self, *, task_def: Any) -> str:
+        """Return the access mode a task's remote input gets without a hint of its own."""
+        return task_def.remote_input_access or self._get_access_config().default
+
+    # Internal ------------------------------------------------------------------
+
+    def _marker_for(
+        self, *, task_def: Any, dispatches_remote: bool
+    ) -> Callable[[RemoteRef], dict[str, Any] | None]:
+        """Return how a task's remote input reaches it: a marker for its worker, or ``None`` to stage.
+
+        A task on this host streams only when the host has a healthy driver
+        and ``/dev/fuse`` for the scheme; otherwise fuse falls back to a
+        download. A remote task's pod is assumed to carry the drivers.
         """
         task_policy = TaskAccessPolicy.from_task_def(task_def)
         access_config = self._get_access_config()
-
         # A driver kind's body runs on the scheduler or in a driver
         # subprocess, not through ``run_task``, so it has no mount lifecycle:
         # its inputs are downloaded here.
@@ -385,93 +447,65 @@ class RemoteStager:
                 fuse_prefetch=task_policy.fuse_prefetch,
             )
 
-        staged: dict[str, Any] = {}
-        for name, value in resolved_args.items():
-            annotation = task_def.type_hints.get(
-                name,
-                task_def.signature.parameters[name].annotation
-                if name in task_def.signature.parameters
-                else Any,
-            )
-            staged[name] = self.stage_remote_value(
-                annotation=annotation,
-                value=value,
-                task_policy=task_policy,
-                access_config=access_config,
-                dispatches_remote=dispatches_remote,
-                digests=digests,
-            )
-        return staged
-
-    def stage_remote_value(
-        self,
-        *,
-        annotation: Any,
-        value: Any,
-        task_policy: TaskAccessPolicy | None = None,
-        access_config: AccessConfig | None = None,
-        dispatches_remote: bool = False,
-        digests: dict[str, str] | None = None,
-    ) -> Any:
-        """Stage a single value, recursing into typed containers.
-
-        A task on this host streams only when the host has a healthy driver
-        and ``/dev/fuse`` for the scheme; otherwise fuse falls back to a
-        download. A remote task's pod is assumed to carry the drivers. A
-        ``direct`` input is left to the worker only when ``dispatches_remote``;
-        on this host it is staged.
-        """
-        task_policy = task_policy or TaskAccessPolicy()
-        access_config = access_config or self._get_access_config()
-
-        # A remote URI under a file/folder annotation is the ref it names.
-        if isinstance(value, str) and is_remote_uri(value):
-            if annotation_includes(annotation=annotation, expected=file):
-                value = remote_file(value)
-            elif annotation_includes(annotation=annotation, expected=folder):
-                value = remote_folder(value)
-
-        if isinstance(value, (RemoteFileRef, RemoteFolderRef)):
-            driver_available = dispatches_remote or local_streaming_available(scheme=value.scheme)
+        def marker_for(ref: RemoteRef) -> dict[str, Any] | None:
             policy = resolve_access(
-                ref=value,
+                ref=ref,
                 task_policy=task_policy,
                 config=access_config,
-                known_size=value.size if isinstance(value, RemoteFileRef) else None,
-                driver_available=driver_available,
+                known_size=ref.size if isinstance(ref, RemoteFileRef) else None,
+                driver_available=dispatches_remote or local_streaming_available(scheme=ref.scheme),
             )
             if is_fuse_policy(policy) or (policy == "direct" and dispatches_remote):
-                return encode_remote_input(ref=value, policy=policy)
-            staged_path = self._stage_remote_ref(ref=value)
-            if digests is not None:
-                digests[value.uri] = StagingCache.digest_of(staged_path)
-            if isinstance(value, RemoteFileRef):
-                return file(str(staged_path))
-            return folder(str(staged_path))
+                return encode_remote_input(ref=ref, policy=policy)
+            return None
 
-        # Recurse into typed containers.
-        origin = get_origin(annotation)
-        if origin in {list, tuple} and isinstance(value, (list, tuple)):
-            inner_args = get_args(annotation)
-            inner_annotation = inner_args[0] if inner_args else Any
-            staged_items = [
-                self.stage_remote_value(
-                    annotation=inner_annotation,
-                    value=item,
-                    task_policy=task_policy,
-                    access_config=access_config,
-                    dispatches_remote=dispatches_remote,
-                    digests=digests,
-                )
-                for item in value
-            ]
-            return rebuild_sequence(like=value, items=staged_items)
+        return marker_for
 
-        return value
+    def _fetch_once(
+        self,
+        *,
+        pool: Executor,
+        memo: dict[Any, Future[Any]],
+        refs: dict[Any, RemoteRef],
+        group: Callable[[Any, RemoteRef], Any],
+        fetch: Callable[[list[RemoteRef]], list[Any]],
+        keep: bool,
+    ) -> dict[Any, Future[Any]]:
+        """Return a future for each of *refs*, submitting work only for those not in *memo*.
 
-    def default_access(self, *, task_def: Any) -> str:
-        """Return the access mode a task's remote input gets without a hint of its own."""
-        return task_def.remote_input_access or self._get_access_config().default
+        The new refs in each *group* are one ``fetch`` job on *pool*, which
+        returns each ref's result or exception in order. A failed ref is forgotten, so a
+        retry asks again; with *keep* false, so is one that succeeded.
+        """
+        with self._lock:
+            unclaimed = {key: ref for key, ref in refs.items() if key not in memo}
+            for key in unclaimed:
+                memo[key] = Future()
+            futures = {key: memo[key] for key in refs}
+
+        groups: dict[Any, dict[Any, RemoteRef]] = defaultdict(dict)
+        for key, ref in unclaimed.items():
+            groups[group(key, ref)][key] = ref
+        for batch in groups.values():
+            keys = list(batch)
+
+            def settle(job: Future[list[Any]], keys: list[Any] = keys) -> None:
+                try:
+                    outcomes = job.result()
+                except BaseException as exc:  # cancelled, or the fetch itself failed
+                    outcomes = [exc] * len(keys)
+                with self._lock:
+                    for key, outcome in zip(keys, outcomes):
+                        if not keep or isinstance(outcome, BaseException):
+                            memo.pop(key, None)
+                for key, outcome in zip(keys, outcomes):
+                    if isinstance(outcome, BaseException):
+                        futures[key].set_exception(outcome)
+                    else:
+                        futures[key].set_result(outcome)
+
+            pool.submit(fetch, list(batch.values())).add_done_callback(settle)
+        return futures
 
     def _get_access_config(self) -> AccessConfig:
         """Return the cached access config, loading it on first use."""
@@ -479,36 +513,7 @@ class RemoteStager:
             self.access_config = load_access_config()
         return self.access_config
 
-    # Internal: in-flight dedup -----------------------------------------------
-
-    def _stage_remote_ref(self, *, ref: RemoteRef) -> Path:
-        """Stage one remote ref with in-flight deduplication."""
-        identity = remote_ref_identity(ref=ref)
-
-        with self._staging_lock:
-            inflight = self._staging_inflight.get(identity)
-            if inflight is None:
-                inflight = Future()
-                self._staging_inflight[identity] = inflight
-                should_stage = True
-            else:
-                should_stage = False
-
-        if not should_stage:
-            return inflight.result()
-
-        try:
-            staged_path = self._stage_remote_ref_uncached(ref=ref)
-            inflight.set_result(staged_path)
-            return staged_path
-        except BaseException as exc:
-            inflight.set_exception(exc)
-            raise
-        finally:
-            with self._staging_lock:
-                self._staging_inflight.pop(identity, None)
-
-    def _stage_remote_ref_uncached(self, *, ref: RemoteRef) -> Path:
+    def _stage(self, *, ref: RemoteRef) -> Path:
         """Stage one remote ref through the worker-local staging cache."""
         cache = self._get_staging_cache()
         if isinstance(ref, RemoteFileRef):
@@ -519,8 +524,14 @@ class RemoteStager:
 
     def _get_staging_cache(self) -> Any:
         """Lazily create and return the worker-local staging cache."""
-        if self._staging_cache is None:
-            from ginkgo.remote.staging import StagingCache
+        with self._lock:
+            if self._staging_cache is None:
+                from ginkgo.remote.staging import StagingCache
 
-            self._staging_cache = StagingCache()
-        return self._staging_cache
+                self._staging_cache = StagingCache()
+            return self._staging_cache
+
+
+def _identity_key(ref: RemoteRef) -> tuple[str, str]:
+    """Return the key a ref's identity is held under for the run."""
+    return (type(ref).__name__, ref.uri)

@@ -23,7 +23,8 @@ Inputs annotated `file` or `folder` are hashed by content. A remote input
 (`remote_file`, `remote_folder`, or a remote URI under a `file`/`folder`
 annotation) is keyed by what its store reports instead, so checking the cache
 never downloads it: its `version_id` when pinned, otherwise its ETag and size
-(one HEAD) or, for a folder, the digest of its listing (one LIST). That
+(one HEAD, or one LIST shared by a task's files under the same prefix) or, for a
+folder, the digest of its listing (one LIST). That
 identifies where the input is and what its store says about it, not its
 content: the same bytes copied to another URI miss, and so does a re-upload of
 identical bytes on stores whose ETag changes on every write. A plain `str` (or
