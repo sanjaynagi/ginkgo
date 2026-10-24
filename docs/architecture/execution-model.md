@@ -266,9 +266,12 @@ argument preprocessing.
   and `task_started` is emitted only after staging completes successfully.
 - Remote hydration runs on a dedicated bounded thread pool that is configured
   independently from CPU task concurrency, with `GINKGO_STAGING_JOBS` and
-  `remote.staging_jobs` support.
-- Concurrent tasks deduplicate in-flight staging of the same remote reference,
-  so one download fan-outs to multiple waiting tasks on the same worker.
+  `remote.staging_jobs` support. The pool's unit of work is one remote input,
+  not one task, so `staging_jobs` is the number of store requests in flight
+  across the run. A task's continuation runs on the scheduler thread once the
+  futures of all its inputs are done; no pool thread waits on another.
+- Tasks share the work for a remote reference they have in common, so one
+  identity lookup and one download serve every task and list item naming it.
 - The staging root remains worker-local by contract, which keeps the local
   runtime aligned with a future Kubernetes or pod-local execution model.
 

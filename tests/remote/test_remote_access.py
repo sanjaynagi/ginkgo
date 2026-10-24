@@ -398,6 +398,29 @@ class TestWorkerHydration:
         assert len(rewritten["files"]) == 2
         assert all("bucket" in str(p) for p in rewritten["files"])
 
+    def test_direct_markers_download_concurrently_in_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ginkgo.core.hashing import hash_bytes
+        from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
+        from tests.remote_fakes import FakeObjectStore
+
+        store = FakeObjectStore(root=tmp_path / "object-store", latency=0.02)
+        monkeypatch.setattr("ginkgo.remote.staging.resolve_backend", lambda scheme: store)
+        uris = [store.put(bucket="b", key=f"run/{i}.txt", data=str(i).encode()) for i in range(20)]
+        order = list(reversed(range(20)))
+        markers = [encode_remote_input(ref=remote_file(uris[i]), policy="direct") for i in order]
+
+        hydration = hydrate_remote_inputs(
+            args={"paths": markers}, staging_root=tmp_path / "staging", jobs=4
+        )
+
+        assert [Path(path).read_text() for path in hydration.args["paths"]] == [
+            str(i) for i in order
+        ]
+        assert hydration.digests == {uris[i]: hash_bytes(str(i).encode()) for i in order}
+        assert 1 < store.peak_requests <= 4
+
     def test_mount_failure_falls_back_to_staged(self, tmp_path: Path) -> None:
         from ginkgo.core.types import file
         from ginkgo.remote.access.staged import StagedAccess as StagedStrategy
@@ -686,142 +709,78 @@ class TestCacheKeyStability:
 from ginkgo.core.types import file  # noqa: E402
 
 
+def _route(task_def: _MockTaskDef, ref: RemoteFileRef) -> Any:
+    """Return what a stager makes of *ref*, passed to *task_def* as ``data``."""
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    from ginkgo.runtime.remote_input_resolver import RemoteStager
+
+    stager = RemoteStager(access_config=AccessConfig(default="stage"))
+    node = SimpleNamespace(
+        node_id=0,
+        task_def=task_def,
+        resolved_args={"data": ref},
+        executor_name="remote" if task_def.remote else None,
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return stager.stage_task_inputs(node=node, pool=pool).result().args["data"]
+
+
+@pytest.fixture
+def fake_staging_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every download land on one empty local file."""
+    from ginkgo.remote import staging
+
+    staged = tmp_path / "staged.bin"
+    staged.write_bytes(b"")
+
+    class _FakeCache:
+        def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
+            return staged
+
+    monkeypatch.setattr(staging, "StagingCache", lambda: _FakeCache())
+
+
+def _local_streaming(monkeypatch: pytest.MonkeyPatch, available: bool) -> None:
+    from ginkgo.runtime import remote_input_resolver
+
+    monkeypatch.setattr(
+        remote_input_resolver, "local_streaming_available", lambda *, scheme: available
+    )
+
+
 class TestRemoteStagerFuseRouting:
-    def test_fuse_ref_becomes_marker(self, tmp_path: Path) -> None:
-        from ginkgo.remote.access.resolver import AccessConfig
-        from ginkgo.runtime.remote_input_resolver import RemoteStager
+    def test_fuse_ref_becomes_marker(self) -> None:
+        staged = _route(_MockTaskDef(), remote_file("s3://bucket/k.txt", access="fuse"))
 
-        stager = RemoteStager(access_config=AccessConfig(default="stage"))
-        task_def = _MockTaskDef(
-            type_hints={"data": RemoteFileRef},
-            signature=None,
-        )
-        from inspect import Parameter, Signature
+        assert is_fuse_input(staged)
+        assert staged["uri"] == "s3://bucket/k.txt"
 
-        task_def.signature = Signature(
-            parameters=[Parameter("data", Parameter.POSITIONAL_OR_KEYWORD)]
-        )
-        ref = remote_file("s3://bucket/k.txt", access="fuse")
-        staged = stager.stage_remote_refs(
-            task_def=task_def,
-            resolved_args={"data": ref},
-            dispatches_remote=task_def.remote,
-        )
-        assert is_fuse_input(staged["data"])
-        assert staged["data"]["uri"] == "s3://bucket/k.txt"
+    def test_local_task_without_driver_forces_stage(
+        self, monkeypatch: pytest.MonkeyPatch, fake_staging_cache: None
+    ) -> None:
+        _local_streaming(monkeypatch, available=False)
 
-    def test_local_task_without_driver_forces_stage(self, tmp_path: Path, monkeypatch) -> None:
-        from ginkgo.remote.access.resolver import AccessConfig
-        from ginkgo.runtime import remote_input_resolver
-        from ginkgo.runtime.remote_input_resolver import RemoteStager
+        staged = _route(_MockTaskDef(remote=False), remote_file("s3://b/k.txt", access="fuse"))
 
-        # No healthy local driver: fuse must degrade to a staged download.
-        monkeypatch.setattr(
-            remote_input_resolver, "local_streaming_available", lambda *, scheme: False
-        )
-
-        # The stager must route through StagingCache.stage_file; patch it to
-        # avoid a real download.
-        from ginkgo.remote import staging
-
-        class _FakeCache:
-            def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
-                return tmp_path / "staged.bin"
-
-            def stage_folder(self, *, ref: RemoteFolderRef) -> Path:  # noqa: ARG002
-                raise NotImplementedError
-
-        (tmp_path / "staged.bin").write_bytes(b"")
-        monkeypatch.setattr(staging, "StagingCache", lambda: _FakeCache())
-
-        stager = RemoteStager(access_config=AccessConfig(default="stage"))
-        task_def = _MockTaskDef(
-            remote=False,
-            type_hints={"data": RemoteFileRef},
-            signature=None,
-        )
-        from inspect import Parameter, Signature
-
-        task_def.signature = Signature(
-            parameters=[Parameter("data", Parameter.POSITIONAL_OR_KEYWORD)]
-        )
-        ref = remote_file("s3://bucket/k.txt", access="fuse")
-        staged = stager.stage_remote_refs(
-            task_def=task_def,
-            resolved_args={"data": ref},
-            dispatches_remote=task_def.remote,
-        )
-        # Without a local driver, output is a staged local path (file instance).
-        from ginkgo.core.types import file as file_type
-
-        assert isinstance(staged["data"], file_type)
-        assert not is_fuse_input(staged["data"])
+        assert isinstance(staged, file)
 
     def test_local_task_streams_when_driver_available(self, monkeypatch) -> None:
-        from ginkgo.remote.access.resolver import AccessConfig
-        from ginkgo.runtime import remote_input_resolver
-        from ginkgo.runtime.remote_input_resolver import RemoteStager
+        _local_streaming(monkeypatch, available=True)
 
-        # Healthy local driver: a fuse-marked ref streams instead of staging.
-        monkeypatch.setattr(
-            remote_input_resolver, "local_streaming_available", lambda *, scheme: True
-        )
+        staged = _route(_MockTaskDef(remote=False), remote_file("s3://b/k.txt", access="fuse"))
 
-        stager = RemoteStager(access_config=AccessConfig(default="stage"))
-        from inspect import Parameter, Signature
+        assert is_fuse_input(staged)
 
-        task_def = _MockTaskDef(
-            remote=False,
-            type_hints={"data": RemoteFileRef},
-            signature=Signature(parameters=[Parameter("data", Parameter.POSITIONAL_OR_KEYWORD)]),
-        )
-        ref = remote_file("s3://bucket/k.txt", access="fuse")
-        staged = stager.stage_remote_refs(
-            task_def=task_def,
-            resolved_args={"data": ref},
-            dispatches_remote=task_def.remote,
-        )
-        assert is_fuse_input(staged["data"])
-        assert staged["data"]["uri"] == "s3://bucket/k.txt"
-
-    def test_local_driver_kind_task_forces_stage(self, tmp_path: Path, monkeypatch) -> None:
-        from ginkgo.remote.access.resolver import AccessConfig
-        from ginkgo.runtime import remote_input_resolver
-        from ginkgo.runtime.remote_input_resolver import RemoteStager
-
+    def test_local_driver_kind_task_forces_stage(
+        self, monkeypatch: pytest.MonkeyPatch, fake_staging_cache: None
+    ) -> None:
         # Even with a healthy driver, driver-kind tasks (shell/notebook/script)
         # have no local mount lifecycle and must stage.
-        monkeypatch.setattr(
-            remote_input_resolver, "local_streaming_available", lambda *, scheme: True
-        )
-        from ginkgo.remote import staging
+        _local_streaming(monkeypatch, available=True)
+        task_def = _MockTaskDef(remote=False, kind="shell")
 
-        class _FakeCache:
-            def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
-                return tmp_path / "staged.bin"
+        staged = _route(task_def, remote_file("s3://b/k.txt", access="fuse"))
 
-            def stage_folder(self, *, ref: RemoteFolderRef) -> Path:  # noqa: ARG002
-                raise NotImplementedError
-
-        (tmp_path / "staged.bin").write_bytes(b"")
-        monkeypatch.setattr(staging, "StagingCache", lambda: _FakeCache())
-
-        stager = RemoteStager(access_config=AccessConfig(default="stage"))
-        from inspect import Parameter, Signature
-
-        task_def = _MockTaskDef(
-            remote=False,
-            kind="shell",
-            type_hints={"data": RemoteFileRef},
-            signature=Signature(parameters=[Parameter("data", Parameter.POSITIONAL_OR_KEYWORD)]),
-        )
-        ref = remote_file("s3://bucket/k.txt", access="fuse")
-        staged = stager.stage_remote_refs(
-            task_def=task_def,
-            resolved_args={"data": ref},
-            dispatches_remote=task_def.remote,
-        )
-        from ginkgo.core.types import file as file_type
-
-        assert isinstance(staged["data"], file_type)
-        assert not is_fuse_input(staged["data"])
+        assert isinstance(staged, file)

@@ -24,9 +24,27 @@ def read_file_content(*, path: file) -> str:
 
 
 @task()
-def count_files_in_list(*, paths: list[file]) -> int:
-    """Count the number of file paths received."""
-    return len(paths)
+def read_files(*, paths: list[file]) -> list[str]:
+    """Read each file in a list."""
+    return [Path(str(path)).read_text(encoding="utf-8") for path in paths]
+
+
+@task()
+def read_unannotated(*, paths):  # noqa: ANN001, ANN202 - the point is no annotation
+    """Read each file in a list nothing says holds files."""
+    return [Path(str(path)).read_text(encoding="utf-8") for path in paths]
+
+
+@task()
+def read_file_dict(*, paths: dict[str, file]) -> dict[str, str]:
+    """Read each file in a dict."""
+    return {name: Path(str(path)).read_text(encoding="utf-8") for name, path in paths.items()}
+
+
+@task()
+def pass_on(*, refs: list) -> list:
+    """Return remote refs as they came, for a downstream task to read."""
+    return refs
 
 
 @task()
@@ -130,18 +148,62 @@ class TestRemoteFileEvaluator:
 
         assert result == "auto coerced"
 
-    def test_remote_file_in_list_is_staged(self, tmp_path) -> None:
-        store = _store(tmp_path, {"a.txt": (b"a", "ea"), "b.txt": (b"b", "eb")})
+    def test_a_list_of_files_is_staged_concurrently_in_order(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("GINKGO_STAGING_JOBS", "8")
+        store = _store(
+            tmp_path, {f"run/{i:02}.txt": (str(i).encode(), f"e{i}") for i in range(50)}
+        )
+        store.latency = 0.05
+        order = list(reversed(range(50)))
 
         result = _evaluate_against(
             store,
             staging_root=tmp_path / "staging",
-            expr=count_files_in_list(
-                paths=[remote_file("s3://bucket/a.txt"), remote_file("s3://bucket/b.txt")]
+            expr=read_files(paths=[remote_file(f"s3://bucket/run/{i:02}.txt") for i in order]),
+        )
+        assert result == [str(i) for i in order]
+        # One LIST of run/ identifies all fifty; the downloads overlap, at most 8 at once.
+        assert (store.lists, store.heads, store.downloads) == (1, 0, 50)
+        assert 1 < store.peak_requests <= 8
+
+    def test_a_dict_of_files_is_staged(self, tmp_path) -> None:
+        store = _store(tmp_path, {"a.txt": (b"alpha", "ea"), "b.txt": (b"beta", "eb")})
+
+        result = _evaluate_against(
+            store,
+            staging_root=tmp_path / "staging",
+            expr=read_file_dict(
+                paths={"a": remote_file("s3://bucket/a.txt"), "b": "s3://bucket/b.txt"}
             ),
         )
 
-        assert result == 2
+        assert result == {"a": "alpha", "b": "beta"}
+
+    def test_refs_a_task_returns_are_staged_for_the_next(self, tmp_path) -> None:
+        store = _store(tmp_path, {"run/a.txt": (b"alpha", "ea"), "run/b.txt": (b"beta", "eb")})
+        refs = pass_on(
+            refs=[remote_file("s3://bucket/run/a.txt"), remote_file("s3://bucket/run/b.txt")]
+        )
+
+        result = _evaluate_against(
+            store,
+            staging_root=tmp_path / "staging",
+            expr=[read_files(paths=refs), read_unannotated(paths=refs)],
+        )
+
+        assert result == [["alpha", "beta"], ["alpha", "beta"]]
+        assert store.downloads == 2
+
+    def test_a_missing_file_fails_the_task(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("GINKGO_STAGING_JOBS", "2")
+        store = _store(tmp_path, {f"run/{i}.txt": (b"x", f"e{i}") for i in range(5)})
+
+        with pytest.raises(FileNotFoundError, match="run/5.txt"):
+            _evaluate_against(
+                store,
+                staging_root=tmp_path / "staging",
+                expr=read_files(paths=[remote_file(f"s3://bucket/run/{i}.txt") for i in range(6)]),
+            )
 
     def test_local_file_unchanged(self, tmp_path) -> None:
         """Local file paths are not affected by remote staging."""
