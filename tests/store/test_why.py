@@ -123,6 +123,20 @@ def test_identical_bytes_at_two_paths_name_their_own_producers(workspace: Path) 
     ]
 
 
+def test_a_path_names_its_own_producer_from_outside_the_workspace(
+    recorded: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stored output paths are workspace-relative, not relative to the caller."""
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    with _reader(recorded) as reader:
+        second = reader.why(str(recorded / "out" / "b.ok"))
+
+    assert [entry["value_summary"] for entry in second.inputs if entry["param"] == "name"] == [
+        '"b"'
+    ]
+
+
 @pytest.mark.parametrize(
     ("target", "message"),
     [

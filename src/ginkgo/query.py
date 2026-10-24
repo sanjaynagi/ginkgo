@@ -1237,7 +1237,7 @@ class Query:
                 "WHERE o.artifact_id = ? ORDER BY t.cached ASC, o.run_id DESC",
                 (artifact_id,),
             )
-            if path is None or str(Path(row["path"]).expanduser().resolve()) == path
+            if path is None or self._workspace_path(row["path"]) == path
         ]
         run_id = _first(producers, "run_id")
         task_id = _first(producers, "task_id")
@@ -1268,7 +1268,7 @@ class Query:
 
     def _resolve_artifact(self, path_or_artifact_id: str) -> tuple[str, str | None]:
         """Return the artifact id *path_or_artifact_id* names, and the path used."""
-        resolved = str(Path(path_or_artifact_id).expanduser().resolve())
+        resolved = self._workspace_path(path_or_artifact_id)
         rows = self._store.query(
             "SELECT artifact_id FROM materializations WHERE path = ?", (resolved,)
         )
@@ -1294,6 +1294,14 @@ class Query:
             "plain `str` is not tracked; annotate the return `-> file` (or `-> folder`), "
             "or write it through an `Out[file]` parameter, and ginkgo records it."
         )
+
+    def _workspace_path(self, path: str) -> str:
+        """Return *path* resolved against the project root, not the caller's cwd.
+
+        Output paths are recorded relative to the project root, the directory
+        holding ``.ginkgo/``; a library caller may be standing anywhere.
+        """
+        return str((self._layout.root.parent / Path(path).expanduser()).resolve())
 
     def _task_name(self, *, run_id: str | None, task_id: str | None) -> str | None:
         """Return the name one task is shown under: its display label or base name."""
