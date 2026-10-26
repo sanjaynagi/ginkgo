@@ -424,7 +424,7 @@ class ConcurrentEvaluator:
             hash_memo=self._hash_memo,
             trust_mtimes=self.trust_mtimes,
         )
-        self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
+        self._staging_jobs = resolve_staging_jobs()
         self._digests = DigestRegistry()
         self._remote_dispatch = RemoteDispatchManager(
             registry=self.executor_registry,
@@ -973,8 +973,8 @@ class ConcurrentEvaluator:
                 # cache hit downloads nothing; staging follows only a miss.
                 if self._stager.needs_identity(node=node):
                     assert self._executors is not None
-                    future = self._executors.staging.submit(
-                        self._stager.resolve_task_identities, node=node
+                    future = self._stager.resolve_task_identities(
+                        node=node, pool=self._executors.staging
                     )
                     self._track(future, node=node, on_done=self._on_identities_resolved)
                 else:
@@ -996,7 +996,7 @@ class ConcurrentEvaluator:
                 default=self._stager.default_access(task_def=node.task_def),
             ),
         )
-        future = self._executors.staging.submit(self._stager.stage_task_inputs, node=node)
+        future = self._stager.stage_task_inputs(node=node, pool=self._executors.staging)
         self._track(future, node=node, on_done=self._on_inputs_staged)
 
     def _consume_completed_futures(self, done_futures: set[Future[Any]]) -> None:
@@ -1818,6 +1818,8 @@ class ConcurrentEvaluator:
             "task_kind": node.task_def.kind,
             "binding_name": node.task_def.fn.__name__,
             "transport_dir": str(node.transport_path),
+            # A pod downloads its ``direct`` inputs this many at a time.
+            "staging_jobs": self._staging_jobs,
             # Workers re-import the workflow module, which re-runs its param()
             # calls; without this they would resolve to the declared defaults.
             "param_context": (

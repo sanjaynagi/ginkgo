@@ -23,6 +23,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import Lock
 from typing import Any, Sequence
 
 from ginkgo.config import load_runtime_config
@@ -37,12 +38,20 @@ from ginkgo.store.sqlite import MEMORY
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = [
+    "DEFAULT_STAGING_JOBS",
     "RemoteIdentityError",
     "StagingCache",
     "StagingEntry",
     "StagingIndex",
+    "resolve_identities",
     "resolve_identity",
 ]
+
+DEFAULT_STAGING_JOBS = 16
+"""Store requests in flight at once, unless ``[remote] staging_jobs`` says otherwise.
+
+Requests wait on the network, not the CPU, so this is independent of ``-j``.
+"""
 
 
 class RemoteIdentityError(RuntimeError):
@@ -92,6 +101,39 @@ def resolve_identity(*, ref: RemoteRef, backend: ObjectStore | None = None) -> R
             "detected. Pin it with remote_file(..., version_id=...)."
         )
     return replace(ref, etag=meta.etag, size=meta.size)
+
+
+def resolve_identities(*, refs: Sequence[RemoteRef]) -> list[RemoteRef | Exception]:
+    """Return each ref resolved to its identity, or the error that stopped it, in order.
+
+    Two or more files under one parent prefix of a bucket take their ETags and
+    sizes from one LIST of that prefix rather than a HEAD each. A file the
+    listing misses or reports without an ETag, every file when the listing
+    fails (a store may grant reads but not listing), and any other ref falls
+    back to :func:`resolve_identity`.
+    """
+    listed: dict[str, RemoteObjectMeta] = {}
+    parents = {(ref.scheme, ref.bucket, ref.key.rpartition("/")[0]) for ref in refs}
+    if len(refs) > 1 and len(parents) == 1 and all(isinstance(r, RemoteFileRef) for r in refs):
+        scheme, bucket, parent = parents.pop()
+        try:
+            objects = resolve_backend(scheme).list_prefix(bucket=bucket, prefix=f"{parent}/")
+            # A listed URI's path after its bucket is the object's key.
+            listed = {meta.uri.split("://", 1)[1].partition("/")[2]: meta for meta in objects}
+        except Exception:  # noqa: BLE001 - each ref is asked for with a HEAD instead
+            pass
+
+    outcomes: list[RemoteRef | Exception] = []
+    for ref in refs:
+        meta = listed.get(ref.key)
+        if meta is not None and meta.etag is not None:
+            outcomes.append(replace(ref, etag=meta.etag, size=meta.size))
+            continue
+        try:
+            outcomes.append(resolve_identity(ref=ref))
+        except Exception as exc:  # noqa: BLE001 - it fails this ref, not the others
+            outcomes.append(exc)
+    return outcomes
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -236,6 +278,7 @@ class StagingCache:
         else:
             self._db_path = WorkspaceLayout.for_cwd().db
         self._index: StagingIndex | None = None
+        self._index_lock = Lock()
 
     @property
     def index(self) -> StagingIndex:
@@ -244,15 +287,17 @@ class StagingCache:
         Neither the database nor the directories the bytes go in are made
         until something is actually staged.
         """
-        if self._index is None:
-            for directory in (self._blobs_dir, self._folders_dir):
-                directory.mkdir(parents=True, exist_ok=True)
-            self._index = (
-                StagingIndex.in_memory()
-                if self._db_path == MEMORY
-                else StagingIndex.open(path=self._db_path)
-            )
-        return self._index
+        # Staging threads open it concurrently; only one of them may.
+        with self._index_lock:
+            if self._index is None:
+                for directory in (self._blobs_dir, self._folders_dir):
+                    directory.mkdir(parents=True, exist_ok=True)
+                self._index = (
+                    StagingIndex.in_memory()
+                    if self._db_path == MEMORY
+                    else StagingIndex.open(path=self._db_path)
+                )
+            return self._index
 
     def close(self) -> None:
         """Release the database connection, if one was ever opened."""

@@ -93,9 +93,14 @@ A remote input is keyed by its store's metadata, never by its downloaded
 bytes: `version_id` when pinned, otherwise a file's ETag and size or a
 folder's listing digest (`RemoteRef.identity`). When a dispatched node has an
 input without one, the staging pool resolves it first
-(`RemoteStager.resolve_task_identities`, one HEAD or LIST per URI per run,
-memoised so every task reading a URI sees the same version), then the cache
-is checked, and only a miss stages. A FUSE marker carries the same identity
+(`RemoteStager.resolve_task_identities`, memoised per URI for the run so
+every task reading a URI sees the same version), then the cache is checked,
+and only a miss stages. A folder takes one LIST. A task's files under one
+parent prefix take one LIST of that prefix between them, falling back to a
+HEAD for any file the listing misses or reports without an ETag, and for every
+file when the store refuses the listing; any other file takes one HEAD. The
+prefix is listed in full, subdirectories included, so a deep prefix holding a
+few inputs costs more than their HEADs would. A FUSE marker carries the same identity
 and keys exactly as its ref does.
 
 Staging checks the bytes it fetches against that identity: a file whose ETag
@@ -132,7 +137,7 @@ Local (non-dispatched) worker tasks stream through the same
 `MountedAccess` strategy without any pod / privileged-container / CSI
 surface — just the driver binary + `/dev/fuse`.
 
-- **Gating.** `RemoteStager.stage_remote_refs`
+- **Gating.** `RemoteStager.stage_task_inputs`
   (`ginkgo/runtime/remote_input_resolver.py`) lifts the remote-only
   short-circuit for local worker tasks. Fuse selection is resolved
   per scheme with `driver_available=local_streaming_available(scheme=...)`
