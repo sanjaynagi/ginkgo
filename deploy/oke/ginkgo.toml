@@ -1,0 +1,24 @@
+# ginkgo.toml for a workflow whose tasks run on OKE. Values in <> are yours.
+# Tasks run there when they name the executor, `@task(executor="oke")`, or
+# when the run sets it as the default: `ginkgo run --executor oke ...`.
+
+# How the driver signs its OCI requests: as its pod's Kubernetes service
+# account, so no API key is mounted. Workers get the same from `env` below.
+[remote.oci]
+auth = "oke_workload_identity"
+region = "<region>"
+
+# Where file values and large results pass between the driver and workers.
+[remote.artifacts]
+store = "oci://<artifacts-bucket>@<os-namespace>/ginkgo/<workflow>/"
+
+[remote.executors.oke]
+type = "k8s"
+image = "<region>.ocir.io/<os-namespace>/ginkgo/<workflow>:<tag>"
+namespace = "<namespace>"
+service_account = "<service-account>"
+image_pull_secrets = ["<ocir-pull-secret>"]
+fuse_annotations = {}                  # no GKE gcsfuse annotation
+ephemeral_storage = "20Gi"             # room for the largest inputs a task downloads
+pod_annotations = { "karpenter.sh/do-not-disrupt" = "true" }  # if Karpenter manages nodes
+env = { GINKGO_REMOTE_OCI_AUTH = "oke_workload_identity", GINKGO_REMOTE_OCI_REGION = "<region>" }

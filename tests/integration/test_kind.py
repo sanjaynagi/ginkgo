@@ -88,11 +88,16 @@ def test_a_task_runs_in_a_pod_and_its_output_comes_back(tmp_path: Path) -> None:
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "flow.py").write_text(WORKFLOW, encoding="utf-8")
     run_id = uuid.uuid4().hex
+    env = {**os.environ, "GINKGO_PARENT_RUN_ID": run_id}
+    # CI runs the driver as a service account that holds only
+    # deploy/oke/driver-role.yaml, so a permission missing from it fails here.
+    if driver_kubeconfig := os.environ.get("GINKGO_KIND_DRIVER_KUBECONFIG"):
+        env["KUBECONFIG"] = driver_kubeconfig
 
     result = subprocess.run(
         [sys.executable, "-m", "ginkgo.cli", "run", "kind_workflow/flow.py"],
         cwd=tmp_path,
-        env={**os.environ, "GINKGO_PARENT_RUN_ID": run_id},
+        env=env,
         text=True,
         capture_output=True,
         timeout=600,
