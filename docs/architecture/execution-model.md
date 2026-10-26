@@ -268,7 +268,7 @@ argument preprocessing.
   independently from CPU task concurrency, with `GINKGO_STAGING_JOBS` and
   `remote.staging_jobs` support. The pool's unit of work is one remote input,
   not one task, so `staging_jobs` is the number of store requests in flight
-  across the run. A task's continuation runs on the scheduler thread once the
+  across the run, 16 by default and independent of `-j`. A task's continuation runs on the scheduler thread once the
   futures of all its inputs are done; no pool thread waits on another.
 - Tasks share the work for a remote reference they have in common, so one
   identity lookup and one download serve every task and list item naming it.

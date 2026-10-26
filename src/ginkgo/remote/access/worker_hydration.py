@@ -21,7 +21,7 @@ from ginkgo.core.types import file, folder
 from ginkgo.remote.access.mounted import MountedAccess
 from ginkgo.remote.access.protocol import decode_remote_input, is_fuse_policy, is_remote_input
 from ginkgo.remote.access.staged import StagedAccess
-from ginkgo.remote.staging import StagingCache
+from ginkgo.remote.staging import DEFAULT_STAGING_JOBS, StagingCache
 from ginkgo.store.sqlite import MEMORY
 
 
@@ -44,17 +44,13 @@ class Hydration:
     digests: dict[str, str]
 
 
-DEFAULT_HYDRATION_JOBS = 4
-"""How many ``direct`` inputs a worker downloads at once when its payload doesn't say."""
-
-
 def hydrate_remote_inputs(
     *,
     args: dict[str, Any],
     staging_root: Path | None = None,
     mounted_access: MountedAccess | None = None,
     staged_access: StagedAccess | None = None,
-    jobs: int = DEFAULT_HYDRATION_JOBS,
+    jobs: int = DEFAULT_STAGING_JOBS,
 ) -> Hydration:
     """Replace remote-input markers in ``args`` with local paths.
 

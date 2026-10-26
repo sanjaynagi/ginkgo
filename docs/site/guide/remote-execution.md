@@ -402,7 +402,7 @@ A remote input is read the same way wherever it sits in a task's arguments: in
 a list, tuple or dict, under any annotation or none, and whether the workflow
 named it or an upstream task returned it. Each input is fetched as a job of its
 own, `[remote] staging_jobs` at a time across the run (`GINKGO_STAGING_JOBS`
-overrides it; the default is `jobs`, capped at 4), so a task with thousands of
+overrides it; the default is 16, whatever `-j` is), so a task with thousands of
 inputs doesn't wait for them one by one. A pod downloads its `direct` inputs the
 same number at a time.
 

@@ -35,7 +35,10 @@ class S3FileSystemBackend(FsspecBackend):
         if self._region is not None:
             client_kwargs["region_name"] = self._region
 
-        kwargs: dict[str, Any] = {}
+        # botocore pools 10 connections and makes the rest wait, which would
+        # cap concurrent staging below ``staging_jobs``. Connections open
+        # lazily, so a larger pool costs nothing until it is used.
+        kwargs: dict[str, Any] = {"config_kwargs": {"max_pool_connections": 64}}
         if client_kwargs:
             kwargs["client_kwargs"] = client_kwargs
 

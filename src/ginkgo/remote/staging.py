@@ -38,6 +38,7 @@ from ginkgo.store.sqlite import MEMORY
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = [
+    "DEFAULT_STAGING_JOBS",
     "RemoteIdentityError",
     "StagingCache",
     "StagingEntry",
@@ -45,6 +46,12 @@ __all__ = [
     "resolve_identities",
     "resolve_identity",
 ]
+
+DEFAULT_STAGING_JOBS = 16
+"""Store requests in flight at once, unless ``[remote] staging_jobs`` says otherwise.
+
+Requests wait on the network, not the CPU, so this is independent of ``-j``.
+"""
 
 
 class RemoteIdentityError(RuntimeError):

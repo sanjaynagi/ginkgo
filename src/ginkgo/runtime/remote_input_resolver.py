@@ -54,7 +54,7 @@ from ginkgo.remote.access.resolver import (
     load_access_config,
     resolve_access,
 )
-from ginkgo.remote.staging import StagingCache, resolve_identities
+from ginkgo.remote.staging import DEFAULT_STAGING_JOBS, StagingCache, resolve_identities
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -220,8 +220,8 @@ def remote_ref_identity(*, ref: RemoteRef) -> str:
     )
 
 
-def resolve_staging_jobs(*, jobs: int) -> int:
-    """Return the configured staging concurrency."""
+def resolve_staging_jobs() -> int:
+    """Return how many store requests staging keeps in flight at once."""
     configured = os.environ.get("GINKGO_STAGING_JOBS")
     if configured:
         return _parse_positive_int(value=configured, label="GINKGO_STAGING_JOBS")
@@ -234,7 +234,7 @@ def resolve_staging_jobs(*, jobs: int) -> int:
             label="remote.staging_jobs",
         )
 
-    return max(1, min(jobs, 4))
+    return DEFAULT_STAGING_JOBS
 
 
 def _parse_positive_int(*, value: Any, label: str) -> int:

@@ -267,15 +267,13 @@ def _hydrate_remote_markers(payload: dict):
     if not isinstance(args, dict) or not _payload_has_remote_markers(args):
         return None
 
-    from ginkgo.remote.access.worker_hydration import (
-        DEFAULT_HYDRATION_JOBS,
-        hydrate_remote_inputs,
-    )
+    from ginkgo.remote.access.worker_hydration import hydrate_remote_inputs
+    from ginkgo.remote.staging import DEFAULT_STAGING_JOBS
 
     hydration = hydrate_remote_inputs(
         args=args,
         staging_root=_scratch_root() / "ginkgo-staging",
-        jobs=payload.get("staging_jobs") or DEFAULT_HYDRATION_JOBS,
+        jobs=payload.get("staging_jobs") or DEFAULT_STAGING_JOBS,
     )
     payload["args"] = hydration.args
     return hydration

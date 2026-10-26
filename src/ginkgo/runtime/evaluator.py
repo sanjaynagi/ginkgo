@@ -424,7 +424,7 @@ class ConcurrentEvaluator:
             hash_memo=self._hash_memo,
             trust_mtimes=self.trust_mtimes,
         )
-        self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
+        self._staging_jobs = resolve_staging_jobs()
         self._digests = DigestRegistry()
         self._remote_dispatch = RemoteDispatchManager(
             registry=self.executor_registry,
