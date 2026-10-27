@@ -15,8 +15,8 @@ Every source text folded into the digest — the task definition and each file i
 the closure — first has the resource-only keyword arguments of its ``@task(...)``
 decorators deleted, so that retuning ``threads`` or ``memory`` — or changing
 what a failure stops, with ``on_failure`` — mid-run does not discard completed
-results. Each closure file also has the body of every top-level ``@task`` or
-``@flow`` function replaced by ``...``: one task cannot read another's body,
+results. Each closure file also has the body of every top-level function
+decorated with ginkgo's ``task`` or ``flow`` replaced by ``...``: one task cannot read another's body,
 and a flow body only wires expressions, so editing either leaves the tasks
 beside it cached. The task's own body is hashed separately, from its own
 definition. Nothing else about the text is normalised.
@@ -70,8 +70,14 @@ _RESOURCE_ONLY_KWARGS = frozenset(
     }
 )
 
-#: Decorators whose functions' bodies are left out of every closure file.
-_BODY_FREE_DECORATORS = frozenset({"task", "flow"})
+#: Qualified names of ginkgo's ``task`` and ``flow`` decorators, from each
+#: module that exports them. A function decorated with one, resolved through
+#: its module's imports, has its body left out of every closure file.
+_GINKGO_DECORATORS = frozenset(
+    f"{module}.{name}"
+    for name, home in (("task", "ginkgo.core.task"), ("flow", "ginkgo.core.flow"))
+    for module in ("ginkgo", "ginkgo.core", home)
+)
 
 
 def compute_source_hash(fn: Callable[..., Any]) -> str:
@@ -182,8 +188,11 @@ def _hash_module_source(path: Path) -> str:
 def _without_task_bodies(source: str) -> str:
     """Return ``source`` with each top-level ``@task``/``@flow`` body replaced by ``...``.
 
-    The decorators and signature stay, so renaming or re-decorating a task
-    still invalidates. Only top-level definitions count: a decorated method or
+    A decorator counts only when the module's own imports resolve it to
+    ginkgo's ``task`` or ``flow``, aliases included; another library's
+    ``@app.task`` keeps its body. The decorators and signature stay, so
+    renaming or re-decorating a task still invalidates. Only top-level
+    definitions count: a decorated method or
     nested function keeps its body. Comments outside the replaced span, above
     the first statement or after the last, stay too. Source that will not
     parse is returned unchanged.
@@ -193,6 +202,7 @@ def _without_task_bodies(source: str) -> str:
     except (SyntaxError, ValueError):
         return source
 
+    bindings = _import_bindings(tree)
     data = source.encode("utf-8")
     line_starts = _line_start_offsets(data)
     edits = [
@@ -204,12 +214,45 @@ def _without_task_bodies(source: str) -> str:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any(
-            _decorator_name(decorator.func if isinstance(decorator, ast.Call) else decorator)
-            in _BODY_FREE_DECORATORS
+            _qualified_name(
+                decorator.func if isinstance(decorator, ast.Call) else decorator, bindings
+            )
+            in _GINKGO_DECORATORS
             for decorator in node.decorator_list
         )
     ]
     return _apply_edits(data, edits) if edits else source
+
+
+def _import_bindings(tree: ast.Module) -> dict[str, str]:
+    """Return the qualified name each top-level import binds, by local name.
+
+    ``import a.b`` binds ``a`` to ``a``; ``import a.b as c`` binds ``c`` to
+    ``a.b``; ``from a import b as c`` binds ``c`` to ``a.b``. Relative and
+    function-local imports bind nothing here, so a decorator spelled through
+    one is not resolved.
+    """
+    bindings: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.partition(".")[0]
+                bindings[local] = alias.name if alias.asname else local
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            for alias in node.names:
+                bindings[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return bindings
+
+
+def _qualified_name(func: ast.expr, bindings: dict[str, str]) -> str | None:
+    """Return the qualified name ``func`` refers to through ``bindings``, if any."""
+    spelled = _dotted_name(func)
+    if spelled is None:
+        return None
+    head, _, rest = spelled.partition(".")
+    if head not in bindings:
+        return None
+    return f"{bindings[head]}.{rest}" if rest else bindings[head]
 
 
 def _without_resource_kwargs(source: str) -> str:
@@ -257,7 +300,12 @@ def _resource_free_arguments(
     The rewrite is ``(start, end, replacement)`` over ``data``, spanning the
     bytes between the call's parentheses.
     """
-    if not isinstance(decorator, ast.Call) or _decorator_name(decorator.func) != "task":
+    # Matched by spelling, not resolved through imports: a task definition's own
+    # text carries none. An aliased ``task`` keeps its resource arguments, since
+    # the filter must never guess which arguments of an unknown decorator are
+    # safe to drop.
+    spelled = _dotted_name(decorator.func) if isinstance(decorator, ast.Call) else None
+    if spelled is None or spelled.rpartition(".")[2] != "task":
         return None
 
     elements: list[ast.expr | ast.keyword] = [*decorator.args, *decorator.keywords]
@@ -296,16 +344,13 @@ def _is_resource_kwarg(element: ast.expr | ast.keyword) -> bool:
     return isinstance(element, ast.keyword) and element.arg in _RESOURCE_ONLY_KWARGS
 
 
-def _decorator_name(func: ast.expr) -> str | None:
-    """Return ``name`` when ``func`` spells ``name`` or ``<something>.name``.
-
-    An aliased import (``from ginkgo import task as run``) is not recognised,
-    so its resource arguments and its body keep invalidating: the filters must
-    never guess what an unknown decorator does.
-    """
+def _dotted_name(func: ast.expr) -> str | None:
+    """Return the dotted name ``func`` spells, such as ``task`` or ``ginkgo.task``."""
     if isinstance(func, ast.Name):
         return func.id
-    return func.attr if isinstance(func, ast.Attribute) else None
+    if isinstance(func, ast.Attribute) and (base := _dotted_name(func.value)):
+        return f"{base}.{func.attr}"
+    return None
 
 
 def _line_start_offsets(data: bytes) -> list[int]:

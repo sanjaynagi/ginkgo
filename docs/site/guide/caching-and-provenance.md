@@ -92,8 +92,9 @@ task or flow body. The `ginkgo init` layout keeps tasks out of `flow.py`, in
 imports the task modules, not the other way round. `ginkgo cache explain <run_id>` reports
 `module_source_changed` for a task invalidated this way (its own text is
 unchanged) and `source_hash_changed` when the task's own definition moved. A
-task decorated through an alias (`from ginkgo import task as t`) is not
-recognised, and its body keeps counting for the tasks beside it.
+decorator counts as ginkgo's when the module's imports say so, aliases included
+(`from ginkgo import task as t`, `import ginkgo as g`). Another library's
+`@app.task` keeps its body in the hash.
 
 Local-import tracking is conservative: changing a reachable helper module
 invalidates tasks that import it, even when the changed symbol is not called.

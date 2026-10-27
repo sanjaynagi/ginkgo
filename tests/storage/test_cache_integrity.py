@@ -439,25 +439,73 @@ def test_a_task_s_hash_leaves_out_other_task_and_flow_bodies(
     tmp_path, monkeypatch, old, new, a_same, b_same
 ):
     monkeypatch.syspath_prepend(str(tmp_path))
-
-    def hashes_of(source: str) -> tuple[str, str | None]:
-        (tmp_path / "sibling_tasks.py").write_text(source, encoding="utf-8")
-        linecache.checkcache()
-        sys.modules.pop("sibling_tasks", None)
-        importlib.invalidate_caches()
-        module = importlib.import_module("sibling_tasks")
-        b = getattr(module, "b", None)
-        return (
-            source_hash.compute_source_hash(module.a.fn),
-            b and source_hash.compute_source_hash(b.fn),
-        )
-
     try:
-        (a1, b1), (a2, b2) = hashes_of(_SIBLINGS), hashes_of(_SIBLINGS.replace(old, new))
+        a1, b1 = _task_hashes(tmp_path, _SIBLINGS)
+        a2, b2 = _task_hashes(tmp_path, _SIBLINGS.replace(old, new))
         assert (a1 == a2) is a_same
         assert b_same is None or (b1 == b2) is b_same
     finally:
         sys.modules.pop("sibling_tasks", None)
+
+
+def _task_hashes(root: Path, source: str) -> tuple[str, str | None]:
+    """Load ``source`` as ``sibling_tasks`` from ``root``; hash tasks ``a`` and ``b``."""
+    (root / "sibling_tasks.py").write_text(source, encoding="utf-8")
+    linecache.checkcache()
+    sys.modules.pop("sibling_tasks", None)
+    importlib.invalidate_caches()
+    module = importlib.import_module("sibling_tasks")
+    b = getattr(module, "b", None)
+    return (
+        source_hash.compute_source_hash(module.a.fn),
+        b and source_hash.compute_source_hash(b.fn),
+    )
+
+
+_FOREIGN_AND_ALIASED = """\
+from celery import Celery
+from ginkgo import task as t
+
+app = Celery()
+
+
+@app.task
+def helper():
+    return 1
+
+
+@t()
+def a(x: int) -> int:
+    return x + helper()
+
+
+@t()
+def b(x: int) -> int:
+    return x - 1
+"""
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "a_same"),
+    [
+        pytest.param("return 1", "return 2", False, id="another-library-s-task-keeps-its-body"),
+        pytest.param(
+            "return x - 1", "return x - 2", True, id="an-aliased-ginkgo-task-is-left-out"
+        ),
+    ],
+)
+def test_only_ginkgo_s_own_decorators_leave_a_body_out(tmp_path, monkeypatch, old, new, a_same):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "celery.py").write_text(
+        "class Celery:\n    def task(self, fn):\n        return fn\n", encoding="utf-8"
+    )
+    try:
+        a1, _ = _task_hashes(tmp_path, _FOREIGN_AND_ALIASED)
+        a2, _ = _task_hashes(tmp_path, _FOREIGN_AND_ALIASED.replace(old, new))
+        assert (a1 == a2) is a_same
+    finally:
+        sys.modules.pop("sibling_tasks", None)
+        sys.modules.pop("celery", None)
 
 
 def test_editing_one_task_in_a_workflow_file_leaves_the_other_cached(tmp_path):

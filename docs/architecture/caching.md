@@ -129,8 +129,10 @@ in every closure file, keeping their decorators and signatures (issue #410). A
 task body cannot depend on another task's body (calling a task builds an
 expression, keyed on its own source), and a flow body reaches a task only
 through its arguments, which are hashed already. The task's own body is still
-covered, through its definition. Decorated methods and nested functions keep
-their bodies, as does a decorator imported under an alias. The user-facing
+covered, through its definition. A decorator counts only when the module's
+top-level imports resolve it to ginkgo's `task` or `flow` (`_import_bindings`),
+aliases included, so another library's `@app.task` keeps its body. Decorated
+methods and nested functions keep theirs too. The user-facing
 consequence is documented under "Cache identity" in
 `docs/site/guide/caching-and-provenance.md`.
 
