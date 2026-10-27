@@ -68,7 +68,9 @@ renumbered, so a row means the same thing in every table it appears in.
 
 `edges` is the one graph table: `(run_id, src_kind, src_id, dst_kind, dst_id,
 edge)` over kinds `task | artifact | run` and edges
-`depends_on | dynamic_depends_on | produced | child_of`. Task dependencies,
+`depends_on | dynamic_depends_on | produced | child_of`. `produced` and
+`child_of` read *src edge dst*; the two dependency edges read the other way,
+with `src` the upstream task and `dst` the task that depends on it. Task dependencies,
 the files a task produced and sub-workflow links are the same shape, so one
 query walks all of them. A `file` or `folder` output whose bytes the cache
 stored carries its `artifact_id` on its `TaskCompleted.outputs` entry, so its

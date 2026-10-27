@@ -7,9 +7,10 @@ import ctypes
 import functools
 import io
 import os
+import signal
 import sys
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Thread, current_thread, main_thread
 import traceback
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,12 @@ def install_log_queue(log_queue: Any) -> None:
     """Process-pool initializer: route this worker's task log chunks to *log_queue*."""
     global _log_queue
     _log_queue = log_queue
+    # A terminal Ctrl-C signals the whole process group. The parent owns the
+    # interrupt and terminates its workers; a task body must not see it and
+    # report a KeyboardInterrupt as its own failure. (Thread-pool fallback:
+    # not the main thread, and the parent's handler stays put.)
+    if current_thread() is main_thread():
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def error_response(exc: BaseException) -> dict[str, Any]:

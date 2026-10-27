@@ -17,11 +17,11 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.plugins.api import RunnerContext, TaskInvocation, TaskKind, TaskRunner
 from ginkgo.plugins.registry import plugin_registry
@@ -111,6 +111,12 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
+
+
+class ResourceBudgetError(GinkgoError, ValueError):
+    """Raised when a task asks for more of a resource than the run has."""
+
+    failure_kind: ClassVar[FailureKind] = "insufficient_resources"
 
 
 class RootSkippedError(GinkgoError, RuntimeError):
@@ -866,24 +872,24 @@ class ConcurrentEvaluator:
 
         Raises
         ------
-        ValueError
+        ResourceBudgetError
             If any demand exceeds its budget.
         """
         for dimension, demand in custom.items():
             budget = (self.resource_budgets or {}).get(dimension)
             if budget is not None and demand > budget:
-                raise ValueError(
+                raise ResourceBudgetError(
                     f"{task_name} requires {demand} {dimension} but only "
                     f"{budget} are available in the run's {dimension} budget"
                 )
         if remote:
             return
         if threads > self.cores:
-            raise ValueError(
+            raise ResourceBudgetError(
                 f"{task_name} requires {threads} cores but only {self.cores} are available"
             )
         if self.memory is not None and memory_gb > self.memory:
-            raise ValueError(
+            raise ResourceBudgetError(
                 f"{task_name} requires {memory_gb} GiB but only {self.memory} GiB are available"
             )
 

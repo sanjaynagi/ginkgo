@@ -32,6 +32,7 @@ at the nearest `ginkgo.toml`.
 
 `ginkgo query`
 : Run one read-only SQL statement against the provenance database.
+  `ginkgo query --schema` prints the tables and their columns.
 
 `ginkgo export`
 : Write a run's ledger events as JSONL (`export events`) or its manifest as
@@ -173,7 +174,7 @@ none is printed.
 | 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
 | 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key or flag, `cache prune` or `db prune` with no limit, `query` with no statement, `run --rerun` naming no task the workflow defines. The message goes to stderr. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
-| 130 | Interrupted with Ctrl-C. The run is recorded `cancelled`; every task it had not finished, running or not yet started, is recorded `skipped` as interrupted, not `failed`. |
+| 130 | Interrupted with Ctrl-C. The run is recorded `cancelled`; every task it had not finished, running or not yet started, is recorded `skipped` as interrupted, not `failed`. To resume, run `ginkgo run` again: what finished is served from the cache. |
 
 ### Task Names
 

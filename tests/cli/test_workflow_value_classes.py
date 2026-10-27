@@ -131,4 +131,4 @@ def test_a_moved_project_keeps_its_cache_for_workflow_values(tmp_path: Path) -> 
     shutil.move(project, moved)
 
     assert "0 tasks executed, 8 cached" in _run(cwd=moved)
-    assert "1 tasks executed, 7 cached" in _run("--rerun", "use_point", cwd=moved)
+    assert "1 task executed, 7 cached" in _run("--rerun", "use_point", cwd=moved)

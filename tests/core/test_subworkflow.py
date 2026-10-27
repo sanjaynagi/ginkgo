@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import shutil
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -313,6 +314,8 @@ class TestRealChild:
         assert len([p for p in Path(".ginkgo/runs").iterdir() if p.is_dir()]) == 2
 
         Path("child/flow.py").write_text(child_source.replace("VERSION", "v2"), encoding="utf-8")
+        # A same-size rewrite within the same second would reuse the stale .pyc.
+        shutil.rmtree("child/__pycache__", ignore_errors=True)
         second = run_cli("run", "parent.py")
         assert second.returncode == 0, second.stderr
         assert Path("child_marker.txt").read_text(encoding="utf-8") == "v2"

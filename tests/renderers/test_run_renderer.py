@@ -460,7 +460,7 @@ def test_many_ignored_failures_are_panelled_up_to_a_limit(tmp_path: Path) -> Non
 
 
 def _fatal(label: str, error: str = "seqtkk: command not found") -> FailureDetails:
-    return _failure(label, exit_code=127, error=error, failure_kind="shell_command_error")
+    return _failure(label, exit_code=127, error=error, failure_kind="command_error")
 
 
 def test_identical_fatal_failures_share_one_panel_and_different_ones_do_not(tmp_path) -> None:
@@ -473,7 +473,7 @@ def test_identical_fatal_failures_share_one_panel_and_different_ones_do_not(tmp_
     assert shared.count("Failure Details:") == 1
     assert "Failure Details: trim[0] (×7)" in shared
     assert "trim[1], trim[2], trim[3]" in shared
-    assert "shell_command_error×7" in shared
+    assert "command_error×7" in shared
 
     separate = _printed(
         renderer._layout.render_failure_details(
@@ -486,9 +486,17 @@ def test_identical_fatal_failures_share_one_panel_and_different_ones_do_not(tmp_
 
 def test_the_failure_panel_shows_what_it_has_and_only_that(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
-    log_path = Path(".ginkgo/runs/20261005_105716_799605_a04c64d3/logs") / (
-        "task_0000_ginkgo_user_flow_547d514134.pack.stderr.log"
+    log_path = (
+        tmp_path
+        / ".ginkgo/runs/20261005_105716_799605_a04c64d3/logs"
+        / ("task_0000_ginkgo_user_flow_547d514134.pack.stderr.log")
     )
+    # A task that never ran has no log, so the panel names none.
+    assert "Log" not in _printed(
+        renderer._layout.render_failure_panel(_failure(log_path=log_path))
+    )
+    log_path.parent.mkdir(parents=True)
+    log_path.touch()
 
     # An in-process exception has no exit code, and "?" said nothing.
     assert "Exit code" not in _printed(
@@ -511,9 +519,9 @@ def test_the_failure_panel_shows_what_it_has_and_only_that(tmp_path: Path) -> No
 def test_a_bracketed_label_is_printed_verbatim_in_the_failure_panel(tmp_path, label) -> None:
     """A fan-out label is user data, not Rich markup: none of it is swallowed."""
     renderer, _ = _renderer(tmp_path)
-    details = _failure(
-        label, log_path=Path("logs/task[1].stderr.log"), error=f"bad region {label}"
-    )
+    log_path = tmp_path / "task[1].stderr.log"
+    log_path.touch()
+    details = _failure(label, log_path=log_path, error=f"bad region {label}")
 
     text = _printed(renderer._layout.render_failure_panel(details))
 
@@ -540,6 +548,17 @@ def test_progress_counts_only_tasks_with_a_result_as_complete(tmp_path: Path) ->
     text = _printed(renderer._layout.render_progress_section())
 
     assert "1/3 complete (1 failed, 1 skipped)" in text
+
+
+def test_a_grouped_fan_out_row_says_how_many_were_cache_hits(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path, rows=0)
+    renderer.start(planned_tasks=[(i, "mod.fit", f"fit[{i}]", "local") for i in range(8)])
+    for node_id in range(8):
+        renderer.write(_line("cached" if node_id < 6 else "succeeded", node_id=node_id) + "\n")
+
+    text = _printed(renderer._layout.render_task_table(now=0.0))
+
+    assert "8/8 (6 cached)" in text
 
 
 # Products and footers ------------------------------------------------------------

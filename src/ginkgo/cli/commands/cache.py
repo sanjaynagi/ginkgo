@@ -724,8 +724,11 @@ def _component_line(component: dict[str, Any]) -> str:
     return f"{name} [dim]({escape(detail)})[/]"
 
 
-def _short_value(value: object) -> str:
+def _short_value(value: Any) -> str:
     """Return a component value short enough to read beside its name."""
+    # An input's value is its hash record; the digest is the part that moved.
+    if isinstance(value, dict) and "digest" in value:
+        value = value["digest"]
     text = str(value)
     return text if len(text) <= 16 else f"{text[:12]}…"
 

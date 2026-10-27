@@ -317,10 +317,11 @@ rendered: only the summary line differs from a success.
 `ginkgo doctor` reports the same user-code location under each diagnostic.
 
 Run-time failure diagnostics classify each task failure into one of a small
-set of categories — `env_mismatch`, `import_error`, `invalid_path`,
-`missing_input`, `shell_command_error`, `serialization_error`,
-`user_code_error`, `output_validation_error`, `cache_error`,
-`cycle_detected`, `scheduler_error`, and `cancelled` — and the end-of-run
+set of categories (`FailureKind` in `errors.py`) — `env_mismatch`,
+`import_error`, `insufficient_resources`, `invalid_path`, `missing_input`,
+`command_error` (a shell or script task's non-zero exit),
+`serialization_error`, `user_code_error`, `output_validation_error`,
+`cycle_detected`, and `cancelled` — and the end-of-run
 renderer groups failures by category so that common root causes stand out
 without digging through individual panels. `cancelled` marks a task the run
 had started when something else stopped it, so the record closes it rather

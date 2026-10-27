@@ -1314,7 +1314,7 @@ class TestCliWorkflowParams:
     def test_parameter_passed_as_task_argument_invalidates_cache(self) -> None:
         write("workflow.py", _PARAM_WORKFLOW)
         run_ok("run", "workflow.py", "--n-reps", "1")
-        assert "1 tasks executed, 0 cached" in run_ok("run", "workflow.py", "--n-reps", "2").stdout
+        assert "1 task executed, 0 cached" in run_ok("run", "workflow.py", "--n-reps", "2").stdout
         assert _result() == "base:2"
 
     def test_inline_equals_and_repeated_values(self) -> None:

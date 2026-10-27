@@ -106,6 +106,7 @@ def test_a_notebook_renders_its_page_and_leaves_the_source_untouched(
         "rendered_html_run_id": run_dir.run_id,
     }
     assert notebook_path.read_bytes() == before
+    assert not (notebook_path.parent / "__marimo__").exists()
 
 
 def test_a_cache_hit_points_at_the_producing_page_until_the_notebook_is_edited(

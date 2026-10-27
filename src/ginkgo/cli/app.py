@@ -416,7 +416,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         type=_memory_arg,
         default=None,
         metavar="GIB|K8S",
-        help="Memory budget, in GiB or Kubernetes notation (e.g. 80, 80Gi, 512Mi).",
+        help="Memory budget, in whole GiB or Kubernetes notation (e.g. 80, 80Gi, 512Mi).",
     )
     run_parser.add_argument("--gpus", type=int, default=None)
     run_parser.add_argument(

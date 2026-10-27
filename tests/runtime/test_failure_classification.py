@@ -5,6 +5,7 @@ import pytest
 import ginkgo
 
 from ginkgo.envs.container import ContainerPrepareError
+from ginkgo.runtime.evaluator import ResourceBudgetError
 from ginkgo.runtime.task_runners import classify_failure
 from ginkgo.runtime.task_runners.shell import ShellTaskError
 from ginkgo.runtime.task_validation import DeclaredOutputNotWrittenError
@@ -74,8 +75,9 @@ class TestFrameworkClassification:
                     output="failed",
                     log=None,
                 ),
-                "shell_command_error",
+                "command_error",
             ),
+            (ResourceBudgetError("needs 64 GiB but only 4 GiB"), "insufficient_resources"),
             (PermissionError("denied"), "invalid_path"),
             (FileNotFoundError("missing.txt"), "missing_input"),
             (FileNotFoundError("task did not create out.txt"), "output_validation_error"),

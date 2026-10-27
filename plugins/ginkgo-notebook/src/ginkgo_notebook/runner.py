@@ -109,6 +109,9 @@ class NotebookRunner(DriverTaskRunner):
                 node=node,
                 cmd=cmd,
                 user_log_path=Path(directive.log) if directive.log is not None else None,
+                # marimo writes its session cache under sys.pycache_prefix
+                # rather than in a __marimo__/ beside the source notebook.
+                extra_env={"PYTHONPYCACHEPREFIX": str(html_path.parent.resolve() / ".pycache")},
                 mounts=declared_output_mounts(output=output),
             )
         if html_path.is_file():

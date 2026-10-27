@@ -26,10 +26,9 @@ _TAG: dict[CacheStatus, str] = {
 
 # Legend for the one status that is not self-explanatory.
 _UNKNOWN_MEANING = (
-    "cache status cannot be known without running something: a script, notebook "
-    "or subworkflow task's body is more than a single `return script(...)`, "
-    "`notebook(...)` or `subworkflow(...)` whose arguments a dry run can work out, "
-    "or an input is a path the run restores first"
+    "cache status cannot be known without running something: an input is an "
+    "upstream output the run restores from the cache first, or a script, notebook "
+    "or subworkflow task's body is more than a single call a dry run can work out"
 )
 
 # Legend for an unknown task that only waits on its upstream tasks.

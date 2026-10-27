@@ -199,4 +199,4 @@ your workspace. The ones you will want most often:
 | `tasks` | task within a run — status, cache key, timings, attempts |
 | `events` | ledger event, with the full payload as JSON |
 | `cache_entries` | cache entry — function, size, hit count |
-| `edges` | provenance edge between two nodes |
+| `edges` | provenance edge between two nodes (for `depends_on`, `src_id` is the upstream task and `dst_id` the task that depends on it) |
