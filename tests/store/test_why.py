@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from ginkgo import Out, file, query, task
+from ginkgo import Out, file, folder, query, task
 from ginkgo.cli.commands.why import _render_why
 from ginkgo.query import Provenance
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -42,6 +42,18 @@ def _both(first: file, second: file) -> list[str]:
     return [str(first), str(second)]
 
 
+@task()
+def _write_folder(name: str, output_dir: Out[folder]) -> folder:
+    Path(output_dir).mkdir(parents=True)
+    (Path(output_dir) / "hit.txt").write_text(name, encoding="utf-8")
+    return folder(output_dir)
+
+
+@task()
+def _fan_out(names: list[str], attempt: int = 0) -> list[folder]:
+    return [_write_folder(name=name, output_dir=f"results/{name}") for name in names]
+
+
 def _record(root: Path, expr: object) -> Path:
     """Run ``expr`` in ``root`` through a ledger, as ``ginkgo run`` would; return the db."""
     previous = Path.cwd()
@@ -71,6 +83,7 @@ def recorded(tmp_path_factory) -> Path:
                 first=_write_marker(name="a", output_path="out/a.ok"),
                 second=_write_marker(name="b", output_path="out/b.ok"),
             ),
+            _fan_out(names=["tetracycline"]),
         ),
     )
     return root
@@ -135,6 +148,25 @@ def test_a_path_names_its_own_producer_from_outside_the_workspace(
     assert [entry["value_summary"] for entry in second.inputs if entry["param"] == "name"] == [
         '"b"'
     ]
+
+
+def test_an_output_of_a_dynamically_returned_task_names_that_task(workspace: Path) -> None:
+    """The parent's result carries the child's folder, but the child wrote it."""
+    with _reader(workspace) as reader:
+        provenance = reader.why(str(workspace / "results" / "tetracycline"))
+
+    assert str(provenance.task_name).endswith("_write_folder")
+    assert [entry["param"] for entry in provenance.inputs] == ["name", "output_dir"]
+
+
+def test_a_rerun_parent_does_not_claim_its_cached_childs_output(tmp_path: Path) -> None:
+    _record(tmp_path, _fan_out(names=["tetracycline"]))
+    _record(tmp_path, _fan_out(names=["tetracycline"], attempt=1))
+
+    with _reader(tmp_path) as reader:
+        provenance = reader.why(str(tmp_path / "results" / "tetracycline"))
+
+    assert str(provenance.task_name).endswith("_write_folder")
 
 
 @pytest.mark.parametrize(

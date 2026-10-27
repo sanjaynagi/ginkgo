@@ -13,7 +13,8 @@ from rich.console import Console
 
 from ginkgo import per_branch, shell, task
 from ginkgo.cli.commands.run import planned_task_rows
-from ginkgo.cli.renderers.common import _status_icon
+from ginkgo.cli.renderers.common import _status_icon, environment_label
+from ginkgo.cli.renderers.debug import render_log_tail
 from ginkgo.cli.renderers.models import (
     CliRenderedPage,
     CliRunSummary,
@@ -33,6 +34,7 @@ from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareFailed,
     EnvPrepareStarted,
+    GraphNodeRegistered,
     EventBus,
     PhaseTimed,
     RunResourcesSampled,
@@ -147,6 +149,25 @@ def test_ledger_only_events_are_ignored_silently() -> None:
 
 
 # Row state ------------------------------------------------------------------
+
+
+def test_a_node_registered_mid_run_shows_its_own_environment() -> None:
+    """A fan-out a dynamic task returns is not in the seeded plan."""
+    sink = _Sink()
+    RichEventRenderer(renderer=sink)(
+        GraphNodeRegistered(
+            run_id="r1", task_id="task_7", node_id=7, task_name="mod.clean", env="graph"
+        )
+    )
+    state = _state()
+
+    state.handle_event_line(json.dumps(sink.lines[0]))
+    state.handle_event_line(_line("cached", node_id=7))
+
+    assert (state.rows[7].env_label, state.rows[7].status) == (
+        environment_label("graph"),
+        "cached",
+    )
 
 
 def test_preparation_is_active_but_does_not_start_the_task_clock() -> None:
@@ -349,6 +370,16 @@ def test_a_piped_run_prints_every_row(tmp_path: Path) -> None:
     assert all(f"task_{i}" in output.getvalue() for i in range(42))
 
 
+@pytest.mark.parametrize("success", [True, False])
+def test_the_final_frame_says_the_run_finished(tmp_path: Path, success: bool) -> None:
+    renderer, output = _renderer(tmp_path)
+    renderer.finish(elapsed=1.0, success=success)
+
+    # The header still says where tasks ran; the status line no longer spins.
+    assert "Finished" in output.getvalue()
+    assert "Running" not in output.getvalue().replace("Running locally", "")
+
+
 def test_each_repaint_is_bracketed_as_one_terminal_update(tmp_path: Path) -> None:
     """DEC 2026 keeps the terminal from drawing a half-erased frame."""
     output = StringIO()
@@ -482,6 +513,18 @@ def test_identical_fatal_failures_share_one_panel_and_different_ones_do_not(tmp_
     )
     assert separate.count("Failure Details:") == 2
     assert "(×" not in separate
+
+
+def test_colour_escapes_from_a_tool_are_not_printed_raw(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    line = "\x1b[31m[ERRO]\x1b[0m fastx: invalid FASTA/Q format"
+
+    panel = _printed(renderer._layout.render_failure_panel(_failure(error=line)))
+    tail = _printed(render_log_tail([line]))
+
+    for printed in (panel, tail):
+        assert "[ERRO] fastx: invalid FASTA/Q format" in printed
+        assert "\x1b" not in printed and "[31m" not in printed
 
 
 def test_the_failure_panel_shows_what_it_has_and_only_that(tmp_path: Path) -> None:

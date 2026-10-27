@@ -1211,8 +1211,9 @@ class Query:
         and then to the task whose output row names that artifact. Artifact ids
         are content digests, so two outputs with identical bytes share one; a
         path narrows the match to the output written there. Among matching
-        rows an execution beats a cache-hit replay, and a later run an earlier
-        one.
+        rows the task that wrote the output beats a dynamic parent whose result
+        merely passes it on, an execution beats a cache-hit replay, and a later
+        run an earlier one.
 
         Parameters
         ----------
@@ -1234,7 +1235,10 @@ class Query:
             for row in self._store.query(
                 "SELECT o.run_id, o.task_id, o.path, t.cache_key FROM task_outputs o "
                 "JOIN tasks t ON t.run_id = o.run_id AND t.task_id = o.task_id "
-                "WHERE o.artifact_id = ? ORDER BY t.cached ASC, o.run_id DESC",
+                "WHERE o.artifact_id = ? ORDER BY EXISTS ("
+                "  SELECT 1 FROM edges e WHERE e.run_id = o.run_id AND e.dst_kind = 'task'"
+                "  AND e.dst_id = o.task_id AND e.edge = 'dynamic_depends_on'"
+                ") ASC, t.cached ASC, o.run_id DESC",
                 (artifact_id,),
             )
             if path is None or self._workspace_path(row["path"]) == path

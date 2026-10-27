@@ -11,6 +11,7 @@ from ginkgo.runtime.events import (
     EnvPrepareFailed,
     EnvPrepareStarted,
     GinkgoEvent,
+    GraphNodeRegistered,
     TaskCacheHit,
     TaskCompleted,
     TaskFailed,
@@ -44,6 +45,19 @@ class RichEventRenderer:
         self._renderer.write(json.dumps(payload, sort_keys=True) + "\n")
 
     def _event_payload(self, *, event: GinkgoEvent) -> dict[str, object] | None:
+        if isinstance(event, GraphNodeRegistered):
+            # A node the graph grew mid-run is not in the seeded plan; this is
+            # where its row learns its environment.
+            payload = {
+                "task": event.task_name,
+                "status": "registered",
+                "node_id": event.node_id,
+                "env": event.env,
+            }
+            if event.display_label is not None:
+                payload["display_label"] = event.display_label
+            return payload
+
         if isinstance(event, TaskStarted):
             # execution_backend is the executor's name ("local" for local
             # placement); anything else means the task was submitted remotely.
