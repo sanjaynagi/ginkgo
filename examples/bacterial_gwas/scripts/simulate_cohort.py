@@ -4,29 +4,31 @@ Evolves a genome down a random tree: core SNPs on every branch, accessory
 genes gained and lost, and three resistance genes gained on chosen branches.
 Writes one assembly per sample and a table of resistance phenotypes. Two
 samples are deliberately bad, so QC has something to catch: one assembly is
-truncated and one is contaminated with a foreign sequence. A third assembly
-has lost its first header line, so it is not valid FASTA at all.
+truncated and one is contaminated with a foreign sequence.
 
-Usage: python scripts/simulate_cohort.py [n_samples]
+The last five samples are a later batch, written to data/incoming/. One of
+them has lost its first header line, so it is not valid FASTA at all.
+
+Usage: python scripts/simulate_cohort.py
 """
 
 import csv
 import random
-import sys
 from pathlib import Path
 
-SEED = 7
+SEED = 4
 CORE_LENGTH = 400_000
 GENE_LENGTH = 900
 N_ACCESSORY = 30
 SNPS_PER_UNIT = 60
 # Antibiotic, resistance gene, independent gains, and the clade size of each.
 RESISTANCE = [
-    ("ciprofloxacin", "gyrA_mut", 3, (3, 8)),
-    ("tetracycline", "tetM", 2, (4, 9)),
-    ("ampicillin", "blaTEM", 1, (3, 3)),
+    ("ciprofloxacin", "gyrA_mut", 4, (2, 5)),
+    ("tetracycline", "tetM", 3, (3, 6)),
+    ("ampicillin", "blaTEM", 2, (2, 3)),
 ]
-TRUNCATED, CONTAMINATED, HEADERLESS = "S07", "S19", "S33"
+N_SAMPLES, N_INCOMING = 65, 5
+TRUNCATED, CONTAMINATED, HEADERLESS = "S07", "S19", "S63"
 
 rng = random.Random(SEED)
 
@@ -72,8 +74,7 @@ def evolve(tree: dict, core: list[str], genes: set[str], gains: dict, out: dict)
 
 
 def main() -> None:
-    n_samples = int(sys.argv[1]) if len(sys.argv) > 1 else 60
-    samples = [f"S{i:02d}" for i in range(1, n_samples + 1)]
+    samples = [f"S{i:02d}" for i in range(1, N_SAMPLES + 1)]
     rng.shuffle(samples)
     tree = build_tree(samples)
 
@@ -90,10 +91,12 @@ def main() -> None:
     genomes: dict[str, tuple[list[str], set[str]]] = {}
     evolve(tree, list(random_seq(CORE_LENGTH)), root_genes, gains, genomes)
 
-    assemblies = Path("data/assemblies")
-    assemblies.mkdir(parents=True, exist_ok=True)
+    incoming = sorted(genomes)[-N_INCOMING:]
+    for folder in ["data/assemblies", "data/incoming"]:
+        Path(folder).mkdir(parents=True, exist_ok=True)
     rows = []
     for sample in sorted(genomes):
+        assemblies = Path("data/incoming" if sample in incoming else "data/assemblies")
         core, genes = genomes[sample]
         genome = "".join(core) + "".join(sequences[g] for g in sorted(genes))
         if sample == TRUNCATED:
@@ -108,10 +111,10 @@ def main() -> None:
                     handle.write(f">{sample}_contig{i}\n")
                 handle.write(f"{contig}\n")
 
-        # A resistance gene confers resistance; 5% of calls are flipped.
+        # A resistance gene confers resistance; 2% of calls are flipped.
         row = {"sample": sample}
         for drug, gene, _, _ in RESISTANCE:
-            resistant = (gene in genes) != (rng.random() < 0.05)
+            resistant = (gene in genes) != (rng.random() < 0.02)
             row[drug] = "R" if resistant else "S"
         rows.append(row)
 

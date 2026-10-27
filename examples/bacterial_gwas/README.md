@@ -12,13 +12,16 @@ A small bacterial genome-wide association study, and the workflow behind the
 4. **GWAS:** [treewas-rs](https://github.com/EITORG-Pathogens/treewas-rs) tests
    every unitig against each antibiotic's phenotype.
 
-The data is simulated: 60 genomes evolved down a random tree, with resistance
+The data is simulated: 65 genomes evolved down a random tree, with resistance
 genes gained on a few branches, one truncated assembly and one contaminated one.
+The last five are a later batch in `data/incoming/`, and one of them is not
+valid FASTA. The QC logic lives in plain helpers in `workflow/modules/unitigs.py`.
 
 ```bash
 python scripts/simulate_cohort.py
 ginkgo run
-ginkgo run --min-cases 5
+ginkgo run --min-cases 3                            # also test ampicillin
+mv data/incoming/*.fasta data/assemblies/ && ginkgo run   # S63 fails alone
 ```
 
 `treewas` must be on your `PATH`. Ginkgo installs the Pixi environment itself.
