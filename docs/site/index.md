@@ -15,6 +15,16 @@ New to Ginkgo? Read [Why Ginkgo](motivation/) for the motivation, or jump
 straight to the [Quickstart](getting-started/quickstart/).
 
 ```{raw} html
+<video controls muted playsinline preload="metadata" style="width: 100%; border-radius: 8px;">
+  <source src="_static/walkthrough.mp4" type="video/mp4">
+</video>
+```
+
+The video runs a bacterial GWAS from 60 assemblies to resistance-associated
+unitigs. It shows dynamic task graphs, pixi environments, caching, provenance,
+measured resource usage, and resuming after a failure.
+
+```{raw} html
 <section class="quick-grid">
   <article class="quick-card">
     <h3>Dynamic</h3>

@@ -1,7 +1,7 @@
 # Bacterial GWAS
 
 A small bacterial genome-wide association study, and the workflow behind the
-[walkthrough video](../../docs/demo/walkthrough.mp4).
+[walkthrough video](../../docs/site/_static/walkthrough.mp4).
 
 1. **Discover the cohort:** the assemblies on disk that have a phenotype.
 2. **Build a graph genome:** unitig-caller builds a coloured de Bruijn graph of
