@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from rich.text import Text
+
 from ginkgo.cli.common import RunMode
 from ginkgo.runtime.run_summary import DONE_STATUSES, TERMINAL_STATUSES
 
@@ -79,17 +81,18 @@ class FailureDetails:
         traceback. This picks a concise headline instead: the error's own
         final line whenever the rest of it duplicates what the log tail
         already shows. A single-line error, or one the log tail does not
-        repeat, is returned unchanged.
+        repeat, is returned unchanged. A tool's colour escapes are dropped.
         """
         if self.error is None:
             return None
-        lines = [line.strip() for line in self.error.splitlines() if line.strip()]
+        error = Text.from_ansi(self.error).plain
+        lines = [line.strip() for line in error.splitlines() if line.strip()]
         if len(lines) <= 1:
-            return self.error
+            return error
         last_line = lines[-1]
-        if any(last_line in tail_line for tail_line in self.log_tail):
+        if any(last_line in Text.from_ansi(tail_line).plain for tail_line in self.log_tail):
             return last_line
-        return self.error
+        return error
 
 
 @dataclass(frozen=True, kw_only=True)

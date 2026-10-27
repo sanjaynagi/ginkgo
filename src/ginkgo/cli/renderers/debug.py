@@ -73,10 +73,10 @@ def render_log_tail(log_tail: list[str]) -> Text:
 
     Outside the panel, and printed with ``soft_wrap=True``, because a
     traceback's file paths folded at a panel's border cannot be clicked or
-    copied whole.
+    copied whole. A tool's colour escapes are dropped, not printed raw.
     """
     text = Text("Log tail\n", style="bold #7f1d1d")
-    text.append("\n".join(log_tail), style="#7f1d1d")
+    text.append(Text.from_ansi("\n".join(log_tail)).plain, style="#7f1d1d")
     return text
 
 

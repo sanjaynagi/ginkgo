@@ -32,6 +32,7 @@ from ginkgo.cli.renderers.common import (
     _task_label_width,
     _time_of_day_spinner,
     _truncate_task_label,
+    environment_label,
 )
 from ginkgo.envs.interpreter import EnvironmentFinding, explain_import_failure
 from ginkgo.formatting import format_bytes, format_duration
@@ -150,9 +151,11 @@ class _RunEventState:
                 node_id=node_id,
                 task_name=task_name,
                 label=label,
-                env_label="local",
+                env_label=environment_label(payload.get("env")),
             )
             self.row_order.append(node_id)
+        if status == "registered":
+            return
         row = self.rows[node_id]
         if isinstance(display_label, str):
             self._apply_display_label(node_id=node_id, display_label=display_label)
@@ -316,34 +319,44 @@ class _RunLayoutRenderer:
         self._activity_spinner = activity_spinner
         self._time_spinner = time_spinner
 
-    def render_run_layout(self, *, now: float, windowed: bool) -> Group:
+    def render_run_layout(self, *, now: float, windowed: bool, success: bool | None) -> Group:
         """Return the full live layout: resource line, notices, table, progress.
 
         A *windowed* layout is one that will be repainted in place, so it has
         to fit the screen. The final layout is printed once and may scroll,
-        so it shows every row.
+        so it shows every row. *success* is ``None`` while the run is going;
+        once it is set, the status line stops spinning and marks the outcome.
         """
         return Group(
             self.render_resource_info_line(),
             Text(""),
             self.render_notice_lines(),
-            self.render_status_line(now=now),
+            self.render_status_line(now=now, success=success),
             self.render_task_table(now=now, windowed=windowed),
             self.render_progress_section(),
         )
 
-    def render_status_line(self, *, now: float) -> Table:
+    def render_status_line(self, *, now: float, success: bool | None) -> Table:
         line = Table.grid(padding=(0, 1))
         line.add_column(no_wrap=True)
         line.add_column(no_wrap=True)
         line.add_column(no_wrap=True)
         line.add_column(no_wrap=True)
-        line.add_row(
-            " " * self.status_line_padding(now=now),
-            self._activity_spinner,
-            Text("Running", style="bold #0f766e"),
-            self._time_spinner,
-        )
+        padding = " " * self.status_line_padding(now=now)
+        if success is None:
+            line.add_row(
+                padding,
+                self._activity_spinner,
+                Text("Running", style="bold #0f766e"),
+                self._time_spinner,
+            )
+        else:
+            line.add_row(
+                padding,
+                Text("✔", style="bold #0f766e") if success else Text("✖", style="bold red"),
+                Text("Finished", style="bold #0f766e" if success else "bold red"),
+                Text(""),
+            )
         return line
 
     def render_notice_lines(self) -> Text:
@@ -1016,6 +1029,7 @@ class CliRunRenderer:
         return self._layout.render_run_layout(
             now=self._elapsed_clock(),
             windowed=self._repainting_in_place(),
+            success=self._success,
         )
 
     def _repainting_in_place(self) -> bool:

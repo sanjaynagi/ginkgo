@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ginkgo import Out, evaluate, file, folder, task
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.events import TaskFailed
 from tests.conftest import EventCollector
 
 
@@ -83,3 +86,21 @@ def test_a_cached_dynamic_parent_restores_its_out_folder() -> None:
     # A hit on the n=3 entry: the folder holds the n=1 run's one chunk until
     # the hit restores the three its children read.
     assert evaluate(split(n=3, chunks="chunks")) == ["0", "1", "2"]
+
+
+@task()
+def report_and_score(*, names: list[str], report: Out[file]):
+    Path(report).write_text("r", encoding="utf-8")
+    return [score(name=name) for name in names]
+
+
+def test_a_returned_list_where_the_outputs_are_inferred_fails_the_task() -> None:
+    """Out[...] with no return annotation means the body returns None."""
+    collector = EventCollector()
+
+    with pytest.raises(TypeError, match="no return annotation"):
+        evaluate(report_and_score(names=["ann"], report="report.txt"), event_bus=collector.bus)
+
+    [failed] = [event for event in collector.events if isinstance(event, TaskFailed)]
+    assert failed.task_name.endswith("report_and_score")
+    assert failed.failure["kind"] == "user_code_error"

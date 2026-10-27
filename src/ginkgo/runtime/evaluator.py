@@ -1058,11 +1058,18 @@ class ConcurrentEvaluator:
                 if not self._dependencies_complete(node.dynamic_dependency_ids):
                     continue
 
-                value = self._materialize(node.dynamic_template)
-                if node.replaying_cache:
-                    self._complete_replayed_node(node=node, value=value)
-                else:
-                    self._complete_node(node=node, value=value)
+                try:
+                    value = self._materialize(node.dynamic_template)
+                    if node.replaying_cache:
+                        self._complete_replayed_node(node=node, value=value)
+                    else:
+                        self._complete_node(node=node, value=value)
+                except Exception as exc:
+                    # The result is wrong, not the attempt: a retry would
+                    # return the same expressions.
+                    self._handle_task_exception(node=node, exc=exc, retryable=False)
+                    if self._failure is not None:
+                        return
                 progressed = True
 
             if not progressed:
