@@ -77,20 +77,23 @@ else the task reads must come in as an argument.
 A file the task body opens by its own path, or a variable it reads from
 `os.environ`, is invisible to the cache: changing it serves the cached result.
 
-The import walk starts at the task's own module, so the unit of cache identity
-is one file plus the local modules that file imports — not one function. Two
-`@task` functions in the same `flow.py` are therefore coupled even though
-neither imports the other: editing either one invalidates both, and a task can
-re-run when nothing inside it changed. That is deliberate. Module-level state —
-a constant, a lookup table, a helper the task calls — reaches the cache key
-only through this hash, so hashing function bodies alone would serve stale
-results whenever such state changed. When a task is expensive and the code
-beside it is under active edit, move it into its own module; that is the only
-way to decouple them. `ginkgo cache explain <run_id>` reports
-`module_source_changed` for a task invalidated this way — its own text is
-unchanged — and `source_hash_changed` when the task's own definition moved. The hash covers the
-module's raw text, so editing only a comment or whitespace in it also re-runs
-every task the module defines.
+A task's source hash covers its own definition, plus its module and the local
+modules that module imports, with the bodies of every other `@task` and `@flow`
+function in those files left out. One task cannot read another's body, and a
+flow body only wires tasks together, so editing a sibling task or the flow
+leaves a task cached; a changed argument still re-runs it. Their decorators and
+signatures still count, so renaming a sibling or changing its decorator
+arguments invalidates the tasks beside it. Everything else in the module counts
+too. Module-level state, such as a constant, a lookup table or a helper the
+task calls, reaches the cache key only through this hash, so editing it re-runs
+every task in the module, as does editing a comment or whitespace outside a
+task or flow body. The `ginkgo init` layout keeps tasks out of `flow.py`, in
+`workflow/modules/`, so nothing in `flow.py` reaches a task's key: `flow.py`
+imports the task modules, not the other way round. `ginkgo cache explain <run_id>` reports
+`module_source_changed` for a task invalidated this way (its own text is
+unchanged) and `source_hash_changed` when the task's own definition moved. A
+task decorated through an alias (`from ginkgo import task as t`) is not
+recognised, and its body keeps counting for the tasks beside it.
 
 Local-import tracking is conservative: changing a reachable helper module
 invalidates tasks that import it, even when the changed symbol is not called.
@@ -117,8 +120,8 @@ not from the upstream tasks' own cache keys. So when an upstream task re-runs
 for a `file` output, or an equal plain value such as an `int` or `str`, every
 task below it still hits the cache. The change stops spreading at the first task
 whose output did not change, so only the tasks whose inputs actually differ
-re-run. (Tasks defined in the same module share a source hash, so editing that
-module's source still invalidates all of them; see [Cache Identity](#cache-identity).)
+re-run. (Editing a helper or constant in a task's module still invalidates every
+task in it; see [Cache Identity](#cache-identity).)
 
 (cache-correctness)=
 ## Cache Correctness

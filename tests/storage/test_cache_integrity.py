@@ -1,6 +1,7 @@
 """Source hashing, cache invalidation, and restoring outputs from the cache."""
 
 import importlib
+import json
 import linecache
 import shutil
 import stat
@@ -19,7 +20,7 @@ from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
 from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
-from tests.conftest import EventCollector
+from tests.conftest import EventCollector, run_cli
 
 
 def _write_module(path: Path, body: str) -> None:
@@ -393,6 +394,83 @@ def test_editing_a_task_or_a_helper_it_imports_is_a_cache_miss(tmp_path):
         tasks = importlib.reload(tasks)
         result, collector = run(tasks)
         assert result == 30 and collector.started() and not collector.cached()
+
+
+_SIBLINGS = """\
+from ginkgo import flow, task
+
+SCALE = 2
+
+
+def helper(x):
+    return x + 1
+
+
+@task()
+def a(x: int) -> int:
+    return helper(x) * SCALE
+
+
+@task()
+def b(x: int) -> int:
+    return x - 1
+
+
+@flow
+def main():
+    return [a(x=1), b(x=2)]
+"""
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "a_same", "b_same"),
+    [
+        pytest.param("a(x=1), b(x=2)", "a(x=3), b(x=4)", True, True, id="flow-body"),
+        pytest.param("return x - 1", "return x - 2", True, False, id="sibling-body"),
+        pytest.param("return x + 1", "return x + 3", False, False, id="helper"),
+        pytest.param("SCALE = 2", "SCALE = 3", False, False, id="constant"),
+        pytest.param("def b(", "def b2(", False, None, id="sibling-renamed"),
+        pytest.param(
+            "@task()\ndef b", "@task(version=2)\ndef b", False, False, id="sibling-decorator"
+        ),
+    ],
+)
+def test_a_task_s_hash_leaves_out_other_task_and_flow_bodies(
+    tmp_path, monkeypatch, old, new, a_same, b_same
+):
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def hashes_of(source: str) -> tuple[str, str | None]:
+        (tmp_path / "sibling_tasks.py").write_text(source, encoding="utf-8")
+        linecache.checkcache()
+        sys.modules.pop("sibling_tasks", None)
+        importlib.invalidate_caches()
+        module = importlib.import_module("sibling_tasks")
+        b = getattr(module, "b", None)
+        return (
+            source_hash.compute_source_hash(module.a.fn),
+            b and source_hash.compute_source_hash(b.fn),
+        )
+
+    try:
+        (a1, b1), (a2, b2) = hashes_of(_SIBLINGS), hashes_of(_SIBLINGS.replace(old, new))
+        assert (a1 == a2) is a_same
+        assert b_same is None or (b1 == b2) is b_same
+    finally:
+        sys.modules.pop("sibling_tasks", None)
+
+
+def test_editing_one_task_in_a_workflow_file_leaves_the_other_cached(tmp_path):
+    flow_path = tmp_path / "flow.py"
+    flow_path.write_text(_SIBLINGS, encoding="utf-8")
+    assert run_cli("run", "flow.py", cwd=tmp_path).returncode == 0
+
+    flow_path.write_text(_SIBLINGS.replace("return x - 1", "return x - 2"), encoding="utf-8")
+    assert run_cli("run", "flow.py", cwd=tmp_path).returncode == 0
+
+    explained = json.loads(run_cli("cache", "explain", "--json", cwd=tmp_path).stdout)
+    reasons = {task["task_name"]: task["reason"] for task in explained["tasks"]}
+    assert reasons == {"a": "all_inputs_match", "b": "source_hash_changed"}
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,11 @@ Every source text folded into the digest — the task definition and each file i
 the closure — first has the resource-only keyword arguments of its ``@task(...)``
 decorators deleted, so that retuning ``threads`` or ``memory`` — or changing
 what a failure stops, with ``on_failure`` — mid-run does not discard completed
-results. Nothing else about the text is normalised.
+results. Each closure file also has the body of every top-level ``@task`` or
+``@flow`` function replaced by ``...``: one task cannot read another's body,
+and a flow body only wires expressions, so editing either leaves the tasks
+beside it cached. The task's own body is hashed separately, from its own
+definition. Nothing else about the text is normalised.
 
 It lives in ``core`` rather than ``runtime.caching`` so that ``core.task`` can
 import it without inverting the layer dependency, alongside the primitives in
@@ -66,6 +70,9 @@ _RESOURCE_ONLY_KWARGS = frozenset(
     }
 )
 
+#: Decorators whose functions' bodies are left out of every closure file.
+_BODY_FREE_DECORATORS = frozenset({"task", "flow"})
+
 
 def compute_source_hash(fn: Callable[..., Any]) -> str:
     """Return the BLAKE3 digest of task source and local imports.
@@ -77,6 +84,11 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
     covers both the task definition and each file in its local import closure,
     and both are filtered the same way; without the second, the decorator text
     would re-enter the digest through the task's own module file.
+
+    Each closure file also loses the bodies of its top-level ``@task`` and
+    ``@flow`` functions, keeping their decorators and signatures, so editing a
+    sibling task or the flow leaves this digest unchanged. The task's own body
+    still counts, through its definition.
 
     Every other byte still counts. ``kind``, ``env`` and ``version`` keep
     invalidating, as do a user's own stacked decorators, whose arguments this
@@ -119,7 +131,7 @@ def compute_own_source_hash(fn: Callable[..., Any]) -> str:
     """Return the digest of the task definition's own text.
 
     :func:`compute_source_hash` also folds in every module of the task's local
-    import closure, its own module included, so an edit to a task defined
+    import closure, its own module included, so an edit to a helper or constant
     beside it changes the cache key too. Recorded with each cache entry, this
     digest lets ``ginkgo cache explain`` tell an edit to the task from an edit
     next to it.
@@ -155,7 +167,7 @@ def _task_source(fn: Callable[..., Any]) -> str:
 
 
 def _hash_module_source(path: Path) -> str:
-    """Return the digest of one closure member, resource kwargs removed."""
+    """Return the digest of one closure member, task bodies and resource kwargs removed."""
     try:
         with tokenize.open(path) as source_file:
             source = source_file.read()
@@ -164,7 +176,40 @@ def _hash_module_source(path: Path) -> str:
         # closure walk raises on such a file anyway, but hashing must not be
         # the thing that raises.
         return hash_file(path)
-    return hash_str(_without_resource_kwargs(source))
+    return hash_str(_without_resource_kwargs(_without_task_bodies(source)))
+
+
+def _without_task_bodies(source: str) -> str:
+    """Return ``source`` with each top-level ``@task``/``@flow`` body replaced by ``...``.
+
+    The decorators and signature stay, so renaming or re-decorating a task
+    still invalidates. Only top-level definitions count: a decorated method or
+    nested function keeps its body. Comments outside the replaced span, above
+    the first statement or after the last, stay too. Source that will not
+    parse is returned unchanged.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return source
+
+    data = source.encode("utf-8")
+    line_starts = _line_start_offsets(data)
+    edits = [
+        (
+            _offset(node.body[0].lineno, node.body[0].col_offset, line_starts),
+            _offset(node.end_lineno or node.lineno, node.end_col_offset or 0, line_starts),
+            b"...",
+        )
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            _decorator_name(decorator.func if isinstance(decorator, ast.Call) else decorator)
+            in _BODY_FREE_DECORATORS
+            for decorator in node.decorator_list
+        )
+    ]
+    return _apply_edits(data, edits) if edits else source
 
 
 def _without_resource_kwargs(source: str) -> str:
@@ -194,9 +239,11 @@ def _without_resource_kwargs(source: str) -> str:
         for decorator in getattr(node, "decorator_list", ())
         if (edit := _resource_free_arguments(decorator, data=data, line_starts=line_starts))
     ]
-    if not edits:
-        return source
+    return _apply_edits(data, edits) if edits else source
 
+
+def _apply_edits(data: bytes, edits: list[tuple[int, int, bytes]]) -> str:
+    """Return ``data`` decoded, each non-overlapping ``(start, end, replacement)`` applied."""
     for start, end, replacement in sorted(edits, key=lambda edit: edit[0], reverse=True):
         data = data[:start] + replacement + data[end:]
     return data.decode("utf-8")
@@ -210,7 +257,7 @@ def _resource_free_arguments(
     The rewrite is ``(start, end, replacement)`` over ``data``, spanning the
     bytes between the call's parentheses.
     """
-    if not isinstance(decorator, ast.Call) or not _names_the_task_decorator(decorator.func):
+    if not isinstance(decorator, ast.Call) or _decorator_name(decorator.func) != "task":
         return None
 
     elements: list[ast.expr | ast.keyword] = [*decorator.args, *decorator.keywords]
@@ -249,16 +296,16 @@ def _is_resource_kwarg(element: ast.expr | ast.keyword) -> bool:
     return isinstance(element, ast.keyword) and element.arg in _RESOURCE_ONLY_KWARGS
 
 
-def _names_the_task_decorator(func: ast.expr) -> bool:
-    """Return whether ``func`` spells ``task`` or ``<something>.task``.
+def _decorator_name(func: ast.expr) -> str | None:
+    """Return ``name`` when ``func`` spells ``name`` or ``<something>.name``.
 
     An aliased import (``from ginkgo import task as run``) is not recognised,
-    and its resource arguments keep invalidating: the filter must never guess
-    which arguments of an unknown decorator are safe to drop.
+    so its resource arguments and its body keep invalidating: the filters must
+    never guess what an unknown decorator does.
     """
     if isinstance(func, ast.Name):
-        return func.id == "task"
-    return isinstance(func, ast.Attribute) and func.attr == "task"
+        return func.id
+    return func.attr if isinstance(func, ast.Attribute) else None
 
 
 def _line_start_offsets(data: bytes) -> list[int]:

@@ -120,12 +120,19 @@ before it miss once.
 The task source hash covers the task body and the local helper modules it
 statically imports, so editing a helper invalidates the tasks that use it. The
 closure walk is seeded with the task's own module (`pending = [module]`), so
-the granularity is one file plus its import closure, never one function: tasks
-sharing a file are invalidated together even when neither references the other.
-That is load-bearing rather than incidental — module-level state reaches the
-key payload only through this digest, so a body-only hash would serve stale
-results when a module-level constant changed. The user-facing consequence is
-documented under "Cache identity" in `docs/site/guide/caching-and-provenance.md`.
+the granularity is one file plus its import closure, not one function. That is
+load-bearing rather than incidental: module-level state reaches the key payload
+only through this digest, so a body-only hash would serve stale results when a
+module-level constant changed. The one exception is the bodies of top-level
+`@task` and `@flow` functions, which `_without_task_bodies` replaces with `...`
+in every closure file, keeping their decorators and signatures (issue #410). A
+task body cannot depend on another task's body (calling a task builds an
+expression, keyed on its own source), and a flow body reaches a task only
+through its arguments, which are hashed already. The task's own body is still
+covered, through its definition. Decorated methods and nested functions keep
+their bodies, as does a decorator imported under an alias. The user-facing
+consequence is documented under "Cache identity" in
+`docs/site/guide/caching-and-provenance.md`.
 
 The closure stops at the project's own source: modules under the interpreter's
 prefix or its installed-package directories are excluded, because dependencies
@@ -264,8 +271,8 @@ comparison whose `task` component moved is also `task_moved`.
 Every entry records the task's own definition digest, `own_source_hash`, in its
 `extra` column (`TaskDef.own_source_hash`, without the module closure the
 `source_hash` folds in). When the source hash moved but that digest did not, the
-code is `module_source_changed`: a neighbour in the module, or a local import,
-changed.
+code is `module_source_changed`: a helper or constant in the module, a
+sibling's signature, or a local import changed.
 
 What to compare against is the whole of the question. `explain_rerun` (through
 its private `_previous_cache_key`) looks for the *same node* — the same `display_label`, or the task name where a

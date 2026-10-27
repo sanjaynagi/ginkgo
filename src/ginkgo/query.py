@@ -518,7 +518,7 @@ def _own_source_unchanged(*, current: CacheEntry, prior: CacheEntry) -> bool:
     """Return whether two entries record the same task text.
 
     Their source hashes can still differ: each also covers the task's module
-    and local imports, so an edit to a neighbouring task moves it.
+    and local imports, so an edit to a helper or constant beside it moves it.
     """
     current_own = (current.extra or {}).get("own_source_hash")
     return current_own is not None and current_own == (prior.extra or {}).get("own_source_hash")

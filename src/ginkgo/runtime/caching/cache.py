@@ -66,7 +66,7 @@ come from unpickling a value whose task or class has been renamed or removed
 since it was stored.
 """
 
-_KEY_FORMAT = 3
+_KEY_FORMAT = 4
 """Version of what a cache entry holds, folded into every key.
 
 Bumped when an entry written by an older version can no longer be trusted, so
@@ -74,7 +74,8 @@ those entries miss once instead. Format 2 stores a dynamic task's returned
 expressions rather than the value they resolved to. Format 3 names each
 component's BLAKE3 digest ``digest`` rather than ``sha256``, and identifies a
 remote input by its store's metadata (ETag and size, or a folder's listing
-digest) rather than by its downloaded bytes.
+digest) rather than by its downloaded bytes. Format 4 leaves the bodies of
+the other ``@task`` and ``@flow`` functions out of a task's source digest.
 """
 
 MISSING = object()
