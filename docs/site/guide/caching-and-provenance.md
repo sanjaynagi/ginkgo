@@ -79,9 +79,11 @@ A file the task body opens by its own path, or a variable it reads from
 
 A task's source hash covers its own definition, plus its module and the local
 modules that module imports, with the bodies of every other `@task` and `@flow`
-function in those files left out. One task cannot read another's body, and a
-flow body only wires tasks together, so editing a sibling task or the flow
-leaves a task cached; a changed argument still re-runs it. Their decorators and
+function in those files left out. Calling a task builds a graph node with its
+own key rather than running its body, and a flow body only wires tasks
+together, so editing a sibling task or the flow leaves a task cached; a changed
+argument still re-runs it. Share logic between tasks through a plain helper
+function, which is hashed like any other module code. Their decorators and
 signatures still count, so renaming a sibling or changing its decorator
 arguments invalidates the tasks beside it. Everything else in the module counts
 too. Module-level state, such as a constant, a lookup table or a helper the

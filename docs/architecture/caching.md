@@ -126,7 +126,7 @@ only through this digest, so a body-only hash would serve stale results when a
 module-level constant changed. The one exception is the bodies of top-level
 `@task` and `@flow` functions, which `_without_task_bodies` replaces with `...`
 in every closure file, keeping their decorators and signatures (issue #410). A
-task body cannot depend on another task's body (calling a task builds an
+task body does not depend on another task's body (calling a task builds an
 expression, keyed on its own source), and a flow body reaches a task only
 through its arguments, which are hashed already. The task's own body is still
 covered, through its definition. A decorator counts only when the module's
