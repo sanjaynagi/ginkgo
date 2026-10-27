@@ -161,6 +161,18 @@ payload from resolved values, and only that payload is executed in the foreign
 environment. Shell, script, and notebook tasks can all declare an `env`; Python
 tasks cannot.
 
+A script file the command runs is not part of the task's cache key, so editing
+it alone reruns nothing. Pass it in as a `file` argument and its contents are
+hashed like any other input:
+
+```python
+@task(kind="shell")
+def summarise(table: file, script: file) -> file:
+    return shell(cmd=f"bash {quote(script)} {quote(table)} > summary.tsv", output="summary.tsv")
+```
+
+Call it as `summarise(table=table, script="scripts/summarise.sh")`.
+
 ### A background process keeps the task running
 
 A shell task finishes when its command has exited *and* everything it

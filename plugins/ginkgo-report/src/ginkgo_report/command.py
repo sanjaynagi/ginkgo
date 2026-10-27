@@ -122,7 +122,7 @@ def command_report(args: argparse.Namespace) -> int:
 
     rich_console.print("[bold green]🌿 ginkgo report[/]\n")
     rich_console.print(f"[cyan]Run:[/] [bold]{run_dir.name}[/]")
-    rich_console.print(f"[cyan]Output:[/] [bold]{result.index_path}[/]")
+    rich_console.print(f"[cyan]Output:[/] [bold]{result.index_path}[/]", soft_wrap=True)
     if result.omitted_links:
         listed = ", ".join(result.omitted_links)
         rich_console.print(

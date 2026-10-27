@@ -43,6 +43,10 @@ The local `--gpus` budget is scheduler bookkeeping: it stops ginkgo
 oversubscribing GPUs across concurrent tasks, but it does not pin devices —
 every local task still sees all GPUs (no `CUDA_VISIBLE_DEVICES` isolation).
 
+Resource settings are not part of a task's cache key: changing `threads`,
+`memory` or `gpu`, or the run's budgets, reruns nothing. The one exception is a
+task that takes `threads` as a parameter, which receives it as an input.
+
 ## Custom Resource Dimensions
 
 Threads, memory, and GPUs cover hardware. Some tasks are constrained by

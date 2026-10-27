@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from ginkgo.errors import GinkgoError
 
@@ -23,6 +23,13 @@ class SlackDeliveryError(GinkgoError, RuntimeError):
 
 class SlackUnreachableError(SlackDeliveryError):
     """Raised when the Slack webhook's host could not be reached at all."""
+
+
+class _RefuseRedirects(HTTPRedirectHandler):
+    """Surface a redirect as an ``HTTPError``: a followed one was never delivered."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -51,7 +58,7 @@ def post_slack_message(
         method="POST",
     )
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+        with build_opener(_RefuseRedirects).open(request, timeout=timeout_seconds) as response:
             status_code = getattr(response, "status", response.getcode())
     except HTTPError as exc:
         raise SlackDeliveryError(

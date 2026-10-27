@@ -271,7 +271,9 @@ class TestInterruptedRunEndToEnd:
         # Interrupted once the first wave has finished, which puts a CP-SAT
         # solve between the run starting and the interrupt arriving.
         _wait_for_a_succeeded_task(root=tmp_path)
-        process.send_signal(signal.SIGINT)
+        # The whole process group, as a terminal Ctrl-C does: the pool
+        # workers must leave the interrupt to the parent.
+        os.killpg(process.pid, signal.SIGINT)
         output = process.communicate(timeout=60)[0]
 
         # A clean 130, not death by signal: the run got to unwind and record.

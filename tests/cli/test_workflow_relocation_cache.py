@@ -30,7 +30,7 @@ def main():
 def test_a_byte_identical_copy_hits_cache_under_a_new_name(moved: str) -> None:
     write("ginkgo.toml")
     write("a/workflow.py", WORKFLOW_SOURCE)
-    assert "1 tasks executed, 0 cached" in run_ok("run", "a/workflow.py").stdout
+    assert "1 task executed, 0 cached" in run_ok("run", "a/workflow.py").stdout
     assert "0 tasks executed, 1 cached" in run_ok("run", "a/workflow.py").stdout
 
     write(moved, WORKFLOW_SOURCE)

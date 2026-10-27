@@ -470,3 +470,16 @@ def test_explain_text_rendering(tasks: list, present: list, absent: list) -> Non
     _render_explain_text(Console(file=out, width=120, force_terminal=False), payload)
     assert all(phrase in out.getvalue() for phrase in present)
     assert not any(phrase in out.getvalue() for phrase in absent)
+
+
+def test_a_changed_input_is_shown_by_its_digest() -> None:
+    hashes = {
+        side: {"digest": c * 64, "type": "str"} for side, c in [("prior", "a"), ("current", "b")]
+    }
+    explanation = {
+        "reason": "input_changed",
+        "compared_with": {"cache_key": "prior", "strategy": "same_node"},
+        "components": [{"component": "inputs.samples", "status": "changed", **hashes}],
+    }
+
+    assert f"{'a' * 12}… → {'b' * 12}…" in _text(explanation)

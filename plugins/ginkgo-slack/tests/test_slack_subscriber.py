@@ -18,7 +18,12 @@ from ginkgo_slack.subscriber import (
     check_slack_config,
     parse_notification_config,
 )
-from ginkgo_slack.webhook import SlackUnreachableError, build_run_failed_payload
+from ginkgo_slack.webhook import (
+    SlackDeliveryError,
+    SlackUnreachableError,
+    build_run_failed_payload,
+    post_slack_message,
+)
 from tests.conftest import run_cli
 
 _WORKFLOW = """
@@ -51,9 +56,20 @@ class _WebhookHandler(BaseHTTPRequestHandler):
         return
 
 
+class _RedirectingHandler(_WebhookHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        self.send_response(302)
+        self.send_header("Location", "/elsewhere")
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.send_response(200)
+        self.end_headers()
+
+
 class _WebhookServer:
-    def __init__(self) -> None:
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _WebhookHandler)
+    def __init__(self, handler: type[BaseHTTPRequestHandler] = _WebhookHandler) -> None:
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self._server.requests = []  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -189,6 +205,12 @@ def test_once_slack_is_unreachable_later_notifications_are_not_attempted(
     assert attempts == [{"text": "a"}]
     assert len(warnings) == 2
     assert "run_failed" in warnings[1] and "not sent" in warnings[1]
+
+
+def test_a_redirected_webhook_is_not_delivered() -> None:
+    with _WebhookServer(_RedirectingHandler) as server:
+        with pytest.raises(SlackDeliveryError, match="HTTP 302"):
+            post_slack_message(webhook_url=server.url, payload={"text": "hi"})
 
 
 def test_the_failed_run_card_counts_the_tasks_a_failure_left_unrun() -> None:

@@ -32,7 +32,7 @@ The first run therefore pays a solve, download, and link cost that later runs do
 not. When that cost exceeds a second, the run says so:
 
 ```text
-⏱ Completed in 8.8s - 1 tasks executed, 0 cached
+⏱ Completed in 8.8s - 1 task executed, 0 cached
 ⚙ Environment preparation took 7.2s (analysis_tools) - first runs install
 environments, later runs reuse them
 ```
@@ -40,7 +40,7 @@ environments, later runs reuse them
 The same workflow on the second run:
 
 ```text
-⏱ Completed in 0.7s - 1 tasks executed, 0 cached
+⏱ Completed in 0.7s - 1 task executed, 0 cached
 ```
 
 That figure is the `pixi install` alone. Pixi links packages from its shared

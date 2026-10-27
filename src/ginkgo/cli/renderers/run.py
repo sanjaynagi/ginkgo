@@ -452,14 +452,18 @@ class _RunLayoutRenderer:
                 counts = item.status_counts()
                 total = len(item.rows)
                 done = item.done_count()
-                bar_width = max(16, self.status_column_width() - len(f" {done}/{total}") - 1)
+                progress = f" {done}/{total}"
+                # The bar's two greens are hard to tell apart: name the cache hits.
+                cached = f" ({counts['cached']} cached)" if counts["cached"] else ""
+                bar_width = max(16, self.status_column_width() - len(progress + cached) - 1)
                 bar = _MultiStateBar(counts=counts, total=total, width=bar_width)
                 # Build status cell: bar + count label.
                 bar_text = Text()
                 for chunk in bar.__rich_console__(self._console, self._console.options):
                     if isinstance(chunk, Text):
                         bar_text.append_text(chunk)
-                bar_text.append(f" {done}/{total}", style="bold #134e4a")
+                bar_text.append(progress, style="bold #134e4a")
+                bar_text.append(cached, style="green")
                 elapsed = item.elapsed(now=now)
                 time_str = format_duration(elapsed) if elapsed is not None else "--"
                 table.add_row(
@@ -674,7 +678,8 @@ class _RunLayoutRenderer:
             summary.add_row("Exit code", str(details.exit_code))
         if details.error:
             summary.add_row("Reason", Text(details.reason_headline, style="#7f1d1d"))
-        if details.log_path is not None:
+        # A task that failed before it ran (e.g. over budget) wrote no log.
+        if details.log_path is not None and details.log_path.exists():
             summary.add_row("Log", Text(str(details.log_path)))
 
         sections: list[object] = [summary]
@@ -948,17 +953,18 @@ class CliRunRenderer:
 
         counts = self._state.status_counts()
         cached = counts["cached"]
-        executed = counts["succeeded"] + counts["failed"]
+        executed_count = counts["succeeded"] + counts["failed"]
+        executed = f"{executed_count} task{'' if executed_count == 1 else 's'} executed"
         skipped_suffix = f", {counts['skipped']} skipped" if counts["skipped"] else ""
         if success:
             self._console.print(
                 f"\n[bold cyan]⏱[/] Completed in [bold]{format_duration(elapsed)}[/] - "
-                f"{executed} tasks executed, {cached} cached{skipped_suffix}"
+                f"{executed}, {cached} cached{skipped_suffix}"
             )
         elif cancelled:
             self._console.print(
                 f"\n[bold yellow]⨯[/] Cancelled after [bold]{format_duration(elapsed)}[/] - "
-                f"{executed} tasks executed, {cached} cached{skipped_suffix}"
+                f"{executed}, {cached} cached{skipped_suffix}"
             )
         else:
             failed = counts["failed"]
@@ -966,7 +972,7 @@ class CliRunRenderer:
             ignored_suffix = f" ({ignored} ignored)" if ignored else ""
             self._console.print(
                 f"\n[bold red]✖[/] Failed in [bold]{format_duration(elapsed)}[/] - "
-                f"{executed} tasks executed, {cached} cached, "
+                f"{executed}, {cached} cached, "
                 f"{failed} failed{ignored_suffix}{skipped_suffix}"
             )
         env_prepare_summary = self._layout.render_env_prepare_summary()

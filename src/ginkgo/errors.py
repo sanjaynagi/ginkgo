@@ -32,11 +32,13 @@ __all__ = [
 
 
 FailureKind = Literal[
+    "cancelled",
+    "command_error",
     "cycle_detected",
     "env_mismatch",
     "import_error",
+    "insufficient_resources",
     "serialization_error",
-    "shell_command_error",
     "invalid_path",
     "missing_input",
     "output_validation_error",

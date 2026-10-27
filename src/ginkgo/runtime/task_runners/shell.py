@@ -72,7 +72,7 @@ class ShellTaskError(GinkgoError, RuntimeError):
         Advice on what the exit status usually means.
     """
 
-    failure_kind: ClassVar[FailureKind] = "shell_command_error"
+    failure_kind: ClassVar[FailureKind] = "command_error"
 
     def __init__(
         self,

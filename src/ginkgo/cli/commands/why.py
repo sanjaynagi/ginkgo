@@ -33,7 +33,7 @@ def _render_why(rich_console, *, provenance: Provenance, as_json: bool) -> int:
         return 0
     rich_console.print("[bold green]🌿 ginkgo why[/]\n")
     if provenance.path:
-        rich_console.print(f"Path: {escape(provenance.path)}")
+        rich_console.print(f"Path: {escape(provenance.path)}", soft_wrap=True)
     rich_console.print(f"Artifact ID: [bold]{provenance.artifact_id}[/]")
     rich_console.print(
         f"Produced by: {provenance.task_name or '-'} [dim]({provenance.task_id})[/]"
