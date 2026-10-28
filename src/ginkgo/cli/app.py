@@ -164,12 +164,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     # a parameter's value would be captured by an optional positional: in
     # ``ginkgo run --run-label "wide"`` with the workflow path omitted, argparse
     # binds "wide" to the workflow positional and tries to load it as a module.
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     known_argv, extras = _partition_param_extras(
-        argv=list(sys.argv[1:] if argv is None else argv),
+        argv=raw_argv,
         known_options=_all_option_strings(parser),
     )
     _refuse_uninstalled_command(parser=parser, argv=known_argv)
     args, misplaced = parser.parse_known_args(known_argv)
+    # Kept so ``run --detach`` can start the same command in the background.
+    args.argv = raw_argv
 
     # Commands that import a workflow accept its declared parameters as flags.
     # Every other command must still reject anything it does not recognise.
@@ -438,6 +441,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="Print newline-delimited JSON events instead of the live terminal UI",
     )
     run_parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="Start the run in the background, print its run ID and return; see `ginkgo runs wait`",
+    )
+    # The ID ``--detach`` chose, handed to the run it starts in the background.
+    run_parser.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
+    run_parser.add_argument(
         "--trust-mtimes",
         action="store_true",
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
@@ -651,6 +661,23 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         dest="all_tasks",
         action="store_true",
         help="List every task; a large run otherwise lists its first tasks and every failure.",
+    )
+
+    runs_status_parser = runs_subparsers.add_parser(
+        "status", help="Show a run's status, counts and failures, even while it runs"
+    )
+    runs_wait_parser = runs_subparsers.add_parser(
+        "wait", help="Wait for a run to finish, then show its status"
+    )
+    for outcome_parser in (runs_status_parser, runs_wait_parser):
+        outcome_parser.add_argument("run_id", nargs="?")
+        outcome_parser.add_argument("--json", action="store_true", help="Emit JSON.")
+    runs_wait_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Stop waiting after this long and exit 124; a killed run never finishes.",
     )
 
     history_parser = subparsers.add_parser("history", help="Show every run of one task")

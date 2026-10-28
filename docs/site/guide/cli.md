@@ -22,7 +22,14 @@ at the nearest `ginkgo.toml`.
 `ginkgo runs`
 : List recorded runs (`runs ls`) and show one of them (`runs show <run_id>`),
   including the pages its tasks rendered, such as marimo notebooks.
-  See [Querying Provenance](querying-provenance.md).
+  See [Querying Provenance](querying-provenance.md). `runs status <run_id>`
+  prints a run's status, task counts, failures and outputs, even while it runs;
+  `runs wait <run_id> [--timeout SECONDS]` waits for it to finish and exits as
+  `ginkgo run` would have: 0 if it succeeded, 1 if it failed or was rejected
+  before it started, 3 if its only failures were ones its failure policy let
+  pass, 130 if it was cancelled. It exits 124 at the timeout, 130 on Ctrl-C
+  (the run carries on), and 2 for an unknown run ID. Both take `--json`. See
+  [Working with Coding Agents](coding-agents.md#long-runs).
 
 `ginkgo history`
 : Show every run of one task, with its status, duration, and cache key. Runs in
@@ -160,6 +167,14 @@ is still recorded as failed &mdash; see
 `--agent-output` swaps the live terminal UI for a stream of newline-delimited JSON
 events, for programmatic use by AI coding agents &mdash; see
 [Working with Coding Agents](coding-agents.md).
+
+`ginkgo run --detach` starts the run in the background and prints its run ID
+and log path. It returns once the run is recorded, or after 30 seconds if
+loading the workflow takes longer. A workflow that fails validation before then
+is reported straight away. Follow the run with `ginkgo runs wait <run_id>`,
+which also reports a run that was rejected before it started. Ctrl-C while
+`--detach` waits leaves the run going and prints its ID. `--detach` cannot be
+combined with `--dry-run`.
 
 The run header names the workflow by its path from where you stand, and
 carries the run id only once the run is about to be created: a run rejected
@@ -339,6 +354,15 @@ it yields a literal, an f-string, or arithmetic over names, as in
 Without the warning the task fails only when the run reaches it. The check is
 best-effort: a `return` of a call or a variable is never flagged.
 
+Two mistakes in a task body are errors, which `ginkgo doctor` reports and
+`ginkgo run`, with or without `--dry-run`, refuses before any task runs: a
+positional task call (`positional_task_call`), and a task with `Out[...]`
+parameters and no return annotation whose body returns task calls
+(`inferred_return_task_call`). Tasks those bodies call are checked too. The
+check is best-effort: it sees only calls of a name or dotted name, such as
+`gwas(...)` or `stats.gwas(...)`, that resolves to a task. A task call stored
+in a variable and then returned is not caught.
+
 A mistyped flag is refused with the closest flag the command or the workflow's
 declared parameters accept, as in `--jbos: did you mean --jobs?`.
 
@@ -488,6 +512,12 @@ When more than one thing moved, `details` lists every reason in a fixed order â€
 
 A component's `status` is `changed`, or `added` / `removed` for a parameter that
 appeared or went away.
+
+A changed input whose old and new values are both short scalars (a number, a
+bool, or a string of up to 40 characters) also carries `prior_value` and
+`current_value`, and the text shows them as JSON: `inputs.min_cases (changed: 10 â†’ 3)`,
+with strings quoted. Files, folders, secrets and longer values show their digests,
+and so does a plain string naming a file, which is tracked by the file's contents.
 
 Some tasks get a summary `reason` on its own, with no `components`: a task that
 did not re-run reports `all_inputs_match`; one named by `--rerun` reports
