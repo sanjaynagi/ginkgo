@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from collections import Counter
 from collections.abc import Sequence
+from typing import Any
 
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli import INTERRUPT_EXIT_CODE
 from ginkgo.cli.common import console, new_table, open_run
+from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE, INTERRUPT_EXIT_CODE, UsageError
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import RunRow
 from ginkgo.runtime.module_loader import display_path
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
-from ginkgo.runtime.rundir import runs_without_ledger_warning
+from ginkgo.runtime.rundir import runs_without_ledger_warning, tail_text
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = ["command_runs"]
@@ -50,49 +52,83 @@ def command_runs(args) -> int:
             )
         return _render_ls(rich_console, rows=rows, as_json=as_json)
 
-    with open_run(args.run_id) as (reader, run_id):
-        summary = reader.run(run_id)
     if args.runs_command == "show":
+        with open_run(args.run_id) as (reader, run_id):
+            summary = reader.run(run_id)
         return _render_show(
             rich_console,
             summary=summary,
             as_json=as_json,
             all_tasks=bool(getattr(args, "all_tasks", False)),
         )
-    if args.runs_command == "status":
-        _render_outcome(summary=summary, as_json=as_json)
-        return 0
 
-    # ``wait``: the ledger is the only sign of life, so a run killed outright
-    # stays ``running`` there and only the timeout ends the wait.
-    timeout = getattr(args, "timeout", None)
-    deadline = None if timeout is None else time.monotonic() + timeout
-    while summary.status == "running" and (deadline is None or time.monotonic() < deadline):
-        time.sleep(1.0)
-        with query.open() as reader:
-            summary = reader.run(summary.run_id)
-    _render_outcome(summary=summary, as_json=as_json)
-    if summary.status == "running":
-        return WAIT_TIMEOUT_EXIT_CODE
-    return _WAIT_EXIT_CODES.get(summary.status, 1)
+    summary, payload = _outcome(args.run_id)
+    if args.runs_command == "wait":
+        # The ledger is the only sign of life, so a run killed outright stays
+        # ``running`` there and only the timeout ends the wait.
+        deadline = None if args.timeout is None else time.monotonic() + args.timeout
+        while payload["status"] in {"running", "starting"} and (
+            deadline is None or time.monotonic() < deadline
+        ):
+            time.sleep(1.0)
+            summary, payload = _outcome(payload["run_id"])
 
-
-def _render_outcome(*, summary: RunSummary, as_json: bool) -> None:
-    """Print a run's outcome payload as JSON, or as a few readable lines."""
-    payload = summary.outcome_payload()
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    counts = payload["counts"]
-    print(f"Run {payload['run_id']}: {payload['status']}")
-    print(
-        f"Tasks: {counts['done']} of {counts['total']} done "
-        f"({counts['executed']} executed, {counts['cached']} cached, "
-        f"{counts['failed']} failed, {counts['skipped']} skipped)"
-    )
-    for failure in payload["failures"]:
-        print(f"Failed: {failure['task']} (exit {failure['exit_code']}), log: {failure['log']}")
-    print(f"Run directory: {payload['run_dir']}")
+    elif summary is not None:
+        _render_show(rich_console, summary=summary, as_json=False, all_tasks=False)
+    elif payload["status"] == "starting":
+        print(f"Run {payload['run_id']} has not started yet (still loading the workflow).")
+        print(f"Log: {payload['log']}")
+    else:
+        print(f"Run {payload['run_id']} was rejected before it started. Log: {payload['log']}")
+        print("\n".join(payload["log_tail"]))
+
+    if payload["status"] == "rejected":
+        return 1
+    if args.runs_command == "status":
+        return 0
+    if payload["status"] in {"running", "starting"}:
+        return WAIT_TIMEOUT_EXIT_CODE
+    if (
+        payload["status"] == "failed"
+        and 0 < payload["counts"]["ignored"] == payload["counts"]["failed"]
+    ):
+        return IGNORED_FAILURES_EXIT_CODE
+    return _WAIT_EXIT_CODES.get(payload["status"], 1)
+
+
+def _outcome(run_id: str | None) -> tuple[RunSummary | None, dict[str, Any]]:
+    """Return a run and its outcome payload.
+
+    A run ``run --detach`` started but the ledger has not recorded has no
+    summary: its payload's status is ``starting`` while the process is alive,
+    and ``rejected`` once it has exited, with the tail of its log.
+    """
+    detached = WorkspaceLayout.relative().detached.resolve()
+    pid_path, log_path = detached / f"{run_id}.pid", detached / f"{run_id}.log"
+    try:
+        with open_run(run_id) as (reader, resolved):
+            summary = reader.run(resolved)
+        return summary, summary.outcome_payload()
+    except FileNotFoundError as exc:
+        if run_id is None or not pid_path.is_file():
+            raise UsageError(str(exc)) from exc
+    return None, {
+        "run_id": run_id,
+        "status": "starting" if _alive(int(pid_path.read_text())) else "rejected",
+        "log": str(log_path),
+        "log_tail": tail_text(log_path, lines=10),
+    }
+
+
+def _alive(pid: int) -> bool:
+    """Whether a process with this pid exists."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _shown_tasks(tasks: Sequence[TaskSummary], *, all_tasks: bool) -> Sequence[TaskSummary]:

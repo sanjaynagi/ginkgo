@@ -36,7 +36,7 @@ TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed", "skipped"})
 DONE_STATUSES = frozenset({"cached", "succeeded"})
 """The terminal statuses of a task that produced a result."""
 
-_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_ANSI_ESCAPE = re.compile(r"\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\))")
 """A terminal colour or cursor code, stripped from log lines meant for a program."""
 
 
@@ -444,13 +444,13 @@ class RunSummary:
         """
         labels = {task.task_key: task.label for task in self.tasks}
         counts = self.task_counts()
+        run_dir = self.run_dir.resolve()
         return {
             "run_id": self.run_id,
             "status": self.status,
-            "run_dir": str(self.run_dir),
+            "run_dir": str(run_dir),
             "counts": {
                 "total": self.task_count,
-                "done": sum(1 for task in self.tasks if task.is_terminal()),
                 "executed": counts["succeeded"] + counts["failed"],
                 "cached": self.cached_count,
                 "failed": self.failed_count,
@@ -463,16 +463,19 @@ class RunSummary:
                     "category": task.failure_kind,
                     "exit_code": task.exit_code,
                     "ignored": task.ignored,
+                    "error": task.error,
                     "log_tail": [
                         _ANSI_ESCAPE.sub("", line)
                         for line in combined_log_tail(
-                            run_dir=self.run_dir,
+                            run_dir=run_dir,
                             stdout_log=task.stdout_log,
                             stderr_log=task.stderr_log,
                             lines=10,
                         )
                     ],
-                    "log": str(self.run_dir / task.stderr_log) if task.stderr_log else None,
+                    "logs": [
+                        str(run_dir / log) for log in (task.stdout_log, task.stderr_log) if log
+                    ],
                 }
                 for task in self.failed_tasks
             ],

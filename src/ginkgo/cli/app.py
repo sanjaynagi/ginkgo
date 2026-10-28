@@ -445,6 +445,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         action="store_true",
         help="Start the run in the background, print its run ID and return; see `ginkgo runs wait`",
     )
+    # The ID ``--detach`` chose, handed to the run it starts in the background.
+    run_parser.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
     run_parser.add_argument(
         "--trust-mtimes",
         action="store_true",

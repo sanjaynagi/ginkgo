@@ -7,6 +7,7 @@ import os
 # Suppress gRPC fork-safety warnings on macOS. Must be set before grpc is imported.
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
+import re
 import subprocess
 import sys
 import time
@@ -101,8 +102,11 @@ from ginkgo.store.maintenance import event_retention, prune_events
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
-DETACHED_RUN_ID_ENV = "GINKGO_RUN_ID"
-"""The run ID ``run --detach`` hands to the ``ginkgo run`` it starts."""
+_RUN_ID_SHAPE = re.compile(r"\d{8}_\d{6}_\d{6}_[0-9a-f]{8}")
+"""What :func:`make_run_id` returns, and so all the hidden ``--run-id`` accepts."""
+
+_DETACH_WAIT_SECONDS = 30
+"""Longest ``run --detach`` waits for the run it started to be recorded."""
 
 
 def _ginkgo_version() -> str | None:
@@ -124,70 +128,73 @@ def command_run(args, *, output_mode: RunMode) -> int:
     reading only the stream is not left with nothing. A failure after the run
     exists is already reported there by its ``run_completed`` event.
     """
-    # A detached parent chose this run's ID. Popped, so that a sub-workflow
-    # this run starts makes its own.
-    run_id = os.environ.pop(DETACHED_RUN_ID_ENV, None) or make_run_id()
+    run_id = args.run_id or make_run_id()
     try:
-        if getattr(args, "detach", False):
+        if args.run_id is not None:
+            _check_chosen_run_id(args.run_id)
+        if args.detach:
             return _detach(args, run_id=run_id, output_mode=output_mode)
         return _run_resolved_workflow(args, output_mode=output_mode, run_id=run_id)
     except Exception as exc:
         if output_mode in {"agent", "agent_verbose"} and not (RUNS_ROOT / run_id).exists():
-            sys.stdout.write(
-                event_line(
-                    {
-                        "event": "run_rejected",
-                        "v": 1,
-                        "ts": event_timestamp(),
-                        "run_id": None,
-                        "error": str(exc),
-                        "error_type": type(exc).__name__,
-                    }
-                )
+            _agent_event(
+                "run_rejected", run_id=None, error=str(exc), error_type=type(exc).__name__
             )
-            sys.stdout.flush()
         raise
+
+
+def _agent_event(name: str, **fields: Any) -> None:
+    """Write one ad hoc ``--agent-output`` event, one the runtime does not emit."""
+    sys.stdout.write(event_line({"event": name, "v": 1, "ts": event_timestamp(), **fields}))
+    sys.stdout.flush()
+
+
+def _check_chosen_run_id(run_id: str) -> None:
+    """Refuse a ``--run-id`` that is not a run ID, or that names a recorded run."""
+    if not _RUN_ID_SHAPE.fullmatch(run_id):
+        raise UsageError(f"--run-id {run_id!r} is not a run ID.")
+    if _run_recorded(run_id):
+        raise UsageError(f"--run-id {run_id} names a run that already exists.")
 
 
 def _detach(args, *, run_id: str, output_mode: RunMode) -> int:
     """Start this ``ginkgo run`` again in the background as run *run_id*, and return.
 
     The child runs the same command line without ``--detach``, in a session of
-    its own so that it outlives this process, with its output in a log file.
-    Returning only once the ledger has the run means a workflow rejected
-    before it starts is reported here, not left for ``runs wait`` to miss.
+    its own so that it outlives this process, with its output in a log file and
+    its pid beside it, by which ``runs wait`` tells a run still loading from
+    one that died. This returns once the run is recorded, or after
+    :data:`_DETACH_WAIT_SECONDS`. A child that exits before then was rejected,
+    and its own output and exit status are passed on.
     """
     if args.dry_run:
         raise UsageError("--detach cannot be combined with --dry-run.")
-    log_path = WorkspaceLayout.relative().detached / f"{run_id}.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    detached = WorkspaceLayout.relative().detached.resolve()
+    detached.mkdir(parents=True, exist_ok=True)
+    log_path = detached / f"{run_id}.log"
+    argv = [arg for arg in args.argv if arg != "--detach"]
     with log_path.open("w", encoding="utf-8") as log:
         child = subprocess.Popen(
-            [sys.executable, "-m", "ginkgo.cli", *(a for a in args.argv if a != "--detach")],
+            [sys.executable, "-m", "ginkgo.cli", *argv, "--run-id", run_id],
             cwd=getattr(args, "invoked_from", None),
-            env={**os.environ, DETACHED_RUN_ID_ENV: run_id},
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    while not _run_recorded(run_id):
-        if child.poll() is not None and not _run_recorded(run_id):
-            sys.stderr.write(log_path.read_text(encoding="utf-8"))
-            raise GinkgoError(f"The detached run did not start; its output is in {log_path}.")
-        time.sleep(0.1)
+    (detached / f"{run_id}.pid").write_text(str(child.pid), encoding="utf-8")
+    deadline = time.monotonic() + _DETACH_WAIT_SECONDS
+    try:
+        while not _run_recorded(run_id) and time.monotonic() < deadline:
+            if child.poll() is not None and not _run_recorded(run_id):
+                sys.stdout.write(log_path.read_text(encoding="utf-8"))
+                return child.returncode
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print(f"Run {run_id} carries on in the background; its output is in {log_path}.")
+        raise
     if output_mode in {"agent", "agent_verbose"}:
-        sys.stdout.write(
-            event_line(
-                {
-                    "event": "run_detached",
-                    "v": 1,
-                    "ts": event_timestamp(),
-                    "run_id": run_id,
-                    "log": str(log_path),
-                }
-            )
-        )
+        _agent_event("run_detached", run_id=run_id, log=str(log_path))
     else:
         print(f"Started run {run_id} in the background; its output is in {log_path}.")
         print(f"Wait for it with `ginkgo runs wait {run_id}`.")
@@ -857,17 +864,7 @@ def run_workflow(
         if output_mode in {"agent", "agent_verbose"}:
             # The stream's last line: the whole outcome, so that an agent need
             # not rebuild it from every event before.
-            sys.stdout.write(
-                event_line(
-                    {
-                        "event": "run_summary",
-                        "v": 1,
-                        "ts": event_timestamp(),
-                        **run_summary.outcome_payload(),
-                    }
-                )
-            )
-            sys.stdout.flush()
+            _agent_event("run_summary", **run_summary.outcome_payload())
 
         if interrupt is not None:
             # No failure panel: nothing went wrong, the run was stopped.

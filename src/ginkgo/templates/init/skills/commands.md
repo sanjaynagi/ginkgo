@@ -11,10 +11,12 @@ Start here:
   consumers or agents. The last line is a `run_summary` event: status, counts,
   each failure with its exit code and log tail, skipped tasks, and outputs.
 - `ginkgo run --detach --agent-output`, then `ginkgo runs wait <run_id> --timeout 100 --json`
-  For any run that may outlast a tool call: `--detach` returns at once with the
-  run ID; `runs wait` prints the `run_summary` payload when the run ends and exits
-  0 succeeded, 1 failed, 130 cancelled, or 124 at the timeout (call it again to
-  keep waiting). `ginkgo runs status <run_id> --json` checks without waiting.
+  For any run that may outlast a tool call: `--detach` returns with the run ID
+  (a workflow that fails validation is reported straight away); `runs wait`
+  prints the `run_summary` payload when the run ends and exits 0 succeeded,
+  1 failed or rejected, 3 failed only where allowed, 130 cancelled, or 124 at
+  the timeout (call it again to keep waiting). `ginkgo runs status <run_id>
+  --json` checks without waiting.
 - `ginkgo run`
   Executes the default workflow from `{{ workflow_relpath }}`.
 - `ginkgo inspect workflow`
