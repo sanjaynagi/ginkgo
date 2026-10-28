@@ -696,44 +696,64 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
     return { nodes, edges };
   }
 
-  // Roots grown like the tree: curved branches splitting downward, a task at
-  // each fork, some roots merging into one task, and a run that sprouts more.
+  // Roots grown like the tree: tapering, wandering branches splitting
+  // downward, a task at each fork, some roots merging into one task, and a
+  // run that sprouts more.
   function buildRootTree() {
     const r = rng(21);
     const narrow = SW < 760, centred = narrow || !scrolly;
     const cx = centred ? SW * 0.5 : SW * 0.66;
     const xmin = centred ? SW * 0.07 : SW * 0.4, xmax = SW * 0.96;
     const top = narrow && scrolly ? SH * 0.38 : SH * 0.15, bottom = SH * 0.93;
-    const L0 = (bottom - top) * 0.34;
+    const L0 = (bottom - top) * 0.38;
     const nodes = {}, edges = [];
     let count = 0;
-    const node = (x, y, opts) => { const id = `n${count++}`; nodes[id] = { id, x, y, ...opts }; return id; };
-    const edge = (a, b, show, opts = {}) => {
+    const node = (x, y, w, opts) => {
+      const id = `n${count++}`;
+      nodes[id] = { id, x, y, w, r: Math.max(2.6, w * 0.45 + 1.6), ...opts };
+      return id;
+    };
+
+    // A branch is a tapering ribbon along a gently wandering curve, from
+    // width w0 where it leaves its parent to w1 at its tip.
+    const edge = (a, b, show, w0, w1, opts = {}) => {
       const A = typeof a === "string" ? nodes[a] : a, B = nodes[b];
-      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1, bend = (r() - 0.5) * len * 0.3;
-      edges.push({ a, b, show, c: { x: (A.x + B.x) / 2 - (dy / len) * bend, y: (A.y + B.y) / 2 + (dx / len) * bend }, ...opts });
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len, ny = dx / len, bend = (r() - 0.5) * len * 0.28;
+      const cx = (A.x + B.x) / 2 + nx * bend, cy = (A.y + B.y) / 2 + ny * bend;
+      const f1 = 1 + r() * 1.5, f2 = 3 + r() * 4, p1 = r() * 6.3, p2 = r() * 6.3, amp = len * 0.04;
+      const n = Math.max(10, Math.round(len / 8)), pts = [];
+      for (let i = 0; i <= n; i++) {
+        const t = i / n, m = 1 - t;
+        const wander = (Math.sin(t * Math.PI * f1 + p1) * 0.7 + Math.sin(t * Math.PI * f2 + p2) * 0.3) * amp * Math.sin(Math.PI * t);
+        pts.push([m * m * A.x + 2 * m * t * cx + t * t * B.x + nx * wander, m * m * A.y + 2 * m * t * cy + t * t * B.y + ny * wander]);
+      }
+      edges.push({ a, b, show, pts, w0, w1, ...opts });
     };
 
     // The planned graph, timed in raw units and scaled into [0, 0.3] below.
-    const hub = node(cx, top, { r: 6.5, show: [0.7, 1] });
-    edge({ x: tree.baseX, y: narrow && scrolly ? SH * 0.26 : -4 }, hub, [0, 0.9], { width: 3 });
+    const hub = node(cx, top, 10, { show: [0.7, 1] });
+    const trunk = Math.min(16, tree.branches[0].width * 0.8);
+    edge({ x: tree.baseX, y: narrow && scrolly ? SH * 0.26 : -4 }, hub, [0, 0.9], trunk, 10);
     const leaves = [];
-    function grow(from, angle, len, depth, t0) {
+    function grow(from, angle, len, depth, t0, w0, w1) {
       const A = nodes[from];
       if (A.x > xmax) angle += 0.5; else if (A.x < xmin) angle -= 0.5;
       angle = Math.max(0.35, Math.min(Math.PI - 0.35, angle));
       const x = A.x + Math.cos(angle) * len, y = Math.min(bottom, A.y + Math.sin(angle) * len);
       const dur = len / L0;
-      const b = node(x, y, { r: 2.8 + depth * 0.8, show: [t0 + dur * 0.85, t0 + dur * 1.25] });
-      edge(from, b, [t0, t0 + dur], { width: 0.9 + depth * 0.5 });
+      const b = node(x, y, w1, { show: [t0 + dur * 0.85, t0 + dur * 1.25] });
+      edge(from, b, [t0, t0 + dur], w0, w1);
       if (depth === 0) { leaves.push(b); return; }
-      const n = depth >= 2 && r() < 0.45 ? 3 : 2;
-      for (let i = 0; i < n; i++) {
-        const spread = (i - (n - 1) / 2) * (0.62 + r() * 0.35);
-        grow(b, angle + spread + (r() - 0.5) * 0.25, len * (0.76 + r() * 0.12), depth - 1, t0 + dur);
+      // A leader carries on much as before; thinner side shoots splay out.
+      const sides = depth >= 2 && r() < 0.45 ? 2 : 1;
+      grow(b, angle + (r() - 0.5) * 0.35, len * (0.8 + r() * 0.1), depth - 1, t0 + dur, w1 * 0.95, Math.max(1.6, w1 * 0.8));
+      for (let i = 0; i < sides; i++) {
+        const side = (i % 2 === 0 ? 1 : -1) * (r() < 0.5 ? 1 : -1);
+        grow(b, angle + side * (0.6 + r() * 0.4), len * (0.62 + r() * 0.12), depth - 1, t0 + dur + 0.1, w1 * 0.7, Math.max(1.4, w1 * 0.55));
       }
     }
-    grow(hub, Math.PI / 2 + (r() - 0.5) * 0.2, L0 * 0.7, 3, 1);
+    grow(hub, Math.PI / 2 + (r() - 0.5) * 0.2, L0 * 0.7, 3, 1, 10, 7.5);
 
     // Neighbouring roots merge into one task: the graph is a DAG, not a tree.
     leaves.sort((a, b) => nodes[a].x - nodes[b].x);
@@ -741,9 +761,9 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
       const A = nodes[leaves[i]], B = nodes[leaves[i + 1]];
       if (Math.abs(A.x - B.x) > SW * 0.12) continue;
       const t0 = Math.max(A.show[1], B.show[1]);
-      const m = node((A.x + B.x) / 2, Math.min(SH * 0.97, Math.max(A.y, B.y) + L0 * 0.32), { r: 3.6, show: [t0 + 0.35, t0 + 0.65] });
-      edge(leaves[i], m, [t0, t0 + 0.4], { width: 1 });
-      edge(leaves[i + 1], m, [t0, t0 + 0.4], { width: 1 });
+      const m = node((A.x + B.x) / 2, Math.min(SH * 0.97, Math.max(A.y, B.y) + L0 * 0.32), 1.6, { show: [t0 + 0.35, t0 + 0.65] });
+      edge(leaves[i], m, [t0, t0 + 0.4], Math.max(1, A.w * 0.8), 1.2);
+      edge(leaves[i + 1], m, [t0, t0 + 0.4], Math.max(1, B.w * 0.8), 1.2);
     }
     const end = Math.max(...Object.values(nodes).map((n) => n.show[1]));
     const f = 0.3 / end;
@@ -761,9 +781,9 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
       for (let j = 0; j < k; j++) {
         const a = Math.PI / 2 + (j - (k - 1) / 2) * 0.7 + (r() - 0.5) * 0.3;
         const len = L0 * 0.45 * (0.8 + r() * 0.4);
-        const c = node(n.x + Math.cos(a) * len, n.y + Math.sin(a) * len,
-          { r: 3.6, grown: true, show: [n.run + 0.04, n.run + 0.08], run: n.run + 0.1 + r() * 0.04 });
-        edge(n.id, c, [n.run + 0.01, n.run + 0.06], { width: 1.1, grown: true });
+        const c = node(n.x + Math.cos(a) * len, n.y + Math.sin(a) * len, 1,
+          { grown: true, show: [n.run + 0.04, n.run + 0.08], run: n.run + 0.1 + r() * 0.04 });
+        edge(n.id, c, [n.run + 0.01, n.run + 0.06], Math.max(1.6, n.w * 0.55), 0.9, { grown: true });
       }
     }
     return { nodes, edges };
@@ -805,21 +825,51 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
     if (k <= 0) return;
     const fade = e.fade ? 1 - at(p, e.fade) : 1;
     if (fade <= 0) return;
+    if (e.pts) return drawBranchRibbon(e, k);
+    // The example's edges drop vertically out of one task and into the next.
     const A = point(e.a), B = point(e.b), dy = B.y - A.y;
-    // A tree-style edge bends through one control point; the example's
-    // edges drop vertically out of one task and into the next.
-    const pos = e.c
-      ? (t, m = 1 - t) => [m * m * A.x + 2 * m * t * e.c.x + t * t * B.x, m * m * A.y + 2 * m * t * e.c.y + t * t * B.y]
-      : (t, m = 1 - t) => [m * m * m * A.x + 3 * m * t * (m * A.x + t * B.x) + t * t * t * B.x,
-                           m * m * m * A.y + 3 * m * m * t * (A.y + dy * 0.55) + 3 * m * t * t * (B.y - dy * 0.55) + t * t * t * B.y];
     gctx.strokeStyle = e.grown ? rgb(TEAL, 0.75 * fade) : `rgba(188, 211, 204, ${0.55 * fade})`;
-    gctx.lineWidth = e.width || (e.root ? 3 : 1.6);
-    gctx.lineCap = "round";
+    gctx.lineWidth = e.root ? 3 : 1.6;
     gctx.beginPath();
     gctx.moveTo(A.x, A.y);
     const steps = 28;
-    for (let i = 1; i <= steps * k; i++) gctx.lineTo(...pos(i / steps));
+    for (let i = 1; i <= steps * k; i++) {
+      const t = i / steps, m = 1 - t;
+      gctx.lineTo(
+        m * m * m * A.x + 3 * m * t * (m * A.x + t * B.x) + t * t * t * B.x,
+        m * m * m * A.y + 3 * m * m * t * (A.y + dy * 0.55) + 3 * m * t * t * (B.y - dy * 0.55) + t * t * t * B.y,
+      );
+    }
     gctx.stroke();
+  }
+
+  // The grown part of a branch, as a filled ribbon tapering from w0 to w1.
+  function drawBranchRibbon(e, k) {
+    const last = (e.pts.length - 1) * k, n = Math.floor(last);
+    const path = e.pts.slice(0, n + 1);
+    if (last > n) {
+      const [x0, y0] = e.pts[n], [x1, y1] = e.pts[n + 1], f = last - n;
+      path.push([x0 + (x1 - x0) * f, y0 + (y1 - y0) * f]);
+    }
+    if (path.length < 2) return;
+    const left = [], right = [];
+    for (let i = 0; i < path.length; i++) {
+      const [x, y] = path[i], [ax, ay] = path[Math.max(0, i - 1)], [bx, by] = path[Math.min(path.length - 1, i + 1)];
+      const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1;
+      const w = (e.w0 + (e.w1 - e.w0) * (i / (path.length - 1)) * k) / 2;
+      left.push([x - (dy / l) * w, y + (dx / l) * w]);
+      right.push([x + (dy / l) * w, y - (dx / l) * w]);
+    }
+    const [tx, ty] = path[path.length - 1];
+    const tip = (e.w0 + (e.w1 - e.w0) * k) / 2;
+    gctx.fillStyle = e.grown ? rgb(TEAL, 0.85) : "rgba(150, 176, 166, .78)";
+    gctx.beginPath();
+    gctx.moveTo(...left[0]);
+    for (const pt of left) gctx.lineTo(...pt);
+    for (let i = right.length - 1; i >= 0; i--) gctx.lineTo(...right[i]);
+    gctx.closePath();
+    gctx.fill();
+    gctx.beginPath(); gctx.arc(tx, ty, tip, 0, Math.PI * 2); gctx.fill();
   }
 
   function drawNode(nd, p) {
