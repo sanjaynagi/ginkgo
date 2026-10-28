@@ -1,7 +1,7 @@
 # Reports
 
 `ginkgo report` turns a finished run into an HTML report. It comes from the
-`ginkgo-report` plugin. See [Plugins](../getting-started/installation.md#plugins)
+`ginkgo-report` [plugin](concepts.md#glossary). See [Plugins](../getting-started/installation.md#plugins)
 to install it.
 
 ## Create A Report

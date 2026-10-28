@@ -6,7 +6,7 @@ orphan: true
 
 Ginkgo keeps what it records under `.ginkgo/` in the project root:
 
-- `ginkgo.db` is the provenance database, Ginkgo's record of every run and
+- `ginkgo.db` is the [provenance](concepts.md#glossary) database, Ginkgo's record of every run and
   every cache entry. It is one SQLite file.
 - `cache/` holds the stored results of cached tasks.
 - `artifacts/` holds stored copies of the files and folders that tasks wrote.

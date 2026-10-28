@@ -1,7 +1,7 @@
 # Caching And Provenance
 
 Ginkgo caches task results, so a repeat run reuses earlier work. It also
-records what happened in each run in the provenance database,
+records what happened in each run in the [provenance](concepts.md#glossary) database,
 `.ginkgo/ginkgo.db`. This page covers the cache.
 [Querying Provenance](querying-provenance.md) covers reading the record, and
 [Maintaining The Database And Cache](maintenance.md) covers checking and
@@ -101,7 +101,7 @@ returned task whose code or inputs changed runs again, with no `version=` bump
 needed.
 
 A shared module-level value couples every task that imports the module. Take a
-fan-out, where one task runs over many inputs. If each branch reads its
+[fan-out](concepts.md#glossary), where one task runs over many inputs. If each branch reads its
 settings from a shared `MODEL_HYPERPARAMS` dict, editing one model's entry
 re-runs every branch, not just that model's. Pass such values as task
 arguments instead. Arguments are hashed per call, so only the branches whose

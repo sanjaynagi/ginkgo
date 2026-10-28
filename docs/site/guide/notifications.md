@@ -2,7 +2,7 @@
 
 Ginkgo can post a message to Slack while `ginkgo run` runs a workflow: when the
 run starts, succeeds or fails, and when a task runs out of retries.
-Notifications come from the `ginkgo-slack` plugin. See
+Notifications come from the `ginkgo-slack` [plugin](concepts.md#glossary). See
 [Plugins](../getting-started/installation.md#plugins) to install it. Without
 the plugin, `ginkgo run` warns that the `[notifications.slack]` settings will
 not be used.

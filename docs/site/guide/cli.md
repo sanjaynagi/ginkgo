@@ -49,7 +49,7 @@ Run `ginkgo <command> --help` for every flag of a command.
   recorded.
 
 `ginkgo query`
-: Run one read-only SQL statement against the provenance database.
+: Run one read-only SQL statement against the [provenance](concepts.md#glossary) database.
 
 `ginkgo export`
 : Write a run's events as JSON Lines (JSONL), or its manifest as YAML.
@@ -75,7 +75,7 @@ Run `ginkgo <command> --help` for every flag of a command.
 : List and reset the Pixi environments behind shell tasks. See
   [Environments](environments.md).
 
-A command marked (plugin) appears once its plugin is installed: `ginkgo report`
+A command marked (plugin) appears once its [plugin](concepts.md#glossary) is installed: `ginkgo report`
 comes from `ginkgo-report`, and `ginkgo env` from `ginkgo-pixi`. See
 [Plugins](../getting-started/installation.md#plugins).
 
@@ -136,7 +136,7 @@ problem before anything runs.
 ### Task Names
 
 Output names a task by its function name, such as `align`. One branch of a
-fan-out is named by its label, such as `align[sample_a]`. The part in brackets
+[fan-out](concepts.md#glossary) is named by its label, such as `align[sample_a]`. The part in brackets
 comes from the values that tell the branches apart. When there are none, it is
 a number, as in `align[2]`. See
 [How Branches Are Labelled](tasks-and-flows.md#how-branches-are-labelled).

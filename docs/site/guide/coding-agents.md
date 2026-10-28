@@ -100,7 +100,7 @@ They do not change the workflow or its results.
   inputs.
 - `ginkgo export events <run_id>` prints a finished run's events as JSONL.
 - `ginkgo query "<sql>" --json` runs one read-only SQL statement over the
-  provenance database. The tables can change between releases (see
+  [provenance](concepts.md#glossary) database. The tables can change between releases (see
   [Querying Provenance](querying-provenance.md)).
 - `ginkgo report <run_id>` builds an HTML report of a run (see
   [Reports](reports.md)). It writes the report files under

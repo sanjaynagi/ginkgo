@@ -1,6 +1,6 @@
 # Querying Provenance
 
-Ginkgo records every run in the provenance database. It records which tasks
+Ginkgo records every run in the [provenance](concepts.md#glossary) database. It records which tasks
 ran, their inputs, how long they took, whether they came from the cache, and
 the files they wrote. Use the record to answer questions such as these:
 
@@ -59,7 +59,7 @@ Pass `--all` to list every task.
 
 `--json` prints the run manifest, the same document as
 `.ginkgo/runs/<run_id>/manifest.yaml`. Each task in it has a `task_name`, and
-a fan-out branch also has a `display_label` (see
+a [fan-out](concepts.md#glossary) branch also has a `display_label` (see
 [Task Names](cli.md#task-names)).
 
 ### How One Task Has Fared
