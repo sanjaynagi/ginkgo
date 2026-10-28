@@ -11,8 +11,10 @@ Python, it can change shape while it runs: a task can look at its inputs and
 add new steps, which is how Ginkgo handles dynamic DAGs. You get all of this
 without rewriting your code into a separate workflow language.
 
-New to Ginkgo? Read [Why Ginkgo](../motivation/) for the motivation, or jump
-straight to the [Quickstart](../getting-started/quickstart/).
+New to Ginkgo? [Why Ginkgo](../motivation/) sets out the three principles it is
+built on: workflows in plain Python, graphs that change as they run, and
+workflows that AI agents can write and operate. Or jump straight to the
+[Quickstart](../getting-started/quickstart/).
 
 ```{raw} html
 <video controls muted playsinline preload="none" poster="../_static/walkthrough-poster.jpg" style="width: 100%; border-radius: 8px;">
