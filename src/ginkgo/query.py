@@ -376,7 +376,8 @@ class RerunExplanation:
         differs from this one least, for a node that has none) — or ``None`` when there was nothing to compare
         with.
     components : list[dict[str, Any]]
-        One entry per cache-key component that differs.
+        One entry per cache-key component that differs. A changed input whose
+        values are short scalars also carries ``prior_value`` and ``current_value``.
     moved_from : str | None
         With reason ``task_moved``: the qualified name (``module.task``) an
         earlier run of the same workflow knew this task by. A task's cache
@@ -464,7 +465,10 @@ class Provenance:
     artifact_id : str
         The artifact asked about.
     path : str | None
-        The materialized path it was found through, when the question was a path.
+        The path asked about, when the question was a path.
+    containing_output : str | None
+        The recorded output folder holding *path*, when *path* has no record of
+        its own; the rest describes that folder.
     run_id, task_id, task_name : str | None
         The task that produced it.
     cache_key : str | None
@@ -475,6 +479,7 @@ class Provenance:
 
     artifact_id: str
     path: str | None = None
+    containing_output: str | None = None
     run_id: str | None = None
     task_id: str | None = None
     task_name: str | None = None
@@ -486,6 +491,7 @@ class Provenance:
         return {
             "artifact_id": self.artifact_id,
             "path": self.path,
+            "containing_output": self.containing_output,
             "run_id": self.run_id,
             "task_id": self.task_id,
             "task_name": self.task_name,
@@ -522,6 +528,41 @@ def _own_source_unchanged(*, current: CacheEntry, prior: CacheEntry) -> bool:
     """
     current_own = (current.extra or {}).get("own_source_hash")
     return current_own is not None and current_own == (prior.extra or {}).get("own_source_hash")
+
+
+def _add_scalar_values(
+    components: list[dict[str, Any]], *, current: CacheEntry, prior: CacheEntry
+) -> None:
+    """Give each changed input whose two values are short scalars those values.
+
+    A digest says only that an input moved; ``10 → 3`` says how. Files, folders,
+    redacted secrets and long strings keep their digests alone.
+    """
+    prior_inputs = prior["inputs"] or {}
+    current_inputs = current["inputs"] or {}
+    for item in components:
+        name = str(item["component"]).removeprefix("inputs.")
+        if item["status"] != "changed" or name == item["component"]:
+            continue
+        prior_value, current_value = prior_inputs.get(name), current_inputs.get(name)
+        if _is_short_scalar(item["prior"], prior_value) and _is_short_scalar(
+            item["current"], current_value
+        ):
+            item.update(prior_value=prior_value, current_value=current_value)
+
+
+def _is_short_scalar(record: Any, value: Any) -> bool:
+    """Return whether an input hashed as *record* reads inline as *value*.
+
+    The hash record's type, not the value, decides: a ``str`` naming a file
+    is hashed by its contents (#307), so its path is not what changed.
+    """
+    return (
+        isinstance(record, dict)
+        and record.get("type") in {"bool", "int", "float", "str"}
+        and isinstance(value, (bool, int, float, str))
+        and not (isinstance(value, str) and len(value) > 40)
+    )
 
 
 class Query:
@@ -990,6 +1031,7 @@ class Query:
         components = diff_key_components(
             current=current, prior=key_components(prior_entry.as_meta())
         )
+        _add_scalar_values(components, current=current_entry, prior=prior_entry)
         details = coarse_reasons(components)
         if _own_source_unchanged(current=current_entry, prior=prior_entry):
             details = [
@@ -1229,7 +1271,8 @@ class Query:
         FileNotFoundError
             If nothing in the ledger matches.
         """
-        artifact_id, path = self._resolve_artifact(path_or_artifact_id)
+        artifact_id, path, containing_output = self._resolve_artifact(path_or_artifact_id)
+        output_path = containing_output or path
         producers = [
             row
             for row in self._store.query(
@@ -1241,7 +1284,7 @@ class Query:
                 ") ASC, t.cached ASC, o.run_id DESC",
                 (artifact_id,),
             )
-            if path is None or self._workspace_path(row["path"]) == path
+            if output_path is None or self._workspace_path(row["path"]) == output_path
         ]
         run_id = _first(producers, "run_id")
         task_id = _first(producers, "task_id")
@@ -1263,6 +1306,7 @@ class Query:
         return Provenance(
             artifact_id=artifact_id,
             path=path,
+            containing_output=containing_output,
             run_id=run_id,
             task_id=task_id,
             task_name=self._task_name(run_id=run_id, task_id=task_id),
@@ -1270,19 +1314,34 @@ class Query:
             inputs=self._task_inputs(run_id=run_id, task_id=task_id),
         )
 
-    def _resolve_artifact(self, path_or_artifact_id: str) -> tuple[str, str | None]:
-        """Return the artifact id *path_or_artifact_id* names, and the path used."""
+    def _resolve_artifact(self, path_or_artifact_id: str) -> tuple[str, str | None, str | None]:
+        """Return the artifact id *path_or_artifact_id* names, the path, and its folder.
+
+        Only an output folder's root is materialized, so an existing path with
+        no record of its own resolves to the nearest recorded output folder
+        holding it, returned third; otherwise the third item is ``None``.
+        """
         resolved = self._workspace_path(path_or_artifact_id)
         rows = self._store.query(
             "SELECT artifact_id FROM materializations WHERE path = ?", (resolved,)
         )
         if rows:
-            return str(rows[0]["artifact_id"]), resolved
+            return str(rows[0]["artifact_id"]), resolved, None
+        if Path(resolved).exists():
+            for parent in Path(resolved).parents:
+                rows = self._store.query(
+                    "SELECT m.artifact_id FROM materializations m JOIN task_outputs o "
+                    "ON o.artifact_id = m.artifact_id "
+                    "WHERE m.path = ? AND o.value_type = 'folder' LIMIT 1",
+                    (str(parent),),
+                )
+                if rows:
+                    return str(rows[0]["artifact_id"]), resolved, str(parent)
         known = self._store.query(
             "SELECT artifact_id FROM artifacts WHERE artifact_id = ?", (path_or_artifact_id,)
         )
         if known:
-            return path_or_artifact_id, None
+            return path_or_artifact_id, None, None
         # A ledger lost or replaced since the run that wrote the path knows
         # nothing of it, whatever the task's annotations were.
         ledger_gap = runs_without_ledger_warning(layout=self._layout)
