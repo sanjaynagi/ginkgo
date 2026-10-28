@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ginkgo · scientific workflows in plain Python</title>
+<meta name="description" content="Ginkgo runs scientific workflows written in plain Python: dynamic task graphs, content-addressed caching, per-task environments and queryable provenance.">
+<link rel="icon" href="_static/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400&family=Hanken+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --understory: #0b2a29;
+    --canopy: #123f3c;
+    --mist: #bcd3cc;
+    --leaf: #14a3a6;
+    --gold: #f2c230;
+    --clearing: #eef2ec;
+    --ink: #13201d;
+    --ink-soft: #4b5c57;
+    --rule: #cbd8d1;
+
+    --display: "Outfit", system-ui, sans-serif;
+    --body: "Hanken Grotesk", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+
+    --gutter: clamp(16px, 5vw, 72px);
+    --measure: 64ch;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--clearing);
+    color: var(--ink);
+    font: 400 1.0625rem/1.6 var(--body);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; border-radius: 2px; }
+
+  /* ── Hero: the forest ─────────────────────────────────────────────── */
+  .forest {
+    position: relative;
+    min-height: 100svh;
+    overflow: hidden;
+    color: #e9f2ee;
+    background:
+      radial-gradient(120% 70% at 72% 62%, #2c6460 0%, rgba(44, 100, 96, 0) 60%),
+      linear-gradient(180deg, #0a2221 0%, var(--understory) 38%, var(--canopy) 78%, #1a4a45 100%);
+    isolation: isolate;
+  }
+  .forest canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #ridges { z-index: 0; }
+  .fog { position: absolute; z-index: 1; pointer-events: none; border-radius: 50%; filter: blur(40px); }
+  .fog.a { width: 90vw; height: 40vh; left: -10vw; bottom: 8vh; background: radial-gradient(closest-side, rgba(188, 211, 204, .22), rgba(188, 211, 204, 0)); }
+  .fog.b { width: 70vw; height: 30vh; right: -15vw; bottom: 22vh; background: radial-gradient(closest-side, rgba(188, 211, 204, .16), rgba(188, 211, 204, 0)); }
+  .fog.c { width: 120vw; height: 26vh; left: -10vw; bottom: -8vh; background: radial-gradient(closest-side, rgba(214, 230, 224, .28), rgba(214, 230, 224, 0)); }
+  #tree { z-index: 2; }
+  .forest::after {
+    /* ground mist that the text sits on */
+    content: ""; position: absolute; inset: auto 0 0 0; height: 45%; z-index: 3; pointer-events: none;
+    background: linear-gradient(180deg, rgba(11, 42, 41, 0) 0%, rgba(11, 42, 41, .55) 70%, rgba(11, 42, 41, .75) 100%);
+  }
+
+  .nav {
+    position: absolute; z-index: 5; top: 0; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 22px var(--gutter);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 300 1.6rem/1 var(--display); letter-spacing: .01em; }
+  .brand img { width: 30px; height: auto; }
+  .nav ul { list-style: none; display: flex; gap: clamp(16px, 3vw, 36px); margin: 0; padding: 0; }
+  .nav a.link { text-decoration: none; font-weight: 500; font-size: .95rem; color: #cfe1da; }
+  .nav a.link:hover { color: #fff; }
+
+  .hero {
+    position: relative; z-index: 4;
+    min-height: 100svh;
+    display: flex; flex-direction: column; justify-content: flex-end;
+    padding: 120px var(--gutter) clamp(48px, 9vh, 96px);
+  }
+  .hero h1 {
+    margin: 0;
+    max-width: 11ch;
+    font: 200 clamp(3rem, 8.4vw, 7.4rem)/.98 var(--display);
+    letter-spacing: -.035em;
+    text-shadow: 0 2px 28px rgba(5, 24, 23, .55);
+  }
+  .hero p.lede {
+    margin: 28px 0 0;
+    max-width: 46ch;
+    font-size: clamp(1.05rem, 1.5vw, 1.25rem);
+    line-height: 1.55;
+    color: #d3e3dc;
+  }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; margin-top: 34px; }
+  .button {
+    display: inline-block; padding: 13px 24px; border-radius: 999px;
+    background: var(--gold); color: #1d1a08; text-decoration: none; font-weight: 600;
+    transition: background-color .2s;
+  }
+  .button:hover { background: #ffd451; }
+  .install {
+    display: flex; align-items: center; gap: 10px; max-width: 100%;
+    padding: 10px 10px 10px 16px; border-radius: 10px;
+    background: rgba(5, 24, 23, .55); border: 1px solid rgba(188, 211, 204, .22);
+    font: 400 .82rem/1.3 var(--mono); color: #cfe1da;
+  }
+  .install code { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .install button {
+    flex: none; cursor: pointer; padding: 6px 10px; border-radius: 6px;
+    border: 1px solid rgba(188, 211, 204, .3); background: transparent; color: #e9f2ee;
+    font: 500 .78rem var(--body);
+  }
+  .install button:hover { border-color: var(--gold); }
+  .hero [data-reveal] { opacity: 0; }
+  .no-js .hero [data-reveal], .static .hero [data-reveal] { opacity: 1; }
+
+  /* ── Sections in the clearing ─────────────────────────────────────── */
+  section.band { padding: clamp(72px, 11vw, 140px) var(--gutter); }
+  .band h2 {
+    margin: 0 0 18px;
+    font: 300 clamp(2rem, 4.2vw, 3.3rem)/1.05 var(--display);
+    letter-spacing: -.02em;
+  }
+  .band .intro { max-width: var(--measure); margin: 0; color: var(--ink-soft); font-size: 1.15rem; }
+
+  .anatomy {
+    display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: clamp(28px, 5vw, 72px); align-items: start; margin-top: 48px;
+  }
+  pre.code {
+    margin: 0; overflow-x: auto;
+    padding: 26px 28px; border-radius: 14px;
+    background: var(--understory); color: #d9e7e1;
+    font: 400 .9rem/1.65 var(--mono);
+  }
+  .code .k { color: #8fd3c9; }
+  .code .d { color: var(--gold); }
+  .code .s { color: #b8d98f; }
+  .code .c { color: #7f9d95; font-style: italic; }
+  .notes { list-style: none; margin: 0; padding: 0; }
+  .notes li { padding: 18px 0; border-top: 1px solid var(--rule); max-width: 46ch; }
+  .notes li:last-child { border-bottom: 1px solid var(--rule); }
+  .notes code, .grows code { font: 500 .88em var(--mono); color: #0b6466; white-space: nowrap; }
+
+  .grows {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 44px clamp(24px, 4vw, 56px); margin-top: 56px;
+  }
+  .grows h3 { margin: 0 0 8px; font: 400 1.35rem/1.25 var(--display); letter-spacing: -.01em; }
+  .grows h3::before {
+    content: ""; display: block; width: 26px; height: 20px; margin-bottom: 14px;
+    background: url("_static/ginkgo-leaf.png") left bottom / contain no-repeat;
+  }
+  .grows p { margin: 0; color: var(--ink-soft); max-width: 38ch; }
+
+  .watch { background: var(--understory); color: #e9f2ee; }
+  .watch .intro { color: #b9cec7; }
+  .watch video {
+    display: block; width: 100%; max-width: 1180px; margin-top: 44px;
+    border-radius: 14px; border: 1px solid rgba(188, 211, 204, .18); background: #0a1f1e;
+  }
+
+  footer {
+    display: grid; grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 1fr));
+    gap: 32px; padding: 64px var(--gutter) 72px;
+    background: #082120; color: #b9cec7; font-size: .95rem;
+  }
+  footer h4 { margin: 0 0 12px; font: 500 1rem var(--body); color: #e9f2ee; }
+  footer ul { list-style: none; margin: 0; padding: 0; }
+  footer li { margin: 6px 0; }
+  footer a { text-decoration: none; }
+  footer a:hover { color: #fff; text-decoration: underline; text-underline-offset: 3px; }
+  footer .brand { color: #e9f2ee; margin-bottom: 14px; }
+
+  @media (max-width: 860px) {
+    .anatomy, .grows { grid-template-columns: minmax(0, 1fr); }
+    .grows { gap: 36px; }
+    footer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    footer .about { grid-column: 1 / -1; }
+  }
+  @media (max-width: 560px) {
+    .nav ul li.optional { display: none; }
+    .forest::after { height: 70%; }
+    #tree { opacity: .6; }
+    pre.code { font-size: .78rem; padding: 20px; }
+  }
+</style>
+</head>
+<body class="no-js">
+
+<header class="forest">
+  <canvas id="ridges" aria-hidden="true"></canvas>
+  <div class="fog a" aria-hidden="true"></div>
+  <div class="fog b" aria-hidden="true"></div>
+  <canvas id="tree" aria-hidden="true"></canvas>
+  <div class="fog c" aria-hidden="true"></div>
+
+  <nav class="nav" aria-label="Main">
+    <a class="brand" href="./"><img src="_static/ginkgo-leaf.png" alt="">ginkgo</a>
+    <ul>
+      <li><a class="link" href="docs/">Docs</a></li>
+      <li class="optional"><a class="link" href="getting-started/quickstart/">Quickstart</a></li>
+      <li><a class="link" href="https://github.com/sanjaynagi/ginkgo">GitHub</a></li>
+    </ul>
+  </nav>
+
+  <div class="hero">
+    <h1 data-reveal>Workflows that grow as they run.</h1>
+    <p class="lede" data-reveal>
+      Ginkgo runs scientific workflows written in plain Python. Each step is a
+      function. Ginkgo builds the graph, runs it in parallel, skips what
+      hasn't changed, and records how every result was made.
+    </p>
+    <div class="actions" data-reveal>
+      <a class="button" href="docs/">Read the docs</a>
+      <div class="install">
+        <code id="install-cmd">curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh | sh</code>
+        <button type="button" id="copy">Copy</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="band" aria-labelledby="plain-python">
+    <h2 id="plain-python">Plain Python, from the first step to the last</h2>
+    <p class="intro">
+      There is no workflow language to learn. Tasks are decorated functions and
+      a flow is a function that calls them.
+    </p>
+    <div class="anatomy">
+<pre class="code"><code><span class="k">from</span> ginkgo <span class="k">import</span> file, flow, shell, task
+
+samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span class="s">"S03"</span>]
+
+
+<span class="d">@task</span>(kind=<span class="s">"shell"</span>, env=<span class="s">"seqkit"</span>)
+<span class="k">def</span> clean(sample: str, assembly: file) -&gt; file:
+    out = <span class="s">f"results/{sample}.fasta"</span>
+    cmd = <span class="s">f"seqkit seq -m 200 {assembly} -o {out}"</span>
+    <span class="k">return</span> shell(cmd=cmd, output=out)
+
+
+<span class="d">@task</span>()
+<span class="k">def</span> count_contigs(assemblies: list[file]) -&gt; dict[str, int]:
+    <span class="k">return</span> {str(a): open(a).read().count(<span class="s">"&gt;"</span>) <span class="k">for</span> a <span class="k">in</span> assemblies}
+
+
+<span class="d">@flow</span>
+<span class="k">def</span> main():
+    paths = [<span class="s">f"data/{s}.fasta"</span> <span class="k">for</span> s <span class="k">in</span> samples]
+    cleaned = clean().map(sample=samples, assembly=paths)
+    <span class="k">return</span> count_contigs(assemblies=cleaned)</code></pre>
+      <ul class="notes">
+        <li>Calling a task inside a flow returns a node in the graph, not a result. Ginkgo builds and checks the whole graph before anything runs.</li>
+        <li><code>.map()</code> fans a step out over your samples, and the branches run in parallel.</li>
+        <li><code>env="seqkit"</code> runs the command in its own Pixi environment, which Ginkgo installs the first time it is needed.</li>
+        <li>Run it again and nothing reruns unless its code, its inputs or its environment changed.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="what-it-does" style="padding-top: 0">
+    <h2 id="what-it-does">What Ginkgo takes care of</h2>
+    <div class="grows">
+      <article>
+        <h3>Graphs that grow at run time</h3>
+        <p>A task can look at its inputs and return more tasks, so the shape of the workflow follows the data.</p>
+      </article>
+      <article>
+        <h3>Caching by content</h3>
+        <p>Results are keyed on code, inputs and environment. Change one step, and only it and what depends on it run again.</p>
+      </article>
+      <article>
+        <h3>An environment per step</h3>
+        <p>Shell steps run in their own Pixi environment or container image, declared next to the code that uses them.</p>
+      </article>
+      <article>
+        <h3>Provenance you can query</h3>
+        <p>Every run is recorded. Ask which task made a file, why a step ran again, or query the record with SQL.</p>
+      </article>
+      <article>
+        <h3>Your laptop, then a cluster</h3>
+        <p>Workflows run locally by default. The same flow runs on Kubernetes or GCP Batch with <code>--executor</code>.</p>
+      </article>
+      <article>
+        <h3>Ready for coding agents</h3>
+        <p>JSON output, skill files and diagnostics that suggest a fix let agents write and operate workflows alongside you.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="band watch" aria-labelledby="watch">
+    <h2 id="watch">Watch a bacterial GWAS run</h2>
+    <p class="intro">
+      Sixty assemblies, a graph genome and a phylogenetic GWAS: the first run,
+      the cache, a QC change, provenance, resource usage, and recovering from a
+      broken file.
+    </p>
+    <video controls muted playsinline preload="none" poster="_static/walkthrough-poster.jpg" src="_static/walkthrough.mp4"></video>
+  </section>
+</main>
+
+<footer>
+  <div class="about">
+    <a class="brand" href="./"><img src="_static/ginkgo-leaf.png" alt="">ginkgo</a>
+    <p>Open source under the Apache 2.0 licence.</p>
+  </div>
+  <div>
+    <h4>Start</h4>
+    <ul>
+      <li><a href="getting-started/installation/">Installation</a></li>
+      <li><a href="getting-started/quickstart/">Quickstart</a></li>
+      <li><a href="motivation/">Why Ginkgo</a></li>
+    </ul>
+  </div>
+  <div>
+    <h4>Guide</h4>
+    <ul>
+      <li><a href="guide/concepts/">Core concepts</a></li>
+      <li><a href="guide/tasks-and-flows/">Tasks and flows</a></li>
+      <li><a href="guide/caching-and-provenance/">Caching and provenance</a></li>
+      <li><a href="guide/environments/">Environments</a></li>
+    </ul>
+  </div>
+  <div>
+    <h4>Reference</h4>
+    <ul>
+      <li><a href="guide/cli/">CLI</a></li>
+      <li><a href="reference/api/">API reference</a></li>
+      <li><a href="faq/">FAQ</a></li>
+      <li><a href="https://github.com/sanjaynagi/ginkgo">GitHub</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+(() => {
+  document.body.classList.remove("no-js");
+
+  const copy = document.getElementById("copy");
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById("install-cmd").textContent);
+      copy.textContent = "Copied";
+    } catch {
+      copy.textContent = "Select and copy";
+    }
+    setTimeout(() => (copy.textContent = "Copy"), 1800);
+  });
+
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const animate = !reduced && typeof window.gsap !== "undefined";
+  if (!animate) document.body.classList.add("static");
+
+  const forest = document.querySelector(".forest");
+  const ridges = document.getElementById("ridges");
+  const canvas = document.getElementById("tree");
+  const ctx = canvas.getContext("2d");
+  const rctx = ridges.getContext("2d");
+
+  const TEAL = [20, 163, 166], DEEP = [11, 110, 112], GOLD = [242, 194, 48], AMBER = [226, 158, 40];
+  const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const easeOutBack = (t) => 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+
+  function rng(seed) {
+    return () => {
+      seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  let W = 0, H = 0, DPR = 1;
+  let tree = null;
+  const clock = { t: 0 };
+  let grown = false, cache = null, falling = [];
+
+  // ── A ginkgo tree: a central leader with ascending laterals ──────────
+  function buildTree() {
+    const r = rng(11);
+    const narrow = W < 760;
+    const baseX = narrow ? W * 0.76 : W * 0.79;
+    const height = narrow ? H * 0.92 : Math.min(H * 0.8, W * 0.8);
+    // On a phone the crown sits high, above the words, on a taller trunk.
+    const trunk = height * (narrow ? 0.5 : 0.34);
+    const speed = height / 2.4;
+    const scale = Math.max(0.8, Math.min(1.35, height / 700));
+    const branches = [], leaves = [], nodes = [];
+
+    function grow(x, y, angle, len, width, depth, start, leader) {
+      // Keep the crown ascending, as a ginkgo's is.
+      angle = Math.max(-Math.PI + 0.35, Math.min(-0.35, angle));
+      const x1 = x + Math.cos(angle) * len, y1 = y + Math.sin(angle) * len;
+      const bend = (r() - 0.5) * len * 0.16;
+      const cx = (x + x1) / 2 - Math.sin(angle) * bend, cy = (y + y1) / 2 + Math.cos(angle) * bend;
+      const dur = len / speed;
+      branches.push({ x, y, cx, cy, x1, y1, width, start, dur });
+      const end = start + dur;
+      nodes.push({ x: x1, y: y1, at: end });
+
+      if (depth === 0) {
+        const n = 3 + Math.floor(r() * 3);
+        for (let i = 0; i < n; i++) {
+          const a = angle + (r() - 0.5) * 2.2, d = len * (0.15 + r() * 0.35);
+          leaves.push(leaf(x1 + Math.cos(a) * d, y1 + Math.sin(a) * d, end + r() * 0.4, scale, r));
+        }
+        return;
+      }
+      if (depth <= 2) {
+        // Short spur shoots carry leaves along the older wood too.
+        const f = 0.4 + r() * 0.5;
+        leaves.push(leaf(x + (x1 - x) * f, y + (y1 - y) * f, start + dur * f + 0.3, scale, r));
+      }
+
+      const laterals = leader ? 2 : r() < 0.6 ? 1 : 2;
+      for (let i = 0; i < laterals; i++) {
+        const f = leader ? 0.5 + (i / laterals) * 0.45 + r() * 0.05 : 0.5 + r() * 0.4;
+        const side = i % 2 === 0 ? -1 : 1;
+        const a = angle + side * (0.45 + r() * 0.35);
+        // Branches reaching left, over the headline, stay shorter.
+        const reach = Math.cos(a) < 0 ? 0.58 : 1;
+        grow(x + (x1 - x) * f, y + (y1 - y) * f, a, len * (leader ? 0.6 : 0.7) * reach * (0.85 + r() * 0.3),
+             width * 0.55, depth - 1, start + dur * f, false);
+      }
+      grow(x1, y1, angle + (r() - 0.5) * 0.24, len * (leader ? 0.78 : 0.7), width * 0.7, depth - 1, end, leader);
+    }
+
+    grow(baseX, H + 4, -Math.PI / 2 + (r() - 0.5) * 0.05, trunk, Math.max(6, height * 0.026), 5, 0.2, true);
+    const total = Math.max(...leaves.map((l) => l.at)) + 0.8;
+    return { branches, leaves, nodes, total };
+  }
+
+  function leaf(x, y, at, scale, r) {
+    return {
+      x, y, at,
+      angle: -Math.PI / 2 + (r() - 0.5) * 2.2,
+      size: 10 * scale * (0.75 + r() * 0.5),
+      color: r() < 0.12 ? mix(GOLD, AMBER, r()) : mix(TEAL, DEEP, r() * 0.6),
+      alpha: 0.85 + r() * 0.15,
+    };
+  }
+
+  // The fan-shaped ginkgo leaf, notched at the top, on a short stalk.
+  function drawLeaf(c, l, scale, rotation = 0) {
+    if (scale <= 0) return;
+    const s = l.size * scale;
+    c.save();
+    c.translate(l.x, l.y);
+    c.rotate(l.angle + rotation + Math.PI / 2);
+    c.globalAlpha = l.alpha;
+    c.strokeStyle = rgb(GOLD, 0.7);
+    c.lineWidth = Math.max(0.6, s * 0.08);
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(0, -s * 0.55); c.stroke();
+    c.beginPath();
+    c.moveTo(0, -s * 0.5);
+    c.quadraticCurveTo(-s * 0.55, -s * 0.75, -s * 0.95, -s * 1.45);
+    c.quadraticCurveTo(-s * 0.55, -s * 1.85, -s * 0.12, -s * 1.7);
+    c.lineTo(0, -s * 1.35);
+    c.lineTo(s * 0.12, -s * 1.7);
+    c.quadraticCurveTo(s * 0.55, -s * 1.85, s * 0.95, -s * 1.45);
+    c.quadraticCurveTo(s * 0.55, -s * 0.75, 0, -s * 0.5);
+    c.fillStyle = rgb(l.color);
+    c.fill();
+    c.stroke();
+    c.restore();
+  }
+
+  // Part of a quadratic curve, from its start to fraction p.
+  function drawBranch(c, b, p) {
+    if (p <= 0) return;
+    const ax = b.x + (b.cx - b.x) * p, ay = b.y + (b.cy - b.y) * p;
+    const bx = b.cx + (b.x1 - b.cx) * p, by = b.cy + (b.y1 - b.cy) * p;
+    c.lineWidth = b.width;
+    c.beginPath();
+    c.moveTo(b.x, b.y);
+    c.quadraticCurveTo(ax, ay, ax + (bx - ax) * p, ay + (by - ay) * p);
+    c.stroke();
+  }
+
+  function drawTree(c, t) {
+    c.lineCap = "round";
+    c.strokeStyle = "#06191a";
+    for (const b of tree.branches) drawBranch(c, b, clamp01((t - b.start) / b.dur));
+
+    // A node glows gold as its branch finishes, like a task completing.
+    for (const n of tree.nodes) {
+      const k = (t - n.at) / 1.4;
+      if (k <= 0 || k >= 1) continue;
+      const g = c.createRadialGradient(n.x, n.y, 0, n.x, n.y, 16);
+      g.addColorStop(0, rgb(GOLD, 0.75 * (1 - k)));
+      g.addColorStop(1, rgb(GOLD, 0));
+      c.fillStyle = g;
+      c.beginPath(); c.arc(n.x, n.y, 16, 0, Math.PI * 2); c.fill();
+    }
+    for (const l of tree.leaves) drawLeaf(c, l, easeOutBack(clamp01((t - l.at) / 0.7)));
+    c.globalAlpha = 1;
+  }
+
+  // ── Distant treelines of rounded crowns, drawn once per resize ─────
+  function drawRidges() {
+    const r = rng(3);
+    rctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    rctx.clearRect(0, 0, W, H);
+    const lines = [
+      { base: 0.62, swell: 0.07, crown: [26, 58], color: "rgba(34, 84, 79, .5)" },
+      { base: 0.76, swell: 0.05, crown: [30, 60], color: "rgba(10, 40, 38, .85)" },
+    ];
+    for (const L of lines) {
+      rctx.fillStyle = L.color;
+      rctx.beginPath();
+      rctx.rect(0, H * L.base, W, H);
+      const phase = r() * 10;
+      for (let x = -40; x < W + 40; ) {
+        const rad = L.crown[0] + r() * (L.crown[1] - L.crown[0]);
+        const y = H * L.base - Math.sin(x / W * 3 + phase) * H * L.swell - r() * rad * 0.6;
+        rctx.moveTo(x + rad, y);
+        rctx.ellipse(x, y, rad, rad * (0.8 + r() * 0.4), 0, 0, Math.PI * 2);
+        rctx.rect(x - rad * 0.9, y, rad * 1.8, H);
+        x += rad * (0.9 + r() * 0.5);
+      }
+      rctx.fill();
+    }
+  }
+
+  // ── A few golden leaves drift down once the tree has grown ─────────
+  function spawnLeaf(initial) {
+    const r = Math.random;
+    const src = tree.leaves[Math.floor(r() * tree.leaves.length)];
+    return {
+      x: src.x, y: initial ? src.y + r() * H * 0.3 : src.y,
+      angle: r() * Math.PI * 2, size: src.size * 1.1,
+      color: mix(GOLD, AMBER, r()), alpha: 0.9,
+      vy: 18 + r() * 22, sway: 20 + r() * 30, phase: r() * Math.PI * 2, spin: (r() - 0.5) * 1.6,
+      born: performance.now() / 1000,
+    };
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    if (!grown) {
+      drawTree(ctx, clock.t);
+      return;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(cache, 0, 0);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const now = performance.now() / 1000;
+    for (let i = 0; i < falling.length; i++) {
+      const f = falling[i], age = now - f.born;
+      const leafNow = {
+        ...f,
+        x: f.x + Math.sin(f.phase + age * 0.9) * f.sway,
+        y: f.y + age * f.vy,
+      };
+      drawLeaf(ctx, leafNow, 1, Math.sin(f.phase + age * 1.3) * 0.9 + age * f.spin);
+      if (leafNow.y > H + 30) falling[i] = spawnLeaf(false);
+    }
+  }
+
+  function finishGrowth() {
+    grown = true;
+    cache = document.createElement("canvas");
+    cache.width = canvas.width; cache.height = canvas.height;
+    const c = cache.getContext("2d");
+    c.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawTree(c, tree.total + 10);
+    falling = animate ? Array.from({ length: W < 760 ? 5 : 9 }, () => spawnLeaf(true)) : [];
+    render();
+  }
+
+  function resize() {
+    const box = forest.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    W = box.width; H = box.height; DPR = Math.min(2, window.devicePixelRatio || 1);
+    for (const c of [canvas, ridges]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); }
+    tree = buildTree();
+    drawRidges();
+    if (grown) finishGrowth(); else render();
+  }
+
+  // ── One orchestrated moment: the tree grows, then the words arrive ──
+  let started = false;
+  function start() {
+    if (started || !tree) return;
+    started = true;
+    if (!animate) {
+      finishGrowth();
+      return;
+    }
+    const intro = gsap.timeline({ onComplete: finishGrowth });
+    intro.to(clock, { t: tree.total, duration: tree.total * 0.85, ease: "power1.inOut", onUpdate: render });
+    intro.fromTo(".hero [data-reveal]", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 1.1, ease: "power2.out", stagger: 0.18 }, 0.9);
+    gsap.ticker.add(() => { if (grown && falling.length) render(); });
+
+    // Fog drifts; the forest shifts a little with the pointer.
+    gsap.to(".fog.a", { x: "8vw", duration: 38, repeat: -1, yoyo: true, ease: "sine.inOut" });
+    gsap.to(".fog.b", { x: "-10vw", duration: 46, repeat: -1, yoyo: true, ease: "sine.inOut" });
+    gsap.to(".fog.c", { x: "6vw", duration: 30, repeat: -1, yoyo: true, ease: "sine.inOut" });
+    const ridgeX = gsap.quickTo(ridges, "x", { duration: 1.6, ease: "power3.out" });
+    const treeX = gsap.quickTo(canvas, "x", { duration: 1.6, ease: "power3.out" });
+    forest.addEventListener("pointermove", (e) => {
+      const k = e.clientX / W - 0.5;
+      ridgeX(k * -10);
+      treeX(k * -22);
+    });
+  }
+
+  resize();
+  start();
+  let resizeTimer;
+  new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { resize(); start(); }, 150);
+  }).observe(forest);
+})();
+</script>
+</body>
+</html>

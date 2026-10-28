@@ -4,7 +4,7 @@ This quickstart uses the runnable bioinformatics example in `examples/bioinfo`
 of the Ginkgo repository. The example is not installed with the `ginkgo` CLI,
 so you need a clone of the repository. If you would rather start with no
 checkout and no external tools, run the
-[Minimal Workflow](../index.md#a-minimal-workflow) from the home page, or
+[Minimal Workflow](../docs.md#a-minimal-workflow) from the docs front page, or
 scaffold a project with `ginkgo init`.
 
 ## Prerequisites

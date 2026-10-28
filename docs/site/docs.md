@@ -11,12 +11,12 @@ Python, it can change shape while it runs: a task can look at its inputs and
 add new steps, which is how Ginkgo handles dynamic DAGs. You get all of this
 without rewriting your code into a separate workflow language.
 
-New to Ginkgo? Read [Why Ginkgo](motivation/) for the motivation, or jump
-straight to the [Quickstart](getting-started/quickstart/).
+New to Ginkgo? Read [Why Ginkgo](../motivation/) for the motivation, or jump
+straight to the [Quickstart](../getting-started/quickstart/).
 
 ```{raw} html
-<video controls muted playsinline preload="metadata" style="width: 100%; border-radius: 8px;">
-  <source src="_static/walkthrough.mp4" type="video/mp4">
+<video controls muted playsinline preload="none" poster="../_static/walkthrough-poster.jpg" style="width: 100%; border-radius: 8px;">
+  <source src="../_static/walkthrough.mp4" type="video/mp4">
 </video>
 ```
 
@@ -75,38 +75,38 @@ ginkgo run flow.py
   <article class="contents-block">
     <h3>Getting started</h3>
     <ul>
-      <li><a href="getting-started/installation/">Installation</a></li>
-      <li><a href="getting-started/quickstart/">Quickstart</a></li>
-      <li><a href="motivation/">Why Ginkgo</a></li>
+      <li><a href="../getting-started/installation/">Installation</a></li>
+      <li><a href="../getting-started/quickstart/">Quickstart</a></li>
+      <li><a href="../motivation/">Why Ginkgo</a></li>
     </ul>
   </article>
   <article class="contents-block">
     <h3>User guide</h3>
     <ul>
-      <li><a href="guide/concepts/">Core concepts</a></li>
-      <li><a href="guide/tasks-and-flows/">Tasks and flows</a></li>
-      <li><a href="guide/resources/">Resources and scheduling</a></li>
-      <li><a href="guide/environments/">Environments</a></li>
-      <li><a href="guide/reports/">Reports</a></li>
-      <li><a href="guide/caching-and-provenance/">Caching and provenance</a></li>
-      <li><a href="guide/querying-provenance/">Querying provenance</a></li>
-      <li><a href="guide/cli/">CLI</a></li>
-      <li><a href="guide/coding-agents/">Working with coding agents</a></li>
-      <li><a href="guide/notifications/">Notifications</a></li>
-      <li><a href="guide/remote-execution/">Remote execution</a></li>
-      <li><a href="faq/">FAQ</a></li>
+      <li><a href="../guide/concepts/">Core concepts</a></li>
+      <li><a href="../guide/tasks-and-flows/">Tasks and flows</a></li>
+      <li><a href="../guide/resources/">Resources and scheduling</a></li>
+      <li><a href="../guide/environments/">Environments</a></li>
+      <li><a href="../guide/reports/">Reports</a></li>
+      <li><a href="../guide/caching-and-provenance/">Caching and provenance</a></li>
+      <li><a href="../guide/querying-provenance/">Querying provenance</a></li>
+      <li><a href="../guide/cli/">CLI</a></li>
+      <li><a href="../guide/coding-agents/">Working with coding agents</a></li>
+      <li><a href="../guide/notifications/">Notifications</a></li>
+      <li><a href="../guide/remote-execution/">Remote execution</a></li>
+      <li><a href="../faq/">FAQ</a></li>
     </ul>
   </article>
   <article class="contents-block">
     <h3>Examples</h3>
     <ul>
-      <li><a href="examples/bioinfo-workflow/">Canonical bioinformatics workflow</a></li>
+      <li><a href="../examples/bioinfo-workflow/">Canonical bioinformatics workflow</a></li>
     </ul>
   </article>
   <article class="contents-block">
     <h3>Reference</h3>
     <ul>
-      <li><a href="reference/api/">API reference</a></li>
+      <li><a href="../reference/api/">API reference</a></li>
     </ul>
   </article>
 </section>
