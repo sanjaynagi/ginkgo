@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, replace
 import inspect
 from pathlib import Path
 import textwrap
+from types import ModuleType
 from typing import Any
 
 from ginkgo.config import config_session
@@ -581,75 +582,115 @@ def task_call_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagn
     Two mistakes fail only once the run reaches the task: a positional task
     call, and an inferred-return task (``Out[...]`` parameters, no return
     annotation) returning task calls. Best-effort: a callee is recognised only
-    as a name or dotted name that the body's own globals and closure resolve
-    to a ``TaskDef``. Tasks those bodies call are checked too, so a dynamic
-    task's children are covered although the static graph lacks them.
+    as a global or closure name, or a name reached through modules, that is a
+    ``TaskDef`` and not shadowed by a local name. Tasks those bodies call are
+    checked too, so a dynamic task's children are covered although the static
+    graph lacks them.
     """
-    diagnostics: list[WorkflowDiagnostic] = []
-    pending, seen = list(task_defs), set()
+    found: list[tuple[str, int, WorkflowDiagnostic]] = []
+    pending = list({id(task_def): task_def for task_def in task_defs}.values())
+    seen = {id(task_def) for task_def in pending}
     while pending:
-        task_def = pending.pop(0)
-        if id(task_def) in seen:
-            continue
-        seen.add(id(task_def))
+        task_def = pending.pop()
+        fn = task_def.fn
+        nodes = _own_body_nodes(fn)
         try:
-            lines, first_line = inspect.getsourcelines(task_def.fn)
-            path = inspect.getsourcefile(task_def.fn)
-            namespace = {
-                **task_def.fn.__globals__,
-                **inspect.getclosurevars(task_def.fn).nonlocals,
-            }
-            nodes = list(ast.parse(textwrap.dedent("".join(lines))).body[0].body)
-        except (OSError, TypeError, SyntaxError):
+            namespace = {**fn.__globals__, **inspect.getclosurevars(fn).nonlocals}
+        except (TypeError, ValueError):
             continue
-        while nodes:
-            node = nodes.pop(0)
-            # A nested function, class or lambda runs, and returns, for itself.
-            if isinstance(
-                node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
+        if nodes is None:
+            continue
+        # Comprehension variables are not in co_varnames before Python 3.12.
+        stored = (n.id for n in nodes if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
+        local_names = {*fn.__code__.co_varnames, *fn.__code__.co_cellvars, *stored}
+        path = inspect.getsourcefile(fn) or "<unknown>"
+        checks_return = task_def.has_inferred_return and task_def.kind == "python"
+
+        def report(node: ast.stmt | ast.expr, code: str, message: str) -> None:
+            diagnostic = WorkflowDiagnostic(
+                severity="error", code=code, message=message, location=f"{path}:{node.lineno}"
+            )
+            found.append((path, node.lineno, diagnostic))
+
+        for node in nodes:
+            if isinstance(node, ast.Call) and (
+                called := _called_task(node, namespace, local_names)
             ):
-                continue
-            nodes.extend(ast.iter_child_nodes(node))
-            message, code = None, None
-            if (called := _called_task(node, namespace)) is not None:
-                pending.append(called)
-                if node.args:
+                if id(called) not in seen:
+                    seen.add(id(called))
+                    pending.append(called)
+                # A starred argument may be empty, and then the call succeeds.
+                positional = [arg for arg in node.args if not isinstance(arg, ast.Starred)]
+                if positional:
                     supplied = [keyword.arg for keyword in node.keywords]
-                    message = called.positional_call_message(
-                        count=len(node.args), supplied=supplied
+                    report(
+                        node,
+                        POSITIONAL_TASK_CALL_CODE,
+                        called.positional_call_message(count=len(positional), supplied=supplied),
                     )
-                    code = POSITIONAL_TASK_CALL_CODE
-            if (
-                isinstance(node, ast.Return)
+            elif (
+                checks_return
+                and isinstance(node, ast.Return)
                 and node.value is not None
-                and task_def.has_inferred_return
-                and task_def.kind == "python"
-                and any(_called_task(child, namespace) for child in ast.walk(node.value))
-            ):
-                message = task_def.inferred_return_message(returned=ast.unparse(node.value))
-                code = RETURNED_TASK_CALL_CODE
-            if message is not None:
-                location = f"{path}:{first_line + node.lineno - 1}"
-                diagnostics.append(
-                    WorkflowDiagnostic(
-                        severity="error", code=code, message=message, location=location
-                    )
+                and any(
+                    isinstance(child, ast.Call) and _called_task(child, namespace, local_names)
+                    for child in ast.walk(node.value)
                 )
-    return diagnostics
+            ):
+                report(
+                    node,
+                    RETURNED_TASK_CALL_CODE,
+                    task_def.inferred_return_message(returned=ast.unparse(node.value)),
+                )
+    return [diagnostic for *_, diagnostic in sorted(found, key=lambda item: item[:2])]
 
 
-def _called_task(node: ast.AST, namespace: dict[str, Any]) -> TaskDef | None:
-    """The task *node* calls, when it is a call of a name or dotted name naming one."""
-    if not isinstance(node, ast.Call):
-        return None
+def _called_task(
+    node: ast.Call, namespace: dict[str, Any], local_names: set[str]
+) -> TaskDef | None:
+    """The task *node* calls: a non-local name, or one reached through modules."""
     func, attrs = node.func, []
     while isinstance(func, ast.Attribute):
         attrs.insert(0, func.attr)
         func = func.value
-    value = namespace.get(func.id) if isinstance(func, ast.Name) else None
+    if not isinstance(func, ast.Name) or func.id in local_names:
+        return None
+    value = namespace.get(func.id)
     for attr in attrs:
+        if not isinstance(value, ModuleType):
+            return None
         value = getattr(value, attr, None)
     return value if isinstance(value, TaskDef) else None
+
+
+def _own_body_nodes(fn: Callable[..., Any]) -> list[ast.AST] | None:
+    """Every node in *fn*'s own body, numbered by its line in the source file.
+
+    A nested function, class or lambda runs, and returns, for itself, so its
+    body is left out. ``None`` when the source cannot be read or holds no
+    function definition, as for a lambda.
+    """
+    try:
+        lines, first_line = inspect.getsourcelines(fn)
+        tree = ast.parse(textwrap.dedent("".join(lines)))
+    except (OSError, TypeError, SyntaxError):
+        return None
+    function = next(
+        (node for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)),
+        None,
+    )
+    if function is None:
+        return None
+    ast.increment_lineno(function, first_line - 1)
+    nodes: list[ast.AST] = []
+    pending: list[ast.AST] = list(function.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+            continue
+        nodes.append(node)
+        pending.extend(ast.iter_child_nodes(node))
+    return nodes
 
 
 def _never_returns_directive(fn: Callable[..., Any]) -> bool:
@@ -658,35 +699,15 @@ def _never_returns_directive(fn: Callable[..., Any]) -> bool:
     ``False`` whenever the source cannot be read or the body is a generator,
     so an unreadable task is never flagged.
     """
-    try:
-        source = textwrap.dedent(inspect.getsource(fn))
-    except (OSError, TypeError):
+    nodes = _own_body_nodes(fn)
+    if nodes is None or any(isinstance(node, ast.Yield | ast.YieldFrom) for node in nodes):
         return False
-    function = next(
-        (
-            node
-            for node in ast.parse(source).body
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-        ),
-        None,
-    )
-    if function is None:
-        return False
-
-    returns: list[ast.Return] = []
-    pending: list[ast.AST] = list(function.body)
-    while pending:
-        node = pending.pop()
-        # A nested function, class or lambda returns for itself, not the task.
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
-            continue
-        if isinstance(node, ast.Yield | ast.YieldFrom):
-            return False
-        if isinstance(node, ast.Return):
-            returns.append(node)
-        pending.extend(ast.iter_child_nodes(node))
     # No return at all returns None, which is no directive either.
-    return all(node.value is None or _is_plain_value(node.value) for node in returns)
+    return all(
+        node.value is None or _is_plain_value(node.value)
+        for node in nodes
+        if isinstance(node, ast.Return)
+    )
 
 
 def _is_plain_value(node: ast.expr) -> bool:

@@ -263,6 +263,37 @@ def test_run_refuses_wrong_task_calls_before_any_task_runs() -> None:
     assert not Path("marker.txt").exists()
 
 
+def test_a_local_name_shadowing_a_task_is_not_a_task_call() -> None:
+    write(
+        "workflow.py",
+        """
+        from ginkgo import Out, file, flow, task
+
+        @task()
+        def child(x: int) -> int:
+            return x
+
+        @task()
+        def summarize(x: int) -> int:
+            return x
+
+        @task()
+        def fan(n: int, out: Out[file]):
+            def child(v):
+                return v
+
+            summarize = len
+            values = [child(n) for child in [abs]]
+            return summarize(values) and child(n)
+
+        @flow
+        def main():
+            return fan(n=2, out="fan.txt")
+        """,
+    )
+    assert _doctor_json() == []
+
+
 def test_correct_task_calls_and_positional_helper_calls_pass() -> None:
     write(
         "workflow.py",

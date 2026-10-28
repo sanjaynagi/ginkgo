@@ -347,12 +347,15 @@ class TaskDef:
         delay = self.retry_backoff * (self.retry_backoff_multiplier ** (attempt - 1))
         return min(delay, self.retry_backoff_max)
 
-    def positional_call_message(self, *, count: int, supplied: Iterable[str]) -> str:
+    def positional_call_message(self, *, count: int, supplied: Iterable[str | None]) -> str:
         """The error for a call passing *count* positional arguments.
 
         Shared by the call itself and the build-time check of task bodies.
+        *supplied* names the keyword arguments; a ``None`` (``**kwargs``) is
+        ignored.
         """
-        names = [name for name in self.all_params if name not in set(supplied)]
+        named = {name for name in supplied if name is not None}
+        names = [name for name in self.all_params if name not in named]
         example = ", ".join(f"{name}=..." for name in names[:count]) or "name=..."
         return (
             f"{self.fn.__name__}() was given {count} positional argument(s), but "
