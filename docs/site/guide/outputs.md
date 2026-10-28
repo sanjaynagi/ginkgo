@@ -1,7 +1,3 @@
----
-orphan: true
----
-
 # Declaring Outputs
 
 A task that writes a file or folder declares the path as an `Out[file]` or

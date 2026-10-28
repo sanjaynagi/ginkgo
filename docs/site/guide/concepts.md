@@ -122,7 +122,7 @@ explains how Ginkgo treats a `str` path.
 
 When one task writes a path and another task reads the same path, Ginkgo runs
 the writer first.
-[Reads vs. Writes](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)
+[Declaring Outputs](outputs.md#dependencies-from-matching-paths)
 explains how reads and writes are matched.
 
 ## Where Tasks Run

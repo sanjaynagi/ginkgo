@@ -83,9 +83,9 @@ ginkgo run flow.py
 
 `@task()` marks a function as a task, and `@flow` marks the entry point of the
 workflow. Calling a task inside a flow does not run it. It returns an
-[expression](guide/concepts.md), a placeholder that stands for that task call.
+[expression](guide/concepts.md#glossary), a placeholder that stands for that task call.
 Ginkgo uses these placeholders to build the graph of tasks, and runs the task
-bodies later. The graph is a directed acyclic graph ([DAG](guide/concepts.md)):
+bodies later. The graph is a directed acyclic graph ([DAG](guide/concepts.md#glossary)):
 tasks joined by dependency arrows, with no loops. So Ginkgo can check the whole
 graph before any task runs. See [Core Concepts](guide/concepts.md).
 
@@ -110,7 +110,7 @@ task. See [Tasks and Flows](guide/tasks-and-flows.md).
 ### How do I fan out over a list of inputs and combine the results?
 
 Call `.map()` on a task with a list for the parameter that varies. Ginkgo runs
-one branch of the task for each item. This is a [fan-out](guide/concepts.md).
+one branch of the task for each item. This is a [fan-out](guide/concepts.md#glossary).
 To combine the results, pass the whole fan-out to one downstream task, which
 waits for every branch:
 
@@ -152,7 +152,7 @@ Ginkgo has these task kinds:
 - **`shell`**: the body returns `shell(...)`, for a command line.
 - **`script`**: the body returns `script(...)`, for a Python or R script file.
 - **`notebook`**: the body returns `notebook(...)`, for a marimo notebook. It
-  needs the `ginkgo-notebook` [plugin](guide/concepts.md).
+  needs the `ginkgo-notebook` [plugin](guide/concepts.md#glossary).
 - **`subworkflow`**: the body returns `subworkflow(...)`, to run another
   workflow as its own `ginkgo run`.
 
@@ -266,7 +266,7 @@ for what each flag caps, and its default.
 
 Ginkgo stores every task result under `.ginkgo/cache/`. The key for a result
 comes from the task and the content of its inputs, not from file names or
-dates. That is what [content-addressed](guide/concepts.md) means. So moving or
+dates. That is what [content-addressed](guide/concepts.md#glossary) means. So moving or
 renaming a file changes nothing, but changing its bytes gives a new key, and
 the task runs again. See [Caching and Provenance](guide/caching-and-provenance.md).
 
@@ -423,7 +423,7 @@ See [CLI](guide/cli.md).
 
 Set `remote=True` on the task to send it to the run's default executor, which
 `ginkgo run --executor <name>` names. Set `executor="name"` to send it to one
-[executor](guide/concepts.md) whatever the default is. A `gpu=N` task goes to
+[executor](guide/concepts.md#glossary) whatever the default is. A `gpu=N` task goes to
 the default executor only when the local `--gpus` budget can't cover it.
 Executors are Kubernetes or GCP Batch. GKE, EKS and OKE are all clusters that
 the one Kubernetes executor talks to. See
@@ -447,7 +447,7 @@ error. See [Remote Execution](guide/remote-execution.md#the-artifact-store).
 
 ### What does Ginkgo record for each run, and where does it live?
 
-Ginkgo records each run in the [provenance](guide/concepts.md) database,
+Ginkgo records each run in the [provenance](guide/concepts.md#glossary) database,
 `.ginkgo/ginkgo.db`, one per project. It holds every run's tasks, attempts,
 inputs, outputs and dependencies. `ginkgo runs show`, `ginkgo debug` and
 `ginkgo report` read it, even while a run is still going. Each run also gets a

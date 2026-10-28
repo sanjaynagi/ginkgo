@@ -357,7 +357,7 @@ tasks affected. `--verbose` names each one and the error.
 - `path_like_str_param`: a parameter whose name looks like a path, such as
   `output_dir`, but is annotated `str`. Annotate it `file`, `folder` or
   `Out[...]` (see
-  [Reads vs. Writes](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)).
+  [Declaring Outputs](outputs.md#reads-and-writes)).
   A parameter that every call fills from another task's result is not
   flagged, because that task's return annotation decides how it is tracked.
 - `spaced_command_path`: a shell task reads another task's literal

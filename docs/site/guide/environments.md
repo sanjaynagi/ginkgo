@@ -100,7 +100,7 @@ environments need `pixi`. Container environments need `docker` or `podman`. See
 ## Pixi Environments
 
 Pixi environments come from the `ginkgo-pixi`
-[plugin](concepts.md), which the curl installer includes. See
+[plugin](concepts.md#glossary), which the curl installer includes. See
 [Plugins](../getting-started/installation.md#plugins). Without the plugin, a
 task with `env="name"` fails before the run starts, and the error names the
 plugin.

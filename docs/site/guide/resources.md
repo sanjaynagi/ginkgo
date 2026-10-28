@@ -48,7 +48,7 @@ def train_model(dataset: folder) -> file:
   a whole GiB, with a minimum of 1 GiB. So `512Mi` counts as 1 GiB, and `1.5Gi`
   counts as 2 GiB.
 - `gpu=N` declares how many GPUs the task uses. `gpu_type` names the kind of GPU
-  a remote [executor](concepts.md) should provide.
+  a remote [executor](concepts.md#glossary) should provide.
 
 The local `--gpus` budget only stops Ginkgo from giving the same GPUs to too
 many tasks at once. It does not assign devices. Every local task still sees
@@ -213,7 +213,7 @@ Use `--keep-going` to carry on past any failure in the whole run. Use
   tasks failed.
 - **It does not run the tasks downstream.** A task that needs the failed task's
   output can't run, so it is recorded `skipped`, naming the failure. An
-  aggregator over a [fan-out](concepts.md) depends on every branch, so one
+  aggregator over a [fan-out](concepts.md#glossary) depends on every branch, so one
   ignored failure skips it. If the flow returns the aggregator, the run has no
   result, and it says so.
 

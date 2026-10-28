@@ -95,7 +95,7 @@ Ginkgo tracks imports conservatively:
   changes.
 
 A task can return other tasks, which then run (see
-[Returning Expressions From Tasks](tasks-and-flows.md#returning-expressions-from-tasks)).
+[Dynamic Graphs](tasks-and-flows.md#dynamic-graphs-returning-tasks-from-a-task)).
 On a cache hit, Ginkgo looks up each returned task in the cache on its own. A
 returned task whose code or inputs changed runs again, with no `version=` bump
 needed.

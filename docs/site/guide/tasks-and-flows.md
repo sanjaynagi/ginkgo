@@ -547,7 +547,7 @@ long_running_server > server.log 2>&1 &
 A shell, script or notebook task can declare its outputs as `Out[...]`
 parameters. Then you can leave out `output=`. Ginkgo infers it from those
 parameters' paths, and infers the task's return value too (see
-[Reads vs. Writes](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)):
+[Declaring Outputs](outputs.md#reads-and-writes)):
 
 ```python
 from shlex import quote

@@ -10,7 +10,7 @@ A few terms come first:
 
 - The **driver** is the `ginkgo run` process. It runs on your machine, schedules
   the tasks, and submits remote tasks as jobs.
-- An **[executor](concepts.md)** is a configured place where tasks can run,
+- An **[executor](concepts.md#glossary)** is a configured place where tasks can run,
   such as a Kubernetes cluster or GCP Batch. You name executors in
   `ginkgo.toml`.
 - A **worker** is the process that runs one task on the executor. It runs inside
@@ -74,7 +74,7 @@ remote tasks count against the run's budgets.
 
 ## Installing an Executor
 
-Executors are [plugins](concepts.md), not part of core Ginkgo. Each executor
+Executors are [plugins](concepts.md#glossary), not part of core Ginkgo. Each executor
 type comes from a separate package in the Ginkgo repository:
 
 | Type | Backend | Plugin |
@@ -541,7 +541,7 @@ The header line also shows the executor:
 
 ## Provenance
 
-The [provenance](concepts.md) database records these facts for each remote
+The [provenance](concepts.md#glossary) database records these facts for each remote
 task:
 
 - `execution_backend`: where the task ran. This is `local`, or the executor's

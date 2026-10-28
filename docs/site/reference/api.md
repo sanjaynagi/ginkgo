@@ -57,7 +57,7 @@ Import these names from `ginkgo`, for example `from ginkgo import file, task`.
 ## Notebook API
 
 `notebook` comes from the `ginkgo-notebook` plugin, so install the plugin first.
-See [Optional Notebook Support](../getting-started/installation.md#optional-notebook-support).
+See [Plugins](../getting-started/installation.md#plugins).
 Then import it with `from ginkgo_notebook import notebook`.
 
 ```{eval-rst}

@@ -1,7 +1,3 @@
----
-orphan: true
----
-
 # Running On OKE
 
 This page shows one way to run a whole workflow on Oracle Kubernetes Engine

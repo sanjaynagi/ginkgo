@@ -1,7 +1,3 @@
----
-orphan: true
----
-
 # Maintaining The Database And Cache
 
 Ginkgo keeps what it records under `.ginkgo/` in the project root:
