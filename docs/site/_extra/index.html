@@ -62,7 +62,7 @@
   .forest::after {
     /* ground mist that the text sits on */
     content: ""; position: absolute; inset: auto 0 0 0; height: 45%; z-index: 3; pointer-events: none;
-    background: linear-gradient(180deg, rgba(11, 42, 41, 0) 0%, rgba(11, 42, 41, .55) 70%, rgba(11, 42, 41, .75) 100%);
+    background: linear-gradient(180deg, rgba(11, 42, 41, 0) 0%, rgba(11, 42, 41, .55) 70%, rgba(11, 42, 41, .8) 94%, #0d2d2b 100%);
   }
 
   .nav {
@@ -158,6 +158,30 @@
   }
   .grows p { margin: 0; color: var(--ink-soft); max-width: 38ch; }
 
+  /* ── Below the tree: its reflection, and the graph growing from it ── */
+  .roots {
+    position: relative; height: 460vh; color: #e9f2ee;
+    background: linear-gradient(180deg, #0d2d2b 0%, #0b2a29 28%, #071d1c 100%);
+  }
+  .roots-stage { position: sticky; top: 0; height: 100vh; height: 100svh; overflow: hidden; }
+  #roots { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .captions {
+    position: absolute; left: var(--gutter); top: 50%; transform: translateY(-50%);
+    width: min(34vw, 420px); min-height: 13em;
+  }
+  .caption { position: absolute; top: 0; left: 0; margin: 0; opacity: 0; color: #b9cec7; font-size: 1.08rem; }
+  .caption b {
+    display: block; margin-bottom: 12px; color: #e9f2ee; font-weight: 300;
+    font: 300 clamp(1.7rem, 2.7vw, 2.5rem)/1.1 var(--display); letter-spacing: -.015em;
+  }
+  .caption code { font: 500 .9em var(--mono); color: #8fd3c9; white-space: nowrap; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .roots.settled { height: auto; }
+  .roots.settled .roots-stage { position: static; height: auto; }
+  .roots.settled #roots { position: relative; height: 100vh; height: 100svh; }
+  .roots.settled .captions { position: static; transform: none; width: auto; max-width: 60ch; min-height: 0; padding: 0 var(--gutter) 96px; }
+  .roots.settled .caption { position: static; opacity: 1; margin-bottom: 36px; }
+
   .watch { background: var(--understory); color: #e9f2ee; }
   .watch .intro { color: #b9cec7; }
   .watch video {
@@ -180,6 +204,9 @@
   @media (max-width: 860px) {
     .anatomy, .grows { grid-template-columns: minmax(0, 1fr); }
     .grows { gap: 36px; }
+    .captions { top: 7vh; transform: none; width: calc(100% - 2 * var(--gutter)); min-height: 0; }
+    .caption b { font-size: 1.6rem; }
+    .caption { font-size: 1rem; }
     footer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     footer .about { grid-column: 1 / -1; }
   }
@@ -225,6 +252,20 @@
     </div>
   </div>
 </header>
+
+<section class="roots" aria-labelledby="roots-title">
+  <div class="roots-stage">
+    <canvas id="roots" aria-hidden="true"></canvas>
+    <div class="captions">
+      <h2 id="roots-title" class="sr-only">How a workflow grows</h2>
+      <p class="caption" data-from="0" data-to="0.3"><b>A flow plans the work.</b> Calling tasks builds a graph, and Ginkgo checks all of it before anything runs.</p>
+      <p class="caption" data-from="0.3" data-to="0.5"><b>Then it grows with the data.</b> Discovery finds 60 assemblies and adds a cleaning task for each one.</p>
+      <p class="caption" data-from="0.5" data-to="0.66"><b>Results shape what comes next.</b> QC reads the graph genome and adds a GWAS for each antibiotic with enough resistant samples.</p>
+      <p class="caption" data-from="0.66" data-to="0.79"><b>Change your mind, and it changes with you.</b> Run with <code>--min-cases 3</code> and a GWAS for ampicillin grows in. Everything else stays cached.</p>
+      <p class="caption" data-from="0.79" data-to="1.01"><b>Whatever is ready, runs.</b> Independent tasks run in parallel, and every result is recorded and kept.</p>
+    </div>
+  </div>
+</section>
 
 <main>
   <section class="band" aria-labelledby="plain-python">
@@ -340,6 +381,7 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
 <script>
 (() => {
   document.body.classList.remove("no-js");
@@ -438,7 +480,7 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
 
     grow(baseX, H + 4, -Math.PI / 2 + (r() - 0.5) * 0.05, trunk, Math.max(6, height * 0.026), 5, 0.2, true);
     const total = Math.max(...leaves.map((l) => l.at)) + 0.8;
-    return { branches, leaves, nodes, total };
+    return { branches, leaves, nodes, total, baseX };
   }
 
   function leaf(x, y, at, scale, r) {
@@ -578,6 +620,7 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
     drawTree(c, tree.total + 10);
     falling = animate ? Array.from({ length: W < 760 ? 5 : 9 }, () => spawnLeaf(true)) : [];
     render();
+    renderRoots();
   }
 
   function resize() {
@@ -587,7 +630,167 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
     for (const c of [canvas, ridges]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); }
     tree = buildTree();
     drawRidges();
+    resizeRoots();
     if (grown) finishGrowth(); else render();
+  }
+
+  // ── Below ground: the tree's reflection, and a task graph growing from it ──
+  const roots = document.querySelector(".roots");
+  const rootsCanvas = document.getElementById("roots");
+  const gctx = rootsCanvas.getContext("2d");
+  const captions = [...document.querySelectorAll(".caption")];
+  const scrolly = animate && typeof window.ScrollTrigger !== "undefined";
+  if (!scrolly) roots.classList.add("settled");
+  const story = { p: scrolly ? 0 : 1 };
+  let SW = 0, SH = 0, graph = null, rootsVisible = false;
+
+  // Each element appears over a range of scroll progress, [from, to].
+  function buildGraph() {
+    const narrow = SW < 760, centred = narrow || !scrolly;
+    const cx = centred ? SW * 0.5 : SW * 0.64;
+    const u = narrow ? SW * 0.4 : Math.min(SW * 0.22, 330);
+    const top = narrow && scrolly ? SH * 0.4 : SH * 0.13;
+    const Y = (f) => top + (SH * 0.9 - top) * f;
+    const nodes = {}, edges = [];
+    const node = (id, x, y, show, run, opts = {}) => (nodes[id] = { id, x, y, show, run, ...opts });
+    const edge = (a, b, show, opts = {}) => edges.push({ a, b, show, ...opts });
+
+    node("main", cx, Y(0), [0.04, 0.1], 0.8, { label: "main()" });
+    node("discover", cx, Y(0.18), [0.1, 0.15], 0.815, { label: "discover_cohort" });
+    node("build", cx, Y(0.5), [0.15, 0.2], 0.875, { label: "build_graph" });
+    node("qc", cx, Y(0.67), [0.2, 0.25], 0.9, { label: "qc" });
+    node("summarise", cx, Y(1), [0.25, 0.29], 0.965, { label: "summarise" });
+    // The trunk carries on down into the graph; on a phone it starts below the captions.
+    edge({ x: tree.baseX, y: narrow && scrolly ? SH * 0.26 : -4 }, "main", [0, 0.06], { root: true });
+    edge("main", "discover", [0.07, 0.11]);
+    edge("discover", "build", [0.11, 0.16], { fade: [0.33, 0.4] });
+    edge("build", "qc", [0.16, 0.21]);
+    edge("qc", "summarise", [0.21, 0.26], { fade: [0.53, 0.6] });
+
+    const n = narrow ? 7 : 9;
+    for (let i = 0; i < n; i++) {
+      const a = 0.31 + i * 0.012;
+      node(`clean${i}`, cx + u * (-1 + (2 * i) / (n - 1)), Y(0.34), [a + 0.03, a + 0.07], 0.835 + i * 0.004, { grown: true });
+      edge("discover", `clean${i}`, [a, a + 0.04], { grown: true });
+      edge(`clean${i}`, "build", [0.41 + i * 0.008, 0.46 + i * 0.008], { grown: true });
+    }
+    const labelled = nodes[narrow ? `clean${(n - 1) / 2}` : `clean${n - 1}`];
+    Object.assign(labelled, { label: "clean_assembly ×60", below: narrow });
+
+    const drugs = [["ciprofloxacin", -0.6, 0.52, 0.92], ["tetracycline", 0, 0.555, 0.925], ["ampicillin", 0.6, 0.69, 0.94]];
+    for (const [drug, dx, a, run] of drugs) {
+      node(drug, cx + u * dx, Y(0.84), [a + 0.035, a + 0.075], run, { grown: true, label: narrow ? drug : `gwas[${drug}]`, below: true });
+      edge("qc", drug, [a, a + 0.04], { grown: true });
+      edge(drug, "summarise", [a + 0.05, a + 0.09], { grown: true });
+    }
+    return { nodes, edges };
+  }
+
+  function resizeRoots() {
+    const box = rootsCanvas.getBoundingClientRect();
+    if (!box.width || !box.height || !tree) return;
+    SW = box.width; SH = box.height;
+    rootsCanvas.width = Math.round(SW * DPR); rootsCanvas.height = Math.round(SH * DPR);
+    graph = buildGraph();
+    renderRoots();
+  }
+
+  // The tree mirrored across the hero's lower edge, in rippling strips.
+  function drawReflection(alpha) {
+    if (alpha <= 0.01) return;
+    const depth = Math.min(SH * 0.75, H * 0.75), strip = 3, now = performance.now() / 1000;
+    gctx.globalAlpha = alpha;
+    for (let y = 0; y < depth; y += strip) {
+      const ripple = scrolly ? Math.sin(y * 0.09 + now * 1.6) * 2.5 * (y / depth + 0.2) : 0;
+      gctx.drawImage(canvas, 0, (H - y - strip) * DPR, canvas.width, strip * DPR, ripple, y, SW, strip);
+    }
+    gctx.globalAlpha = 1;
+    gctx.globalCompositeOperation = "destination-in";
+    const fade = gctx.createLinearGradient(0, 0, 0, depth);
+    fade.addColorStop(0, "rgba(0,0,0,1)");
+    fade.addColorStop(1, "rgba(0,0,0,0)");
+    gctx.fillStyle = fade;
+    gctx.fillRect(0, 0, SW, SH);
+    gctx.globalCompositeOperation = "source-over";
+  }
+
+  const at = (p, [a, b]) => clamp01((p - a) / (b - a));
+  const point = (ref) => (typeof ref === "string" ? graph.nodes[ref] : ref);
+
+  function drawEdge(e, p) {
+    const k = at(p, e.show);
+    if (k <= 0) return;
+    const fade = e.fade ? 1 - at(p, e.fade) : 1;
+    if (fade <= 0) return;
+    const A = point(e.a), B = point(e.b), dy = B.y - A.y;
+    const c1x = A.x, c1y = A.y + dy * 0.55, c2x = B.x, c2y = B.y - dy * 0.55;
+    gctx.strokeStyle = e.grown ? rgb(TEAL, 0.75 * fade) : `rgba(188, 211, 204, ${0.55 * fade})`;
+    gctx.lineWidth = e.root ? 3 : 1.6;
+    gctx.beginPath();
+    gctx.moveTo(A.x, A.y);
+    const steps = 28;
+    for (let i = 1; i <= steps * k; i++) {
+      const t = i / steps, m = 1 - t;
+      gctx.lineTo(
+        m * m * m * A.x + 3 * m * m * t * c1x + 3 * m * t * t * c2x + t * t * t * B.x,
+        m * m * m * A.y + 3 * m * m * t * c1y + 3 * m * t * t * c2y + t * t * t * B.y,
+      );
+    }
+    gctx.stroke();
+  }
+
+  function drawNode(nd, p) {
+    const k = easeOutBack(at(p, nd.show));
+    if (k <= 0) return;
+    const ran = clamp01((p - nd.run) / 0.03), r = 6.5 * k;
+    if (ran > 0 && ran < 1) {
+      gctx.strokeStyle = rgb(GOLD, 0.6 * (1 - ran));
+      gctx.lineWidth = 1.5;
+      gctx.beginPath(); gctx.arc(nd.x, nd.y, r + 14 * ran, 0, Math.PI * 2); gctx.stroke();
+    }
+    gctx.fillStyle = ran > 0 ? rgb(mix(TEAL, GOLD, ran)) : "#0b2a29";
+    gctx.strokeStyle = nd.grown ? rgb(TEAL) : "rgba(188, 211, 204, .85)";
+    gctx.lineWidth = 2;
+    gctx.beginPath(); gctx.arc(nd.x, nd.y, r, 0, Math.PI * 2); gctx.fill(); gctx.stroke();
+    if (nd.label && k > 0.6) {
+      gctx.globalAlpha = Math.min(1, (k - 0.6) / 0.4);
+      gctx.fillStyle = "#cfe1da";
+      gctx.font = `500 ${SW < 760 ? 11 : 13}px "IBM Plex Mono", monospace`;
+      gctx.textAlign = nd.below ? "center" : "left";
+      gctx.fillText(nd.label, nd.below ? nd.x : nd.x + 16, nd.below ? nd.y + 26 : nd.y + 4);
+      gctx.globalAlpha = 1;
+    }
+  }
+
+  function renderRoots() {
+    if (!graph) return;
+    const p = story.p;
+    gctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    gctx.clearRect(0, 0, SW, SH);
+    drawReflection(scrolly ? 0.32 * (1 - clamp01(p / 0.35)) : 0.18);
+    for (const e of graph.edges) drawEdge(e, p);
+    for (const nd of Object.values(graph.nodes)) drawNode(nd, p);
+    if (scrolly) {
+      for (const c of captions) {
+        const a = +c.dataset.from, b = +c.dataset.to;
+        c.style.opacity = Math.min(a <= 0 ? 1 : clamp01((p - a) / 0.03), clamp01((b - p) / 0.03));
+      }
+    }
+  }
+
+  function startRoots() {
+    if (!scrolly) {
+      renderRoots();
+      return;
+    }
+    gsap.registerPlugin(ScrollTrigger);
+    const follow = gsap.quickTo(story, "p", { duration: 0.6, ease: "power2.out" });
+    ScrollTrigger.create({
+      trigger: roots, start: "top top", end: "bottom bottom",
+      onUpdate: (self) => follow(self.progress),
+    });
+    new IntersectionObserver(([e]) => (rootsVisible = e.isIntersecting)).observe(roots);
+    gsap.ticker.add(() => { if (rootsVisible) renderRoots(); });
   }
 
   // ── One orchestrated moment: the tree grows, then the words arrive ──
@@ -595,6 +798,7 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
   function start() {
     if (started || !tree) return;
     started = true;
+    startRoots();
     if (!animate) {
       finishGrowth();
       return;
@@ -624,6 +828,7 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => { resize(); start(); }, 150);
   }).observe(forest);
+  new ResizeObserver(() => resizeRoots()).observe(rootsCanvas);
 })();
 </script>
 </body>
