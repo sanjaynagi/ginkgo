@@ -96,7 +96,7 @@ def test_init_help_describes_every_flag() -> None:
     [
         (("cache",), "{ls,stats,clear,explain,prune}"),
         (("inspect",), "{workflow}"),
-        (("runs",), "{ls,show}"),
+        (("runs",), "{ls,show,status,wait}"),
         (("export",), "{events,manifest}"),
         (("secrets",), "{list,validate}"),
         ((), ""),
