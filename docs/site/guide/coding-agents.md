@@ -52,61 +52,39 @@ never replaces an existing `AGENTS.md`.
 ## Agent Run Mode
 
 `ginkgo run --agent-output` replaces the live terminal display with a stream
-of events on stdout. The events are JSON Lines (JSONL): one JSON object per
-line.
+of JSONL events on stdout, one JSON object per line. Add `--verbose` to
+include each task's log output.
 
 ```bash
 ginkgo run flow.py --agent-output
 ```
 
-An agent can read the stream to follow progress, spot failures and read task
-results. It doesn't need to read a terminal display. Each event names its type
-in its `event` field. The ones an agent most often needs are these:
+Each event names its type in its `event` field. The ones an agent most often
+needs:
 
 - `run_started`: the run began.
-- `task_cache_hit`: a task's result came from the cache.
-- `task_completed`: a task finished.
-- `task_failed`: a task failed.
+- `task_cache_hit`, `task_completed`, `task_failed`: a task came from the
+  cache, finished or failed.
 - `run_completed`: the run ended. Its `status` is `success`, `failed` or
   `cancelled`.
+- `run_summary`: the last line, with the whole outcome. It holds the
+  run's `status` and `run_dir`, task counts, each failure with its error and
+  last log lines, each skipped task and what blocked it, and the files the run
+  produced.
 
-To see every event type, run `ginkgo export events <run_id>` on a finished
-run. It prints the run's events in the same shape.
+The `run_summary` status matches `ginkgo runs ls`, so a successful run is
+`succeeded` there, where `run_completed` says `success`.
 
-If a run can't start, Ginkgo prints one `run_rejected` event. A missing
-workflow file, an unknown parameter, or a graph that does not validate all
-cause this. The event has an `error` message and an `error_type`. It has no
-`run_id`, because no run exists. The command exits non-zero, and writes the
-same message to stderr.
-
-Add `--verbose` (`ginkgo run --agent-output --verbose`) to include each task's
-log output in the stream.
-
-The stream's last line is a `run_summary` event that holds the whole outcome,
-so an agent doesn't have to rebuild it from the earlier events. It has:
-
-- the run's `status` and `run_dir`
-- `counts` of tasks executed, cached, failed, ignored and skipped
-- each failure's task, category, exit code, error message, last log lines and
-  log paths
-- each skipped task, with the failure that blocked it
-- the files the run produced, and the task that produced each one
-
-Its `status` matches `ginkgo runs ls`, so a successful run is `succeeded` here,
-where `run_completed` says `success`.
+If a run can't start, as with a missing workflow file or an unknown
+parameter, Ginkgo prints one `run_rejected` event, with an `error` and an
+`error_type` but no `run_id`. The command exits non-zero.
 
 ## Long Runs
 
-An agent's tool call usually times out after a couple of minutes, so a long
-workflow should not run in the foreground.
-
-`ginkgo run --detach` starts the run in the background and prints its run ID
-and log path. It returns once the run is recorded, or after 30 seconds if
-loading the workflow takes longer. A workflow that fails validation before then
-is reported straight away. Follow the run with `ginkgo runs wait <run_id>`,
-which also reports a run that was rejected before it started.
-
-A typical agent loop:
+An agent's tool call usually times out after a couple of minutes, so run a
+long workflow with `--detach`. It starts the run in the background, prints its
+run ID and log path, and returns. Then follow the run with
+`ginkgo runs wait`:
 
 ```bash
 ginkgo run flow.py --detach --agent-output
@@ -116,40 +94,32 @@ ginkgo runs wait 20261028_101500_123456_0a1b2c3d --timeout 100 --json
 # exit 0: succeeded; 1: failed or rejected; 3: failed only where the policy allows; 130: cancelled
 ```
 
-`runs wait` prints the same payload as the `run_summary` event, and at the
-timeout prints the run so far. `ginkgo runs status <run_id> --json` prints it
-once, without waiting. Before the run is recorded the payload's `status` is
-`starting`, or `rejected` with the tail of the run's log if it never started.
+`runs wait` prints the same payload as the `run_summary` event, or the run so
+far at the timeout. `ginkgo runs status <run_id> --json` prints it once,
+without waiting. Until the run is recorded, the payload's `status` is
+`starting`. If the run never started, it is `rejected`, with the tail of the
+run's log.
 
-A run killed outright (`kill -9`, a lost machine) is never marked finished, so
-it reads as `running` for good. The `--timeout` is what guards against waiting
-on it forever.
+A run killed outright (`kill -9`, a lost machine) reads as `running` for good,
+so always pass `--timeout`.
 
 ## Inspection Commands
 
-These commands let an agent, or a person, look at a workflow and its runs.
-They do not change the workflow or its results.
+These commands look at a workflow and its runs, without changing either:
 
-- `ginkgo doctor --json` checks the workflow and its setup for problems.
-- `ginkgo run --dry-run` shows which tasks would run, and why, without running
-  any.
-- `ginkgo inspect workflow` shows the task graph, before anything runs.
+- `ginkgo doctor --json` and `ginkgo run --dry-run` check a workflow before it
+  runs.
+- `ginkgo inspect workflow` shows the task graph.
 - `ginkgo runs show <run_id> --json` shows a recorded run.
-- `ginkgo runs status <run_id> --json` shows a run once, even while it runs, and
-  `ginkgo runs wait <run_id> --json` waits for it to finish.
-- `ginkgo history <task-name> --json` shows every run of one task.
 - `ginkgo cache explain <run_id> --json` shows why each task ran or came from
   the cache.
 - `ginkgo debug <run_id>` shows task status, logs and failure detail.
-- `ginkgo why <path>` names the task and run that produced a file, and its
-  inputs.
-- `ginkgo export events <run_id>` prints a finished run's events as JSONL.
-- `ginkgo query "<sql>" --json` runs one read-only SQL statement over the
-  [provenance](concepts.md#glossary) database. The tables can change between releases (see
-  [Querying Provenance](querying-provenance.md)).
-- `ginkgo report <run_id>` builds an HTML report of a run (see
-  [Reports](reports.md)). It writes the report files under
-  `.ginkgo/reports/`.
+- `ginkgo history <task-name> --json` shows every run of one task.
+- `ginkgo why <path>` names the task and run that produced a file.
+- `ginkgo query "<sql>" --json` runs read-only SQL over the provenance
+  database. See [Querying Provenance](querying-provenance.md).
+- `ginkgo export events <run_id>` prints a finished run's events, in the same
+  shape as `--agent-output`.
 
 ## See Also
 

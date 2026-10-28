@@ -17,9 +17,9 @@ from ginkgo import Out, file, folder, task
 def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
 ```
 
-Don't mark a path the task writes as `file`. A first run would fail, because
-the file does not exist yet. A later run would hash the previous run's output
-as an input, so every run would look like a cache miss.
+Don't mark a path the task writes as `file`. The first run would fail, as the
+file does not exist yet. Later runs would hash the old output as an input, so
+every run would be a cache miss.
 
 `Out[...]` can wrap a container or an optional value, such as
 `Out[list[file]]` or `Out[file | None]`. It must be the outermost wrapper:
@@ -33,33 +33,24 @@ shell, script or notebook output that the command may not write, use
 
 ## What Happens When The Task Runs
 
-Ginkgo handles each `Out[...]` path in this order:
+For each `Out[...]` path, Ginkgo:
 
-1. Before the task runs, Ginkgo checks the path. It must be a local path. If
-   something already exists there, it must be the declared kind, so an
-   `Out[file]` that points at a directory is an error.
-2. Ginkgo removes whatever is at the path, a file or a whole folder. The task
-   never sees its own output from an earlier run, so a task that lists its
-   `Out[folder]` sees only the files this run wrote.
-3. Ginkgo creates the parent directory. For an `Out[folder]`, it creates only
-   the parent, not the folder itself, because tools differ on whether they
-   want the folder to exist already.
-4. The task runs.
-5. After the task runs, the path must exist and be the declared kind.
-   Otherwise the task fails, naming the parameter and the path.
+1. Checks that it is a local path, and that anything already there is the
+   declared kind.
+2. Removes whatever is there, so the task sees only what this run writes.
+3. Creates the parent directory, but not an `Out[folder]` itself.
+4. Runs the task.
+5. Fails the task, naming the parameter, unless the path now exists and is the
+   declared kind.
+6. Stores a copy in the artifact store, under `.ginkgo/artifacts/`.
 
-Ginkgo then stores a copy of the output in the artifact store, under
-`.ginkgo/artifacts/`.
-
-On a cache hit, the task does not run. If a declared output is missing or has
-changed on disk, Ginkgo restores it from the artifact store. A hand edit to
-the output is overwritten. Ginkgo judges "changed" by the file's size and
-modification time, so an edit that keeps both goes unnoticed (see
+On a cache hit, the task does not run. Ginkgo restores any declared output
+that is missing or changed on disk, overwriting a hand edit. An edit that
+keeps the file's size and modification time goes unnoticed (see
 [What The Cache Cannot See](caching-and-provenance.md#what-the-cache-cannot-see)).
 
-An `Out[...]` path also works for a remote task. See
-[Remote Execution](remote-execution.md) for how outputs come back from a
-worker.
+`Out[...]` also works for a remote task (see
+[Remote Execution](remote-execution.md)).
 
 ## Dependencies From Matching Paths
 
@@ -81,27 +72,21 @@ def main():
     return [peaks, summary]
 ```
 
-Ginkgo also adds the dependency when the reader's path is inside a folder an
-`Out[folder]` writes. It adds it too when a `folder` argument names a
-directory that holds a path another task writes.
+This also works for a path inside an `Out[folder]`, and for a `folder`
+argument that holds a path another task writes.
 
-Ginkgo matches only paths written as literal strings. A path built at run time
-from an upstream value is not matched. Pass the producer's return value, or
-its `.output[...]`, to the reader instead.
+Ginkgo matches only literal path strings, not a path built at run time from an
+upstream value. In that case, pass the producer's return value, or its
+`.output[...]`, to the reader.
 
 ### Overlapping Paths Are An Error
 
 Ginkgo refuses these before anything runs:
 
 - Two tasks declare the same `Out[...]` path, or one inside the other.
-- A task's `Out[...]` path overlaps one of its own `file` or `folder` inputs.
-  For example, `Out[folder]` at `results/` with an input
-  `results/samples.tsv`. Running it would overwrite the input, and the
-  damaged file would be cached as the input of a successful run. Write the
-  output to a path outside every input.
-
-Ginkgo does not check a plain `str` input for overlap, because it may be a
-label that happens to look like a path.
+- A task's `Out[...]` path overlaps one of its own `file` or `folder` inputs,
+  such as `Out[folder]` at `results/` with an input `results/samples.tsv`.
+  Write the output to a path outside every input.
 
 ## Inferring The Return Value
 
@@ -115,21 +100,18 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]):
     ...  # writes bam and qc_dir, with no return statement
 ```
 
-- With one `Out[...]` parameter, the value is that parameter's path, as a
-  `file` or `folder`. A container `Out` gives a list or tuple of them, and an
-  optional one that was not passed gives `None`.
-- With several, the value is a tuple of their paths, in the order the
-  parameters are declared. The example above returns `tuple[file, folder]`.
+- With one `Out[...]` parameter, the value is its path, as a `file` or
+  `folder`. A container `Out` gives a list or tuple, and an optional one that
+  was not passed gives `None`.
+- With several, the value is a tuple of their paths, in declaration order. The
+  example above returns `tuple[file, folder]`.
 - An explicit `-> None` turns inference off.
-- A Python task that infers its return must return `None`. Returning anything
-  else is an error. Add a return annotation if the task needs to return
-  something else.
-- A shell, script or notebook task infers its value the same way, from its
-  `Out[...]` paths, once the command has run.
+- The Python function itself must return `None`. To return something else,
+  add a return annotation.
+- Shell, script and notebook tasks infer their value the same way.
 
-Ginkgo treats the inferred value as it treats an explicit `-> file` return. It
-hashes and stores the outputs, restores them on a cache hit, and passes them
-to later tasks.
+The inferred value is stored, restored and passed on just like an explicit
+`-> file` return.
 
 ## Selecting One Output
 

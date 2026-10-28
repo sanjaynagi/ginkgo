@@ -138,61 +138,53 @@ An [executor](#glossary) can send chosen tasks to another system instead.
 ## Glossary
 
 Branch
-: One run of a task inside a fan-out. Each branch has its own inputs, its own
-  result and its own cache entry.
+: One run of a task inside a fan-out, with its own inputs, result and cache
+  entry.
 
 Cache key
-: A hash that Ginkgo computes from a task's code, its inputs and its
-  environment. If a later run computes the same key, Ginkgo reuses the stored
-  result instead of running the task.
-  [Cache Identity](caching-and-provenance.md#cache-identity) gives the exact
-  rule.
+: A hash of a task's code, inputs and environment. A matching key reuses the
+  stored result. See [Cache Identity](caching-and-provenance.md#cache-identity).
 
 Content-addressed
-: Stored and looked up by a hash of the content, not by a name or a path.
-  Ginkgo's cache is content-addressed, so two files with the same bytes have
-  the same hash.
+: Stored and looked up by a hash of the content, not by name or path, as
+  Ginkgo's cache is.
 
 DAG
-: A directed acyclic graph. In Ginkgo, it is the graph of tasks. Each link
-  runs from a task to a task that uses its result, and no task can depend on
-  itself, directly or through other tasks.
+: A directed acyclic graph. In Ginkgo, the graph of tasks, where each link runs
+  from a task to one that uses its result, with no cycles.
 
 Dynamic expansion
 : A running task adding new tasks to the graph by returning them.
 
 Executor
-: A plugin that runs tasks on another system, such as a Kubernetes cluster or
-  GCP Batch. Without an executor, tasks run on your computer.
+: A plugin that runs tasks on another system, such as Kubernetes or GCP Batch.
 
 Expression
-: What a task call returns: a placeholder for the task's result. Passing an
-  expression to another task call links the two tasks.
+: What a task call returns: a placeholder for its result. Passing it to
+  another task call links the two tasks.
 
 Fan-out
 : Running one task once for each input, with `.map()` or `.product_map()`.
-  Fan-in is the reverse: one task that takes the list of results.
+  Fan-in is one task that takes the list of results.
 
 Flow
-: A function decorated with `@flow`. It builds the first graph and returns the
-  expressions to run.
+: A function decorated with `@flow`. It builds the first graph.
 
 Plugin
-: A separate package that adds features to Ginkgo, such as a task kind, a
-  storage scheme or an executor. `ginkgo plugins` lists the installed plugins.
+: A separate package that adds a task kind, a storage scheme or an executor.
+  `ginkgo plugins` lists them.
 
 Project
-: The directory a workflow runs in. It is the nearest directory that holds a
-  `ginkgo.toml`, or the directory you run from if there is none. Ginkgo keeps
-  its cache and the provenance database under the project's `.ginkgo/`.
+: The nearest directory holding a `ginkgo.toml`, or else the directory you run
+  from. Ginkgo keeps its cache and provenance database in its `.ginkgo/`.
 
 Provenance
-: The record of what ran: which tasks, with which inputs, and what they
-  produced. Ginkgo keeps it in the provenance database, `.ginkgo/ginkgo.db`.
+: The record of which tasks ran, with which inputs, and what they produced,
+  kept in the provenance database, `.ginkgo/ginkgo.db`.
 
 Task
-: A function decorated with `@task()`. It is the unit of work that Ginkgo
-  runs, caches and records.
+: A function decorated with `@task()`: the unit of work Ginkgo runs, caches
+  and records.
 
 ## See Also
 

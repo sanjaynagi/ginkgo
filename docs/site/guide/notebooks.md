@@ -6,53 +6,35 @@ write a notebook task, and how it receives its arguments.
 
 ## How A Notebook Task Runs
 
-Each notebook task runs one `marimo export html` process. That process runs
-the notebook with the task's arguments and renders the page in the same pass.
+Each notebook task runs `marimo export html`, which runs the notebook with the
+task's arguments and renders the page in one pass.
 
-- **Environment.** A notebook task can declare an `env`. It then runs
-  `python -m marimo` inside that environment, so the environment must include
-  marimo. Without `env=`, the notebook runs under the same Python as the
-  `ginkgo` command.
-- **Disk space.** An environment with marimo, pandas and a plotting library
-  takes several hundred MB on disk. The first run that needs it installs it,
-  and reports how long that took. See
+- **Environment.** With `env=`, the task runs `python -m marimo` inside that
+  environment, so it must include marimo. Without `env=`, the notebook runs
+  under the same Python as the `ginkgo` command. An environment with marimo,
+  pandas and a plotting library takes several hundred MB. See
   [Where An Environment Is Installed](environments.md#where-an-environment-is-installed).
-- **The notebook file.** marimo rewrites the file it exports, to stamp
-  `__generated_with` into it. Ginkgo puts the notebook's original bytes back
-  afterwards.
-- **Session files.** As with any marimo export, marimo writes a session file
-  under `__marimo__/` beside the notebook. You can leave it out of version
-  control.
-- **The rendered page.** Ginkgo records the page against the task, lists it
-  under "Rendered pages" at the end of the run, and links it from the
-  [run report](reports.md).
+- **Session files.** marimo writes a session file under `__marimo__/` beside
+  the notebook. You can leave it out of version control.
+- **The rendered page.** Ginkgo lists the page under "Rendered pages" at the
+  end of the run, and links it from the [run report](reports.md).
 
 ## Check A Notebook Before You Run It
 
 `ginkgo doctor` and `ginkgo run --dry-run` check notebook tasks before anything
-runs. They check tasks whose body is a plain `return notebook(...)`, with a
-path that doesn't depend on another task's result. They report:
-
-- an error for a path that isn't a marimo `.py` notebook
-- a warning for each argument the notebook reads that the task doesn't pass
-
-A run gives the same warning, once per task. The check looks for literal keys
-in `args.get("k")`, `args.get_all("k")`, `args["k"]` and `"k" in args`. A key
-the task doesn't pass reads `None`. The usual cause is a key written with
-underscores, such as `summary_path`, where the notebook should read
-`summary-path`.
+runs. They report an error for a path that isn't a marimo `.py` notebook, and
+a warning for each argument the notebook reads that the task doesn't pass. That
+argument reads `None`. The usual cause is a key written with underscores, such
+as `summary_path`, where the notebook should read `summary-path`.
 
 ## When A Notebook Fails
 
-If a cell fails, the task fails. marimo still writes the page, and it shows
-the failing cell. The error message points to that cell.
+If a cell fails, the task fails. marimo still writes the page, which shows the
+failing cell. Some mistakes, such as two cells that define the same name, stop
+marimo before any cell runs, and the task's log has marimo's message.
 
-Some mistakes stop marimo before any cell runs. Two examples are two cells
-that define the same name (`MultipleDefinitionError`), and a cycle between
-cells. The task then fails, with marimo's message in its log.
-
-Run `marimo check` after you edit a notebook by hand. It reports these
-mistakes in about a second, without running the workflow:
+Run `marimo check` after you edit a notebook by hand. It catches these mistakes
+without running the workflow:
 
 ```bash
 marimo check notebooks/overview.py
@@ -60,13 +42,9 @@ marimo check notebooks/overview.py
 
 ## Images In The Page
 
-The rendered page is a single HTML file. So an image that a markdown cell
-links by a relative path, such as `![plot](results/plot.png)`, doesn't load
-from where Ginkgo stores the page.
-
-Embed the image instead, with `mo.image(...)` or a `data:` URI. Both put the
-image's bytes in the page. Pass the image's path to the task as an argument,
-rather than writing it into the notebook.
+An image linked by a relative path, such as `![plot](results/plot.png)`,
+doesn't load in the rendered page. Embed it with `mo.image(...)` or a `data:`
+URI instead, and pass its path to the task as an argument.
 [Figures From Another Task](tasks-and-flows.md#figures-from-another-task)
 shows how.
 

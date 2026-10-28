@@ -45,28 +45,15 @@ The **Failure** section lists each skipped task, with why it never ran, such as
 `blocked by analyze[omega]`. If many tasks were skipped, it groups them by
 cause and shows a count for each.
 
-A path inside the project is shown relative to the project root, in each error
-and log. The report is often read on another machine, where the full path
-means nothing.
+Errors and logs show a path inside the project relative to the project root.
 
 ### Tasks
 
 The **Peak memory** column in the **Tasks** table shows how much memory each
-task used, next to the amount it declared. For example, `48.0 KiB / 64Mi`. The
-declared amount is shown as the task wrote it. These cases differ:
-
-- A task that declared no `memory` shows the measured figure only.
-- A Python task counts only the memory its body added, not the worker
-  process's own start-up. So a task that allocates nothing shows about `0 B`.
-- When a retry raised the memory, the figure is shown against the memory that
-  attempt ran with, such as `30.1 GiB / 32 GiB`.
-- A task that came from the cache measured nothing in this run. It shows the
-  peak from the run that produced its result, and names that run, as in
-  `48.0 KiB (run 9e1f3e6c)`.
-- A task that never ran shows a dash. So does a shell or script task that
-  finished too quickly to measure.
-
-See [Measured Usage](resources.md#measured-usage) for how memory is measured.
+task used, next to the amount it declared. For example, `48.0 KiB / 64Mi`. A
+task that came from the cache shows the peak from the run that produced its
+result, and names that run, as in `48.0 KiB (run 9e1f3e6c)`. See
+[Measured Usage](resources.md#measured-usage) for how memory is measured.
 
 The **Attempts** column shows how many attempts a task used, out of the number
 its `retries` allow. A task with `retries=1` that succeeded on the first
@@ -81,59 +68,37 @@ label. A page reused from a cache hit says which run rendered it. See
 
 ## Notebook Pages Offline
 
-Notebook tasks produce their pages with marimo, the notebook tool Ginkgo uses.
-A marimo page loads its display code from the internet, from cdn.jsdelivr.net,
-so it is blank without a connection. The report therefore also makes a static
-copy of each notebook page, which works offline.
-
-The static copy keeps markdown, HTML, figures and console output as the
-notebook produced them. It keeps errors as text, and tables as plain tables of
-the first 200 rows. It names interactive elements, such as sliders, and leaves
-them out. A figure that the notebook links by a relative path, rather than
-embedding, is not copied.
+A marimo notebook page loads its display code from the internet, so it is
+blank without a connection. The report therefore also makes a static copy of
+each notebook page, which works offline. It keeps the notebook's text, figures
+and output, shows tables as their first 200 rows, and leaves out interactive
+elements such as sliders.
 
 - The folder report links both: **open** for the interactive marimo page,
-  which needs the internet, and **static copy** for the offline one.
-- The single-file report embeds the static copy, so it needs no internet at
-  all. To share the interactive pages, share the folder report.
+  and **static copy** for the offline one.
+- The single-file report embeds only the static copy. To share the
+  interactive pages, share the folder report.
 
 ## Options
 
-- `--single-file` writes one HTML file, with the stylesheet, fonts, script and
-  rendered pages inside it, so it opens offline. It goes to
-  `.ginkgo/reports/<run_id>.html`, beside the folder report, so you can keep
-  both. Notebook pages are embedded as static copies. Logs are not included,
-  and the command lists them when it writes the report. It warns when the file
-  is over 25 MB.
-- `--out <path>` writes the report somewhere other than the default.
-- `--force` writes into an `--out` destination that holds other files.
+- `--single-file` writes one HTML file, `.ginkgo/reports/<run_id>.html`, that
+  opens offline. It embeds notebook pages as static copies, and leaves out
+  logs.
 - `--hide-code` leaves each cell's code out of the static copies of notebook
-  pages, for readers who want only the results. By default, the code is folded
-  under a "code" toggle above each cell's output. A cell the notebook itself
-  hides keeps its code hidden either way. The interactive marimo page is not
-  changed.
-- `--open` opens the report in a browser when it is built. `--no-open` does
-  not.
+  pages. By default, the code is folded under a "code" toggle.
+- `--open` opens the report in a browser when it is built.
 - `--max-log-lines N` limits the log lines shown for each failed task. The
   default is 80.
 
 ### Writing The Report Elsewhere
 
-For a folder report, `--out <path>` names a directory. The directory must be
-empty, missing, or hold an earlier Ginkgo report. Otherwise the command stops
-and writes nothing. Writing over an earlier report replaces only the report's
-own files (`index.html`, `assets/`, `pages/` and `logs/`), so anything else in
-the directory stays.
+`--out <path>` writes the report somewhere other than `.ginkgo/reports/`. For
+a folder report it names a directory. With `--single-file`, a path ending in
+`.html` is the file itself, as in `--out report.html`.
 
-With `--single-file`, a path ending in `.html` is the file itself, as in
-`--out report.html`. A path with no extension is a directory to write
-`index.html` into. Any other extension, as in `--out report.txt`, is an error.
-An existing file is replaced only when it is an earlier Ginkgo report.
-
-Pass `--force` to write into a destination that holds files Ginkgo did not
-write. It replaces only the files the report writes, and removes nothing else.
-The default destinations under `.ginkgo/reports/` are always written over,
-with no `--force` needed.
+Ginkgo writes over an earlier Ginkgo report, but stops if the destination
+holds other files. Pass `--force` to write anyway. It replaces only the files
+the report writes, and removes nothing else.
 
 ## See Also
 

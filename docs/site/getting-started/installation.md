@@ -35,33 +35,22 @@ ginkgo --help
 
 ## Plugins
 
-The core of Ginkgo is the `ginkgo` package on its own. Extra features come as
-[plugins](../guide/concepts.md#glossary), which you install alongside it. The
-curl installer includes `ginkgo-pixi`. The other first-party plugins are in the
-same repository:
+Extra features come as [plugins](../guide/concepts.md#glossary), which you
+install alongside the `ginkgo` package. The curl installer includes
+`ginkgo-pixi`.
 
-- `ginkgo-aws`: reads and writes `s3://` storage, and mounts it with
-  mountpoint-s3
-- `ginkgo-gcp`: reads and writes `gs://` storage, mounts it with gcsfuse, and
-  adds the GCP Batch executor
-- `ginkgo-oci`: reads and writes `oci://` storage (Oracle Cloud Object
-  Storage), and mounts it with rclone
-- `ginkgo-pixi`: runs tasks in Pixi environments (`env="name"`), and adds the
-  `ginkgo env` command
-- `ginkgo-k8s`: adds the Kubernetes executor
-- `ginkgo-notebook`: adds `@task("notebook")`, which runs marimo notebooks. It
-  installs `marimo`. You need it only if you use notebook tasks. Projects
-  created by `ginkgo init` already list it in their `pixi.toml`.
-- `ginkgo-report`: adds the `ginkgo report` command, for HTML run reports
-- `ginkgo-slack`: sends run notifications to Slack
+| Plugin | Adds |
+|---|---|
+| `ginkgo-pixi` | Pixi environments (`env="name"`) and the `ginkgo env` command |
+| `ginkgo-notebook` | `@task("notebook")`, for marimo notebooks. Projects from `ginkgo init` list it in their `pixi.toml` |
+| `ginkgo-report` | the `ginkgo report` command, for HTML run reports |
+| `ginkgo-slack` | run notifications to Slack |
+| `ginkgo-k8s` | the Kubernetes [executor](../guide/concepts.md#glossary) |
+| `ginkgo-gcp` | `gs://` storage and the GCP Batch executor |
+| `ginkgo-aws` | `s3://` storage |
+| `ginkgo-oci` | `oci://` storage (Oracle Cloud Object Storage) |
 
-An [executor](../guide/concepts.md#glossary) runs tasks on another system,
-such as a Kubernetes cluster. To mount storage means to make a bucket look like
-a folder, so a task can read files from it without downloading them first.
-
-`oci://` has a second, separate meaning. In a task's `env=`, such as
-`env="oci://ubuntu:24.04"`, it names a container image, the same as
-`docker://`. That use needs no plugin.
+The `oci://` container images in a task's `env=` need no plugin.
 
 To install Ginkgo with every first-party plugin:
 
@@ -78,11 +67,8 @@ uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@m
   --with "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s"
 ```
 
-`ginkgo plugins` lists what is installed. A task that reads remote storage, for
-example through `remote_file("s3://...")`, needs the plugin for that scheme. If
-it is missing, Ginkgo names the plugin to install.
-
-[Remote Execution](../guide/remote-execution.md#installing-an-executor)
+`ginkgo plugins` lists what is installed. If a task needs a missing plugin,
+Ginkgo names it. [Remote Execution](../guide/remote-execution.md#installing-an-executor)
 explains how to set up an executor.
 
 ## Runtime Prerequisites
@@ -96,18 +82,12 @@ you run a workflow that uses it:
 - `docker` or `podman`, for tasks that declare a `docker://` or `oci://` image.
   Ginkgo pulls the image for you on first use.
 
-You need neither if your workflow declares no environments.
-[Environments](../guide/environments.md) explains what Ginkgo installs, when,
-and how long a first run takes.
+You need neither if your workflow declares no environments. See
+[Environments](../guide/environments.md).
 
-This is a separate use of Pixi from the development setup at the end of this
-page. Here, Ginkgo uses Pixi to build the environments that your tasks run in.
-
-Python tasks don't run in a declared environment. They run in the same Python
-environment as the `ginkgo` command, so install any package they import there.
-With the curl install, that means reinstalling with `uv tool install --with`.
-[Python Tasks Run In The CLI's Own Environment](../guide/environments.md#python-tasks-run-in-the-clis-own-environment)
-gives the exact command.
+Python tasks run in the same Python environment as the `ginkgo` command, so
+install any package they import there. See
+[Python Tasks Run In The CLI's Own Environment](../guide/environments.md#python-tasks-run-in-the-clis-own-environment).
 
 ## Editable Python Install
 

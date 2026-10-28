@@ -38,26 +38,20 @@ def train_model(dataset: folder) -> file:
     ...
 ```
 
-- `threads=N` declares how many CPU threads the task uses. A task that has a
-  `threads` parameter receives the value. A shell task also sees it as
-  `GINKGO_THREADS` in its environment. Set `export_thread_env=True` to also set
-  `OMP_NUM_THREADS` and the related BLAS and OpenMP variables.
-- `memory="8Gi"` declares how much memory the task uses. Write it as a number
-  and a unit, such as `512Mi`, `4Gi` or `16Gi`. `Mi` means mebibytes and `Gi`
-  means gibibytes (about 1.07 GB). For the `--memory` budget, Ginkgo rounds up to
-  a whole GiB, with a minimum of 1 GiB. So `512Mi` counts as 1 GiB, and `1.5Gi`
-  counts as 2 GiB.
-- `gpu=N` declares how many GPUs the task uses. `gpu_type` names the kind of GPU
-  a remote [executor](concepts.md#glossary) should provide.
+- `threads=N`: CPU threads. A task with a `threads` parameter receives the
+  value, and a shell task sees it as `GINKGO_THREADS`. `export_thread_env=True`
+  also sets `OMP_NUM_THREADS` and the related BLAS and OpenMP variables.
+- `memory="8Gi"`: memory, as a number and a unit such as `512Mi` or `16Gi`. The
+  `--memory` budget rounds it up to a whole GiB, so `512Mi` counts as 1 GiB.
+- `gpu=N`: GPUs. `gpu_type` names the kind of GPU a remote
+  [executor](concepts.md#glossary) should provide.
 
-The local `--gpus` budget only stops Ginkgo from giving the same GPUs to too
-many tasks at once. It does not assign devices. Every local task still sees
-every GPU, because Ginkgo does not set `CUDA_VISIBLE_DEVICES`.
+The `--gpus` budget does not assign devices. Ginkgo does not set
+`CUDA_VISIBLE_DEVICES`, so every local task sees every GPU.
 
-Resource settings are not part of a task's cache key. Changing `threads`,
-`memory` or `gpu`, or the run's budgets, reruns nothing. The exception is a task
-that has a `threads` parameter. It receives `threads` as an input, so a new
-value reruns it.
+Resource settings, and the run's budgets, are not part of the cache key, so
+changing them reruns nothing. The exception is a task with a `threads`
+parameter, which receives `threads` as an input.
 
 ## Where A Task Runs
 
@@ -107,9 +101,8 @@ These rules apply:
 - **Built-in names are reserved.** A custom name can't be a built-in name such
   as `threads`, `memory`, `gpu` or `gpu_type`. Use the dedicated argument for
   those.
-- **Remote tasks still count.** A custom resource counts wherever the task runs.
-  An API rate limit still applies when the task runs on Kubernetes. So a full
-  custom budget can hold back remote tasks as well as local ones.
+- **Remote tasks still count.** A custom resource counts wherever the task
+  runs, so a full budget can hold back remote tasks too.
 
 ## Priority
 
@@ -147,8 +140,7 @@ shell tasks). Each retry starts the task again from scratch.
 defaults to 0, which means no wait. With `retry_backoff=1.0`, Ginkgo waits 1
 second before the first retry. It multiplies the wait by
 `retry_backoff_multiplier` (default 2.0) for each later retry, up to
-`retry_backoff_max` seconds (default 60). So the wait before retry *k* is
-`retry_backoff * retry_backoff_multiplier ** (k - 1)`.
+`retry_backoff_max` seconds (default 60).
 
 ## Retrying With More Memory
 
@@ -199,11 +191,8 @@ siblings keep running, and so does every task that does not depend on it.
 `ginkgo run --keep-going` does the same for every task in the run, without
 editing the workflow.
 
-Ginkgo ignores a failure it detects itself in the same way as an exception from
-the task body. For example, a task that returns a value of the wrong type.
-
-Use `--keep-going` to carry on past any failure in the whole run. Use
-`on_failure="ignore"` on a single task whose failure you expect.
+This also covers a failure Ginkgo detects itself, such as a wrong return
+type.
 
 ### What Ignoring A Failure Does Not Do
 
@@ -262,48 +251,33 @@ memory = "64Gi"
 memory = "32Gi"
 ```
 
-These rules decide which override applies:
-
-- A selector matches a task's short name (`align_reads`) or its full name. The
-  full name is `workflow.modules.align.align_reads`, or `<workflow>.align_reads`
-  for a task in a single-file workflow.
-- A selector can be a pattern, where `*` matches any text. For example,
-  `variant_*`.
+- A selector matches a task's short name (`align_reads`) or its full name
+  (`workflow.modules.align.align_reads`). In a pattern, `*` matches any text.
 - An exact name wins over a pattern. Among patterns, the first in the file wins.
 - Keys the override leaves out keep the decorator's value.
-- An override's `custom` table holds custom resources. It replaces the
-  decorator's `resources=` dict as a whole, and does not merge key by key.
+- An override's `custom` table replaces the decorator's `resources=` dict as a
+  whole.
 
-An overridden `threads` applies everywhere the decorator's value would: the
-scheduler, the dry-run plan, the `threads` parameter, and `GINKGO_THREADS`. So
-for a task that has a `threads` parameter, an override changes the cache key,
-just as editing the decorator would.
+An overridden `threads` applies everywhere the decorator's value would. So for
+a task with a `threads` parameter, it changes the cache key.
 
 ## Measured Usage
 
-Declared resources are a guess. Ginkgo also records what each task actually
-used, so you can set the declaration from real numbers. For every task, Ginkgo
-records peak memory, as resident set size (RSS), and CPU time. It records them
-when a task fails too, so a task killed for using too much memory still shows
-how much it used.
+Declared resources are a guess. To size them from real numbers, Ginkgo
+records each task's peak memory (RSS) and CPU time, even when the task fails.
 
-A Python task's figure covers only the task body. It leaves out the memory the
-worker process already used before the task started, so a task that allocates
-nothing reads close to zero. A shell, script, notebook or subworkflow task's
-figure covers the whole process tree that its command starts.
+- A Python task's figure covers only the task body, not the memory its worker
+  process held before it started.
+- A shell, script, notebook or subworkflow task's figure covers the whole
+  process tree its command starts.
+- A shell or script task is checked every quarter second. A very short task can
+  have no figure, or one that misses a spike. That means "too short to
+  measure", not "used nothing".
 
-Ginkgo measures a shell or script task by checking it every quarter second. A
-task that finishes sooner has no memory figure at all. A task that runs a little
-longer is measured from one or two checks, which can miss a short spike. So a
-quick task's missing or small figure means "too short to measure", not "used
-nothing".
-
-`ginkgo report` shows peak memory in its task table, as measured against
-declared. For example, `3.2 GiB / 16Gi`. A cache hit measured nothing in its
-run, so the report shows the peak from the earlier run that produced the result,
-and names that run: `3.2 GiB (run 9e1f3e6c)`. See [Reports](reports.md).
-`ginkgo runs show --json` includes the full `resource_usage` record for each
-task.
+`ginkgo report` shows peak memory against declared, as in `3.2 GiB / 16Gi`.
+For a cache hit, it shows the peak from the run that produced the result. See
+[Reports](reports.md). `ginkgo runs show --json` has the full
+`resource_usage` record.
 
 ### Across Runs
 
@@ -321,18 +295,16 @@ CPU time
   declared 4 threads
 ```
 
-Only real executions measure anything. So a task with 28 runs and 16 cache hits
-has 12 samples, and the summary shows that count. `--by-label` gives one summary
-per branch of a fan-out, largest peak first, because one branch can need much
-more than another. `--json` returns the summary with the rows.
+Cache hits measure nothing, so only real executions count. `--by-label` gives
+one summary per fan-out branch, largest peak first. `--json` returns the
+summary with the rows.
 
-Failed attempts are left out of the figures, and counted separately. A task
-killed at its memory limit used more than the limit, so its peak is not a real
-measurement. When a retry asked for more memory, the summary shows the budget
-the attempt ran with too.
+Failed attempts are counted separately and left out of the figures, because a
+task killed at its memory limit has no real peak. When a retry asked for more
+memory, the summary also shows the budget each attempt ran with.
 
-The same numbers are columns on the `tasks` table, so `ginkgo query` can ask its
-own questions of them. See [Querying Provenance](querying-provenance.md).
+The same numbers are columns on the `tasks` table, for
+[`ginkgo query`](querying-provenance.md).
 
 ## See Also
 

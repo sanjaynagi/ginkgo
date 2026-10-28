@@ -47,37 +47,25 @@ again.
 
 ## 3. Get The Bioinformatics Example
 
-The example lives in `examples/bioinfo` in the Ginkgo repository. It is not
-installed with the `ginkgo` command, so clone the repository:
+The example lives in the Ginkgo repository:
 
 ```bash
 git clone https://github.com/sanjaynagi/ginkgo.git
 cd ginkgo/examples/bioinfo
 ```
 
-The example needs two programs on your `PATH`:
-
-- [Pixi](https://pixi.sh/). Two of the example's tasks run in a Pixi
-  environment, which Ginkgo installs on first use.
-- Docker or Podman. One task runs in a container image, which Ginkgo pulls on
-  first use.
-
-[Runtime Prerequisites](installation.md#runtime-prerequisites) describes both.
-
-Open `workflow/flow.py`. The workflow has these tasks:
+It needs [Pixi](https://pixi.sh/) and Docker or Podman on your `PATH` (see
+[Runtime Prerequisites](installation.md#runtime-prerequisites)).
+`workflow/flow.py` has four tasks:
 
 - `filter_fastq` filters each sample's reads with `seqkit`, in a Pixi
-  environment. Pixi installs tools such as `seqkit` into an isolated
   environment.
-- `fastq_stats` computes quality-control (QC) statistics for each filtered
-  sample, in the same environment.
-- `count_reads` counts the reads in each filtered sample, inside a Docker
+- `fastq_stats` computes quality-control statistics for each filtered sample,
+  in the same environment.
+- `count_reads` counts the reads in each filtered sample, in a Docker
   container.
-- `build_summary` merges the statistics and counts into one table, in plain
-  Python.
+- `build_summary` merges the statistics and counts into one table.
 
-`fastq_stats` and `count_reads` both read the filtered files and don't depend
-on each other, so they run at the same time.
 [Example: Bioinformatics Workflow](../examples/bioinfo-workflow.md) walks
 through the code.
 

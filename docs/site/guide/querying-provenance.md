@@ -15,24 +15,13 @@ and with SQL when nothing else fits.
 ## Where Provenance Lives
 
 The provenance database is one SQLite file per project, at
-`.ginkgo/ginkgo.db`. It holds the events of every run, and the tables that
-`ginkgo runs show`, `ginkgo debug` and `ginkgo report` read. All three work on
-a run that is still going.
-
-Each run also gets a directory, `.ginkgo/runs/<run_id>/`, for its files. It
-holds each task's logs, rendered notebook pages, copies of the environment
-lock files, and a `manifest.yaml` of everything the database recorded for the
-run.
-
-The cache and the provenance database answer different questions. The cache
-answers "can this work be reused?". The provenance database answers "what
-happened in this run?". [Caching And Provenance](caching-and-provenance.md)
-covers the cache.
+`.ginkgo/ginkgo.db`. Each run also gets a directory, `.ginkgo/runs/<run_id>/`,
+that holds each task's logs, rendered notebook pages, copies of the
+environment lock files, and a `manifest.yaml` of what the database recorded
+for the run.
 
 Every command on this page only reads the database, so you can query a project
-while a run is writing to it. In a project with no runs, the listing commands
-(`runs ls`, `history` and `query`) print an empty result. `runs show` and
-`ginkgo why` say there is nothing recorded, and exit 1.
+while a run is writing to it.
 
 ## From The Command Line
 
@@ -47,20 +36,15 @@ ginkgo runs show                        # the most recent run
 ginkgo runs show <run_id> --all         # one run, with every task
 ```
 
-`--status` takes `running`, `succeeded`, `failed` or `cancelled`. Any other
-value is an error. The Workflow column shows each workflow's path relative to
-the directory you run the command from.
+`--status` takes `running`, `succeeded`, `failed` or `cancelled`.
 
 `ginkgo runs show` prints one run: its workflow, status, duration, and a table
-of its tasks. Leave out the run id to see the most recent run. For a run with
-more than 50 tasks, the table shows a count of each status. It then lists
-every task that did not succeed, and the first of the others, up to 50 rows.
-Pass `--all` to list every task.
+of its tasks. For a run with more than 50 tasks, the table is cut short but
+keeps the tasks that did not succeed. Pass `--all` to list every task.
 
 `--json` prints the run manifest, the same document as
-`.ginkgo/runs/<run_id>/manifest.yaml`. Each task in it has a `task_name`, and
-a [fan-out](concepts.md#glossary) branch also has a `display_label` (see
-[Task Names](cli.md#task-names)).
+`.ginkgo/runs/<run_id>/manifest.yaml`. See [Task Names](cli.md#task-names)
+for how it names tasks.
 
 ### How One Task Has Fared
 
@@ -75,12 +59,9 @@ shows when it started, how long it took, whether it came from the cache, and
 which cache key it used. Give it the task's name, its full module path such as
 `workflow.modules.prep.prepare_data`, or the label of one branch of a fan-out.
 
-`--limit 20` shows the 20 most recent runs of the task. If the task fans out,
-each run has a row for every branch, so you may see more than 20 rows. A run
-that skipped the task, for example after an upstream failure, is left out. Add `--include-unstarted` to list those runs too.
-
-In `--json`, each row's `task_name` is the task's name, and `qualified_name`
-is its full module path.
+`--limit` counts runs, so a fan-out can give more rows than that. A run that
+skipped the task, for example after an upstream failure, is left out. Add
+`--include-unstarted` to list those runs too.
 
 ### What Produced A File
 
@@ -91,15 +72,12 @@ ginkgo why results/features.parquet --json
 
 `ginkgo why` takes a file that a task wrote or restored, or an artifact id. It
 prints the run and task that produced those bytes, the cache entry that holds
-them, and the inputs that task recorded. A path inside an output folder, such
-as a file a task wrote into its `Out[folder]`, is answered for that folder:
-`why` prints "Inside <folder>, produced by <task>", and `--json` names the
-folder as `containing_output`.
+them, and the inputs that task recorded. A path inside an output folder is
+answered for that folder.
 
-Ginkgo records only the outputs it tracks. If `why` finds nothing, the task
-may have returned the path as a plain `str`. Annotate the return `-> file` (or
-`-> folder`), or write the file through an `Out[file]` parameter, so that its
-runs record it.
+If `why` finds nothing, the task may have returned the path as a plain `str`.
+Annotate the return `-> file` (or `-> folder`), or write the file through an
+`Out[file]` parameter, so that its runs record it.
 
 ### Exporting A Run
 
@@ -109,10 +87,8 @@ ginkgo export events <run_id> --out run.jsonl
 ginkgo export manifest <run_id> --out manifest.yaml
 ```
 
-`export events` writes the run's events as JSON Lines (JSONL), one JSON object
-per line. They have the same shape that `ginkgo run --agent-output` prints
-while a run is live, so a tool that reads one can read the other.
-`export manifest` writes the same file as
+`export events` writes the run's events as JSONL, in the same shape that
+`ginkgo run --agent-output` prints. `export manifest` writes the same file as
 `.ginkgo/runs/<run_id>/manifest.yaml`.
 
 ## From Python
@@ -214,9 +190,6 @@ ginkgo query "SELECT cache_key, function, size_bytes FROM cache_entries" --csv
 ginkgo query "SELECT * FROM runs" --json --limit 5
 ```
 
-`--schema` reads the tables from your project's database, so it works whether
-or not anything has run yet. It takes `--json` and `--csv` like a query does.
-
 A statement that names a table or column that does not exist gets an error
 that lists the ones that do:
 
@@ -227,11 +200,8 @@ task_id, node_id, name, display_label, kind, execution_mode, env, status, …
 `ginkgo query --schema` lists every table.
 ```
 
-`ginkgo query` runs one statement, and only reads. It refuses a statement that
-would write, and a second statement after a semicolon. At most 1000 rows come
-back unless you pass `--limit`. A cut-short result says so: in the `truncated`
-field with `--json`, or on stderr with `--csv`, so the CSV on stdout stays
-clean.
+`ginkgo query` runs one statement, and refuses one that would write. At most
+1000 rows come back unless you pass `--limit`, and a cut-short result says so.
 
 ### Into Pandas
 

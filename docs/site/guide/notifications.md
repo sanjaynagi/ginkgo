@@ -9,33 +9,25 @@ not be used.
 
 ## What Ginkgo Can Notify
 
-Ginkgo sends notifications to Slack, through an incoming webhook. No other
-service is supported. A Slack incoming webhook is a private URL. Anything
-posted to it appears as a message in one Slack channel.
+Ginkgo posts to Slack through an incoming webhook: a private URL that posts
+into one Slack channel. No other service is supported.
 
 You choose which events send a message:
 
 - `run_started`: the run began.
-- `run_succeeded`: the run finished with no failures. `run_completed` is
-  another name for it.
-- `run_failed`: the run ended with a failure. This includes a run that
-  finished with failures that `--keep-going` or `on_failure="ignore"` let
-  pass.
+- `run_succeeded`: the run finished with no failures.
+- `run_failed`: the run ended with a failure, including failures that
+  `--keep-going` or `on_failure="ignore"` let pass.
 - `retry_exhausted`: a task that has retries failed on its last attempt. It is
-  sent when the task fails, before the run ends. If that failure fails the
-  run, `run_failed` follows.
+  sent straight away, before the run ends.
 
 A run you stop with Ctrl-C sends no message.
 
 ### What A Message Looks Like
 
-Each message names the workflow and the run, and gives the time. A
-`run_succeeded` or `run_failed` message also gives the task counts. A
-`run_failed` message adds the run's error, and lists the failed tasks. A
-`retry_exhausted` message names the one task. For each failed task, the
-message shows its exit code, its attempts, and the last lines of its log.
-
-A `run_failed` message looks like this:
+Each message names the workflow and the run. A `run_failed` message, for
+example, adds the task counts, the run's error, and each failed task with its
+exit code, attempts and last log lines:
 
 ```text
 Ginkgo Run Failed
@@ -65,8 +57,7 @@ incoming webhooks.
    channel, add the Slack app to the channel first.
 6. Authorize the app and copy the webhook URL it creates.
 
-Each webhook posts to the one channel you chose when you created it. To post to
-a different channel, create another webhook and use its URL instead.
+To post to a different channel, create another webhook.
 
 ### 2. Add The Settings
 
@@ -108,28 +99,13 @@ ginkgo run flow.py
 
 ## If The Settings Are Wrong
 
-If a setting is invalid, Ginkgo sends no notifications at all. These make a
-setting invalid:
-
-- an unknown setting name
-- a number outside its range
-- an `events` list with no valid event
-- a webhook secret that is unset or empty
-
-`ginkgo run` warns about each problem, and `ginkgo doctor` reports each one as
-an error.
-
-An unknown name in `events` next to valid ones is not fatal. Ginkgo ignores
-it, warns, and still sends the valid events. `ginkgo doctor` reports it as a
-warning.
+An invalid setting, such as an unknown setting name, a number outside its
+range, or an unset webhook secret, turns off all notifications. `ginkgo run`
+warns about each problem, and `ginkgo doctor` reports it as an error. An unknown name in `events` is only a warning, and the valid events
+are still sent.
 
 ## If Slack Cannot Be Reached
 
-A Slack failure never fails your run. Ginkgo warns, naming the event the
-message was for. It also records the warning with the run, and
-`ginkgo runs show` and `ginkgo report` list it as a notice.
-
-Ginkgo posts messages while the workflow runs, and waits for any that are
-still being sent when the run ends. Each message waits at most 3 seconds for
-Slack. If Slack can't be reached, Ginkgo skips the run's later messages and
-warns for each one. So a Slack outage adds at most about 3 seconds to a run.
+A Slack failure never fails your run, and adds at most about 3 seconds to it.
+Ginkgo warns, and records the warning with the run, so `ginkgo runs show` and
+`ginkgo report` list it.
