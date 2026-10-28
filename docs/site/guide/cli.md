@@ -22,7 +22,12 @@ at the nearest `ginkgo.toml`.
 `ginkgo runs`
 : List recorded runs (`runs ls`) and show one of them (`runs show <run_id>`),
   including the pages its tasks rendered, such as marimo notebooks.
-  See [Querying Provenance](querying-provenance.md).
+  See [Querying Provenance](querying-provenance.md). `runs status <run_id>`
+  prints a run's status, task counts, failures and outputs, even while it runs;
+  `runs wait <run_id> [--timeout SECONDS]` waits for it to finish and exits 0
+  if it succeeded, 1 if it failed, 130 if it was cancelled, or 124 at the
+  timeout. Both take `--json`. See
+  [Working with Coding Agents](coding-agents.md#long-runs).
 
 `ginkgo history`
 : Show every run of one task, with its status, duration, and cache key. Runs in
@@ -160,6 +165,11 @@ is still recorded as failed &mdash; see
 `--agent-output` swaps the live terminal UI for a stream of newline-delimited JSON
 events, for programmatic use by AI coding agents &mdash; see
 [Working with Coding Agents](coding-agents.md).
+
+`--detach` starts the run in the background, prints its run ID and the log its
+output goes to (`.ginkgo/detached/<run_id>.log`), and returns. Follow it with
+`ginkgo runs wait <run_id>` or `ginkgo runs status <run_id>`. It cannot be
+combined with `--dry-run`.
 
 The run header names the workflow by its path from where you stand, and
 carries the run id only once the run is about to be created: a run rejected

@@ -7,6 +7,7 @@ import os
 # Suppress gRPC fork-safety warnings on macOS. Must be set before grpc is imported.
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -100,6 +101,9 @@ from ginkgo.store.maintenance import event_retention, prune_events
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
+DETACHED_RUN_ID_ENV = "GINKGO_RUN_ID"
+"""The run ID ``run --detach`` hands to the ``ginkgo run`` it starts."""
+
 
 def _ginkgo_version() -> str | None:
     """Return the installed ginkgo version, recorded on every run."""
@@ -120,8 +124,12 @@ def command_run(args, *, output_mode: RunMode) -> int:
     reading only the stream is not left with nothing. A failure after the run
     exists is already reported there by its ``run_completed`` event.
     """
-    run_id = make_run_id()
+    # A detached parent chose this run's ID. Popped, so that a sub-workflow
+    # this run starts makes its own.
+    run_id = os.environ.pop(DETACHED_RUN_ID_ENV, None) or make_run_id()
     try:
+        if getattr(args, "detach", False):
+            return _detach(args, run_id=run_id, output_mode=output_mode)
         return _run_resolved_workflow(args, output_mode=output_mode, run_id=run_id)
     except Exception as exc:
         if output_mode in {"agent", "agent_verbose"} and not (RUNS_ROOT / run_id).exists():
@@ -139,6 +147,57 @@ def command_run(args, *, output_mode: RunMode) -> int:
             )
             sys.stdout.flush()
         raise
+
+
+def _detach(args, *, run_id: str, output_mode: RunMode) -> int:
+    """Start this ``ginkgo run`` again in the background as run *run_id*, and return.
+
+    The child runs the same command line without ``--detach``, in a session of
+    its own so that it outlives this process, with its output in a log file.
+    Returning only once the ledger has the run means a workflow rejected
+    before it starts is reported here, not left for ``runs wait`` to miss.
+    """
+    if args.dry_run:
+        raise UsageError("--detach cannot be combined with --dry-run.")
+    log_path = WorkspaceLayout.relative().detached / f"{run_id}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log:
+        child = subprocess.Popen(
+            [sys.executable, "-m", "ginkgo.cli", *(a for a in args.argv if a != "--detach")],
+            cwd=getattr(args, "invoked_from", None),
+            env={**os.environ, DETACHED_RUN_ID_ENV: run_id},
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    while not _run_recorded(run_id):
+        if child.poll() is not None and not _run_recorded(run_id):
+            sys.stderr.write(log_path.read_text(encoding="utf-8"))
+            raise GinkgoError(f"The detached run did not start; its output is in {log_path}.")
+        time.sleep(0.1)
+    if output_mode in {"agent", "agent_verbose"}:
+        sys.stdout.write(
+            event_line(
+                {
+                    "event": "run_detached",
+                    "v": 1,
+                    "ts": event_timestamp(),
+                    "run_id": run_id,
+                    "log": str(log_path),
+                }
+            )
+        )
+    else:
+        print(f"Started run {run_id} in the background; its output is in {log_path}.")
+        print(f"Wait for it with `ginkgo runs wait {run_id}`.")
+    return 0
+
+
+def _run_recorded(run_id: str) -> bool:
+    """Whether the ledger has a row for *run_id* yet."""
+    with query.open(missing_ok=True) as reader:
+        return bool(reader.store.query("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)))
 
 
 def _run_resolved_workflow(args, *, output_mode: RunMode, run_id: str) -> int:
@@ -795,6 +854,20 @@ def run_workflow(
             )
         )
         run_summary = reader.run(run_id)
+        if output_mode in {"agent", "agent_verbose"}:
+            # The stream's last line: the whole outcome, so that an agent need
+            # not rebuild it from every event before.
+            sys.stdout.write(
+                event_line(
+                    {
+                        "event": "run_summary",
+                        "v": 1,
+                        "ts": event_timestamp(),
+                        **run_summary.outcome_payload(),
+                    }
+                )
+            )
+            sys.stdout.flush()
 
         if interrupt is not None:
             # No failure panel: nothing went wrong, the run was stopped.

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections import Counter
 from collections.abc import Sequence
 
 from rich.text import Text
 
 from ginkgo import query
+from ginkgo.cli import INTERRUPT_EXIT_CODE
 from ginkgo.cli.common import console, new_table, open_run
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import RunRow
@@ -26,9 +28,15 @@ _TASK_ROW_LIMIT = 50
 _UNREMARKABLE = frozenset({"succeeded", "cached"})
 """Task statuses a long listing may leave out."""
 
+WAIT_TIMEOUT_EXIT_CODE = 124
+"""What ``runs wait`` exits with when the run is still going at its timeout."""
+
+_WAIT_EXIT_CODES = {"succeeded": 0, "failed": 1, "cancelled": INTERRUPT_EXIT_CODE}
+"""What ``runs wait`` exits with for each way a run ends."""
+
 
 def command_runs(args) -> int:
-    """Handle ``ginkgo runs`` — ``ls`` for the index, ``show`` for one run."""
+    """Handle ``ginkgo runs``: ``ls`` lists runs; ``show``, ``status`` and ``wait`` take one."""
     rich_console = console(sys.stdout)
     as_json = bool(getattr(args, "json", False))
 
@@ -44,12 +52,47 @@ def command_runs(args) -> int:
 
     with open_run(args.run_id) as (reader, run_id):
         summary = reader.run(run_id)
-    return _render_show(
-        rich_console,
-        summary=summary,
-        as_json=as_json,
-        all_tasks=bool(getattr(args, "all_tasks", False)),
+    if args.runs_command == "show":
+        return _render_show(
+            rich_console,
+            summary=summary,
+            as_json=as_json,
+            all_tasks=bool(getattr(args, "all_tasks", False)),
+        )
+    if args.runs_command == "status":
+        _render_outcome(summary=summary, as_json=as_json)
+        return 0
+
+    # ``wait``: the ledger is the only sign of life, so a run killed outright
+    # stays ``running`` there and only the timeout ends the wait.
+    timeout = getattr(args, "timeout", None)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while summary.status == "running" and (deadline is None or time.monotonic() < deadline):
+        time.sleep(1.0)
+        with query.open() as reader:
+            summary = reader.run(summary.run_id)
+    _render_outcome(summary=summary, as_json=as_json)
+    if summary.status == "running":
+        return WAIT_TIMEOUT_EXIT_CODE
+    return _WAIT_EXIT_CODES.get(summary.status, 1)
+
+
+def _render_outcome(*, summary: RunSummary, as_json: bool) -> None:
+    """Print a run's outcome payload as JSON, or as a few readable lines."""
+    payload = summary.outcome_payload()
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    counts = payload["counts"]
+    print(f"Run {payload['run_id']}: {payload['status']}")
+    print(
+        f"Tasks: {counts['done']} of {counts['total']} done "
+        f"({counts['executed']} executed, {counts['cached']} cached, "
+        f"{counts['failed']} failed, {counts['skipped']} skipped)"
     )
+    for failure in payload["failures"]:
+        print(f"Failed: {failure['task']} (exit {failure['exit_code']}), log: {failure['log']}")
+    print(f"Run directory: {payload['run_dir']}")
 
 
 def _shown_tasks(tasks: Sequence[TaskSummary], *, all_tasks: bool) -> Sequence[TaskSummary]:

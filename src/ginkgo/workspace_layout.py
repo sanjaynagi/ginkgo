@@ -91,6 +91,11 @@ class WorkspaceLayout:
         return self.root / "artifacts"
 
     @property
+    def detached(self) -> Path:
+        """Output logs of runs ``ginkgo run --detach`` started, one per run ID."""
+        return self.root / "detached"
+
+    @property
     def staging(self) -> Path:
         """Downloaded remote inputs."""
         return self.root / "staging"

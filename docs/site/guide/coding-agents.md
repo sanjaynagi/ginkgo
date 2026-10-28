@@ -63,6 +63,35 @@ command exits non-zero, and the same message is on stderr.
 Add `--verbose` (`ginkgo run --agent-output --verbose`) to also include task log output
 in the event stream.
 
+The stream's last line is a `run_summary` event with the whole outcome, so an
+agent does not have to rebuild it from the events before: the `status` and
+`run_dir`; `counts` of tasks executed, cached, failed, ignored and skipped; each
+failure's task, category, exit code, last log lines (ANSI codes stripped) and
+log path; each skipped task with the failure that blocked it; and the files the
+run produced, with the task that produced each.
+
+## Long Runs
+
+An agent's tool call usually times out after a couple of minutes, so a long
+workflow should not run in the foreground. Detach it, then wait:
+
+```bash
+ginkgo run flow.py --detach --agent-output   # {"event": "run_detached", "run_id": ..., "log": ...}
+ginkgo runs wait <run_id> --timeout 100 --json
+```
+
+`--detach` starts the run in the background and returns once it has started,
+with its run ID and the log its output goes to (`.ginkgo/detached/<run_id>.log`).
+`ginkgo runs wait` polls the ledger until the run finishes, then prints the same
+payload as the `run_summary` event and exits 0 if the run succeeded, 1 if it
+failed, and 130 if it was cancelled. At the timeout it prints the payload of the
+run so far and exits 124, so call it again to keep waiting.
+`ginkgo runs status <run_id> --json` prints that payload once, without waiting.
+
+The ledger is the only record of a run, so a run killed outright (`kill -9`, a
+lost machine) stays `running` there. The `--timeout` is what guards against
+waiting on it forever.
+
 ## Inspection Commands
 
 These read-only commands give an agent — or a person — a stable view of a
