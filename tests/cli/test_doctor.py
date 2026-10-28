@@ -215,6 +215,110 @@ def test_env_on_a_kind_without_env_support_is_invalid_env_kind() -> None:
     assert "kind='subworkflow'" in diagnostic["message"]
 
 
+# #419: a task body's wrong task call would fail only once the run reached it.
+WRONG_TASK_CALLS = """
+from pathlib import Path
+
+from ginkgo import Out, file, flow, task
+
+@task()
+def first(out: Out[file]):
+    Path(out).write_text("ran")
+
+@task()
+def child(x: int) -> int:
+    return x
+
+@task()
+def fan(n: int, out: Out[file]):
+    return [child(x=i) for i in range(n)]
+
+@task()
+def caller(n: int) -> int:
+    return child(n)
+
+@flow
+def main():
+    return [first(out="marker.txt"), fan(n=2, out="fan.txt"), caller(n=1)]
+"""
+
+
+def test_doctor_reports_wrong_task_calls_in_task_bodies() -> None:
+    write("workflow.py", WRONG_TASK_CALLS)
+    found = {diagnostic["code"]: diagnostic for diagnostic in _doctor_json(code=1)}
+    positional = found["positional_task_call"]
+    assert positional["severity"] == "error"
+    assert "Call it as child(x=...)" in positional["message"]
+    assert positional["location"].endswith("workflow.py:19")
+    returned = found["inferred_return_task_call"]
+    assert "returned [child(x=i) for i in range(n)] instead of None" in returned["message"]
+    assert returned["location"].endswith("workflow.py:15")
+
+
+def test_run_refuses_wrong_task_calls_before_any_task_runs() -> None:
+    write("workflow.py", WRONG_TASK_CALLS)
+    result = run_cli("run", "workflow.py", "--agent-output")
+    assert result.returncode != 0
+    assert '"event": "run_rejected"' in result.stdout and "keyword-only" in result.stdout
+    assert not Path("marker.txt").exists()
+
+
+def test_a_local_name_shadowing_a_task_is_not_a_task_call() -> None:
+    write(
+        "workflow.py",
+        """
+        from ginkgo import Out, file, flow, task
+
+        @task()
+        def child(x: int) -> int:
+            return x
+
+        @task()
+        def summarize(x: int) -> int:
+            return x
+
+        @task()
+        def fan(n: int, out: Out[file]):
+            def child(v):
+                return v
+
+            summarize = len
+            values = [child(n) for child in [abs]]
+            return summarize(values) and child(n)
+
+        @flow
+        def main():
+            return fan(n=2, out="fan.txt")
+        """,
+    )
+    assert _doctor_json() == []
+
+
+def test_correct_task_calls_and_positional_helper_calls_pass() -> None:
+    write(
+        "workflow.py",
+        """
+        from ginkgo import Out, file, flow, task
+
+        def double(x: int) -> int:
+            return 2 * x
+
+        @task()
+        def child(x: int) -> int:
+            return double(x)
+
+        @task()
+        def fan(n: int, out: Out[file]) -> list[int]:
+            return [child(x=i) for i in range(n)]
+
+        @flow
+        def main():
+            return fan(n=2, out="fan.txt")
+        """,
+    )
+    assert _doctor_json() == []
+
+
 class TestDoctorWorkspaceLedger:
     """The workspace doctor runs in is reported on, not only the workflow."""
 
