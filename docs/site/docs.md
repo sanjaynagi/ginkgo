@@ -91,21 +91,23 @@ Ginkgo runs `write_text`, and `hello.txt` appears in the current directory.
     </ul>
   </article>
   <article class="contents-block">
-    <h3>User guide</h3>
+    <h3>Writing workflows</h3>
     <ul>
       <li><a href="../guide/concepts/">Core concepts</a></li>
       <li><a href="../guide/tasks-and-flows/">Tasks and flows</a></li>
-      <li><a href="../guide/notebooks/">Notebook task details</a></li>
-      <li><a href="../guide/resources/">Resources and scheduling</a></li>
+      <li><a href="../guide/outputs/">Declaring outputs</a></li>
       <li><a href="../guide/environments/">Environments</a></li>
-      <li><a href="../guide/reports/">Reports</a></li>
+      <li><a href="../guide/resources/">Resources and scheduling</a></li>
+    </ul>
+  </article>
+  <article class="contents-block">
+    <h3>Running and inspecting</h3>
+    <ul>
+      <li><a href="../guide/cli/">CLI</a></li>
       <li><a href="../guide/caching-and-provenance/">Caching and provenance</a></li>
       <li><a href="../guide/querying-provenance/">Querying provenance</a></li>
-      <li><a href="../guide/cli/">CLI</a></li>
+      <li><a href="../guide/maintenance/">Maintaining the database and cache</a></li>
       <li><a href="../guide/coding-agents/">Working with coding agents</a></li>
-      <li><a href="../guide/notifications/">Notifications</a></li>
-      <li><a href="../guide/remote-execution/">Remote execution</a></li>
-      <li><a href="../faq/">FAQ</a></li>
     </ul>
   </article>
   <article class="contents-block">
@@ -115,8 +117,19 @@ Ginkgo runs `write_text`, and `hello.txt` appears in the current directory.
     </ul>
   </article>
   <article class="contents-block">
+    <h3>Plugins</h3>
+    <ul>
+      <li><a href="../guide/notebooks/">Notebook tasks</a></li>
+      <li><a href="../guide/reports/">Reports</a></li>
+      <li><a href="../guide/notifications/">Notifications</a></li>
+      <li><a href="../guide/remote-execution/">Remote execution</a></li>
+      <li><a href="../guide/remote-oke/">Running on OKE</a></li>
+    </ul>
+  </article>
+  <article class="contents-block">
     <h3>Reference</h3>
     <ul>
+      <li><a href="../faq/">FAQ</a></li>
       <li><a href="../reference/api/">API reference</a></li>
     </ul>
   </article>
@@ -125,26 +138,57 @@ Ginkgo runs `write_text`, and `hello.txt` appears in the current directory.
 
 ```{toctree}
 :hidden:
+:caption: Getting started
 
 getting-started/installation
 getting-started/quickstart
 motivation
+```
+
+```{toctree}
+:hidden:
+:caption: Writing workflows
+
 guide/concepts
 guide/tasks-and-flows
-guide/notebooks
 guide/outputs
-guide/resources
 guide/environments
-guide/reports
+guide/resources
+```
+
+```{toctree}
+:hidden:
+:caption: Running and inspecting
+
+guide/cli
 guide/caching-and-provenance
 guide/querying-provenance
 guide/maintenance
-guide/cli
 guide/coding-agents
+```
+
+```{toctree}
+:hidden:
+:caption: Examples
+
+examples/bioinfo-workflow
+```
+
+```{toctree}
+:hidden:
+:caption: Plugins
+
+guide/notebooks
+guide/reports
 guide/notifications
 guide/remote-execution
 guide/remote-oke
+```
+
+```{toctree}
+:hidden:
+:caption: Reference
+
 faq
-examples/bioinfo-workflow
 reference/api
 ```
