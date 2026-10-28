@@ -347,6 +347,32 @@ class TaskDef:
         delay = self.retry_backoff * (self.retry_backoff_multiplier ** (attempt - 1))
         return min(delay, self.retry_backoff_max)
 
+    def positional_call_message(self, *, count: int, supplied: Iterable[str]) -> str:
+        """The error for a call passing *count* positional arguments.
+
+        Shared by the call itself and the build-time check of task bodies.
+        """
+        names = [name for name in self.all_params if name not in set(supplied)]
+        example = ", ".join(f"{name}=..." for name in names[:count]) or "name=..."
+        return (
+            f"{self.fn.__name__}() was given {count} positional argument(s), but "
+            "task calls are keyword-only, so each value names the parameter it fills. "
+            f"Call it as {self.fn.__name__}({example})."
+        )
+
+    def inferred_return_message(self, *, returned: str) -> str:
+        """The error for a body of an inferred-return task returning *returned*.
+
+        Shared by the evaluator and the build-time check of task bodies.
+        """
+        return (
+            f"{self.base_name} has Out[...] parameters and no return annotation, "
+            "so its return value is inferred from those outputs — but the task "
+            f"body returned {returned} instead of None. Add an explicit return "
+            "annotation (e.g. `-> file`) if this task needs to return something "
+            "else."
+        )
+
     def __call__(self, *args: Any, **kwargs: Any) -> Expr | PartialCall:
         """Build an ``Expr`` (all required args supplied) or ``PartialCall``.
 
@@ -364,13 +390,7 @@ class TaskDef:
         Expr | PartialCall
         """
         if args:
-            names = [name for name in self.all_params if name not in kwargs]
-            example = ", ".join(f"{name}=..." for name in names[: len(args)]) or "name=..."
-            raise TypeError(
-                f"{self.fn.__name__}() was given {len(args)} positional argument(s), but "
-                "task calls are keyword-only, so each value names the parameter it fills. "
-                f"Call it as {self.fn.__name__}({example})."
-            )
+            raise TypeError(self.positional_call_message(count=len(args), supplied=kwargs))
         supplied = set(kwargs.keys())
 
         if "threads" in supplied:

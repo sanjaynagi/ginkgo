@@ -34,6 +34,8 @@ MISSING_DIRECTIVE_CODE = "missing_directive_return"
 STATIC_NOTICE_CODE = "task_kind_notice"
 SPACED_COMMAND_PATH_CODE = "spaced_command_path"
 REFUSED_DIRECTIVE_CODE = "refused_directive"
+POSITIONAL_TASK_CALL_CODE = "positional_task_call"
+RETURNED_TASK_CALL_CODE = "inferred_return_task_call"
 ENV_WARNING_CONSEQUENCE = (
     "A run fails at the first task in this environment that has to run; "
     "cached tasks do not need it."
@@ -181,6 +183,9 @@ def collect_workflow_diagnostics(
             missing_directive_diagnostics(
                 task_defs=[node.task_def for node in graph.nodes.values()]
             )
+        )
+        diagnostics.extend(
+            task_call_diagnostics(task_defs=[node.task_def for node in graph.nodes.values()])
         )
         return WorkflowCheck(
             diagnostics=diagnostics, env_sources=_env_sources(nodes=graph.nodes.values())
@@ -568,6 +573,83 @@ def _literal_directive(
     return static_directive(
         fn=node.task_def.fn, resolved_args=literal_args, directive_type=directive_type
     )
+
+
+def task_call_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:
+    """Build one error per task call a task body would make wrongly when it runs.
+
+    Two mistakes fail only once the run reaches the task: a positional task
+    call, and an inferred-return task (``Out[...]`` parameters, no return
+    annotation) returning task calls. Best-effort: a callee is recognised only
+    as a name or dotted name that the body's own globals and closure resolve
+    to a ``TaskDef``. Tasks those bodies call are checked too, so a dynamic
+    task's children are covered although the static graph lacks them.
+    """
+    diagnostics: list[WorkflowDiagnostic] = []
+    pending, seen = list(task_defs), set()
+    while pending:
+        task_def = pending.pop(0)
+        if task_def.name in seen:
+            continue
+        seen.add(task_def.name)
+        try:
+            lines, first_line = inspect.getsourcelines(task_def.fn)
+            path = inspect.getsourcefile(task_def.fn)
+            namespace = {
+                **task_def.fn.__globals__,
+                **inspect.getclosurevars(task_def.fn).nonlocals,
+            }
+            nodes = list(ast.parse(textwrap.dedent("".join(lines))).body[0].body)
+        except (OSError, TypeError, SyntaxError):
+            continue
+        while nodes:
+            node = nodes.pop(0)
+            # A nested function, class or lambda runs, and returns, for itself.
+            if isinstance(
+                node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
+            ):
+                continue
+            nodes.extend(ast.iter_child_nodes(node))
+            message, code = None, None
+            if (called := _called_task(node, namespace)) is not None:
+                pending.append(called)
+                if node.args:
+                    supplied = [keyword.arg for keyword in node.keywords]
+                    message = called.positional_call_message(
+                        count=len(node.args), supplied=supplied
+                    )
+                    code = POSITIONAL_TASK_CALL_CODE
+            if (
+                isinstance(node, ast.Return)
+                and node.value is not None
+                and task_def.has_inferred_return
+                and task_def.kind == "python"
+                and any(_called_task(child, namespace) for child in ast.walk(node.value))
+            ):
+                message = task_def.inferred_return_message(returned=ast.unparse(node.value))
+                code = RETURNED_TASK_CALL_CODE
+            if message is not None:
+                location = f"{path}:{first_line + node.lineno - 1}"
+                diagnostics.append(
+                    WorkflowDiagnostic(
+                        severity="error", code=code, message=message, location=location
+                    )
+                )
+    return diagnostics
+
+
+def _called_task(node: ast.AST, namespace: dict[str, Any]) -> TaskDef | None:
+    """The task *node* calls, when it is a call of a name or dotted name naming one."""
+    if not isinstance(node, ast.Call):
+        return None
+    func, attrs = node.func, []
+    while isinstance(func, ast.Attribute):
+        attrs.insert(0, func.attr)
+        func = func.value
+    value = namespace.get(func.id) if isinstance(func, ast.Name) else None
+    for attr in attrs:
+        value = getattr(value, attr, None)
+    return value if isinstance(value, TaskDef) else None
 
 
 def _never_returns_directive(fn: Callable[..., Any]) -> bool:

@@ -1903,13 +1903,7 @@ class ConcurrentEvaluator:
         task_def = node.task_def
         if task_def.has_inferred_return:
             if task_def.kind == "python" and value is not None:
-                raise TypeError(
-                    f"{task_def.base_name} has Out[...] parameters and no return annotation, "
-                    "so its return value is inferred from those outputs — but the task "
-                    f"body returned {value!r} instead of None. Add an explicit return "
-                    "annotation (e.g. `-> file`) if this task needs to return something "
-                    "else."
-                )
+                raise TypeError(task_def.inferred_return_message(returned=repr(value)))
             value = self._inferred_return_value(node=node)
         # An unwritten Out[...] path is checked first: a task returning that
         # path would otherwise fail the generic return check, which names
