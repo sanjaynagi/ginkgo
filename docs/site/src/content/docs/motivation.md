@@ -6,7 +6,7 @@ Ginkgo is built on these founding principles:
 
 1. **Scientific workflows belong in Python.**
 2. **A workflow's graph should be able to grow as it runs.**
-3. **Workflows will be written and run by AI agents as well as by people.**
+3. **Workflows are now written and run by AI agents.**
 
 ## Scientific Workflows Belong In Python
 
@@ -30,7 +30,7 @@ to the graph and runs them. The workflow grows to match the data.
 [Core Concepts](/ginkgo/guide/concepts/#dynamic-expansion-a-task-can-add-tasks) shows
 an example.
 
-## Workflows Will Be Written And Run By AI Agents As Well As By People
+## Workflows Are Now Written And Run By AI Agents
 
 More and more analysis is written, run and debugged by AI coding agents working
 alongside scientists. A workflow tool should be as easy for an agent to read and
