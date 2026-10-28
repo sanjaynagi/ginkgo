@@ -279,7 +279,11 @@ ginkgo cache explain <run_id> --json
 
 For each task, it prints a reason and each input's label. For a task that
 re-ran, it also names the parts of the cache key that changed, and shows each
-one's earlier and current value. The reasons are:
+one's earlier and current value. A short value, such as a number, a bool or a
+string of up to 40 characters, is shown as itself, as in
+`inputs.min_cases (changed: 10 → 3)`. Files, folders, secrets and longer values
+are shown by their digests. So is a string that names a file, because the
+file's contents are what Ginkgo tracks. The reasons are:
 
 | Reason | Meaning |
 | --- | --- |
@@ -329,6 +333,7 @@ its code. See [Checking A Workflow](cli.md#checking-a-workflow).
 ```
 
 - `reason` is the summary reason, and `details` lists every reason.
+- A changed short value also carries `prior_value` and `current_value`.
 - `components` lists the parts of the key that differ. Each `status` is
   `changed`, or `added` or `removed` for a parameter that appeared or went
   away. The part names follow the cache key:

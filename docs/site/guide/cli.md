@@ -36,7 +36,9 @@ Run `ginkgo <command> --help` for every flag of a command.
 `ginkgo runs`
 : List recorded runs (`runs ls`) and show one of them (`runs show`),
   including the pages its tasks rendered. See
-  [Querying Provenance](querying-provenance.md).
+  [Querying Provenance](querying-provenance.md). `runs status` and
+  `runs wait` follow a run started with `--detach`. See
+  [Running In The Background](#running-in-the-background).
 
 `ginkgo history`
 : Show every run of one task, with its status, duration and cache key.
@@ -190,6 +192,27 @@ is recorded as failed, and `ginkgo run` exits with code 3.
 
 `--agent-output` replaces the live terminal display with a stream of JSONL
 events. It is for AI coding agents and other programs. See [Working With Coding Agents](coding-agents.md).
+
+### Running In The Background
+
+`--detach` starts the run in the background and prints its run ID and log
+path. It returns once the run is recorded, or after 30 seconds if loading the
+workflow takes longer. A workflow that fails its checks before then is
+reported straight away. Ctrl-C while it waits leaves the run going and prints
+its ID. `--detach` can't be combined with `--dry-run`.
+
+Follow the run with one of these:
+
+- `ginkgo runs status <run_id>` shows the run once: its status, task counts,
+  failures and outputs. It works while the run is still going.
+- `ginkgo runs wait <run_id> [--timeout SECONDS]` waits for the run to finish.
+
+`runs wait` exits as `ginkgo run` would have: 0 if the run succeeded, 1 if it
+failed or was rejected before it started, 3 if its only failures were ones its
+failure policy allowed, and 130 if it was cancelled. It exits 124 at the
+timeout and 2 for an unknown run ID. Ctrl-C stops the wait, not the run. Both
+commands take `--json`. See
+[Long Runs](coding-agents.md#long-runs) for how an agent uses them.
 
 ### Exit Statuses
 
@@ -368,6 +391,20 @@ tasks affected. `--verbose` names each one and the error.
   ends `return f"wc -l {path}"` where `return shell(cmd=f"wc -l {path}")` was
   meant. The check is best-effort. It never flags a `return` of a call or a
   variable.
+
+Two mistakes in a task body are errors, not warnings. `ginkgo doctor` reports
+them, and `ginkgo run`, with or without `--dry-run`, refuses them before any
+task runs:
+
+- `positional_task_call`: a task called with positional arguments. Task calls
+  are keyword-only.
+- `inferred_return_task_call`: a task with `Out[...]` parameters and no return
+  annotation whose body returns task calls. Add a return annotation.
+
+The tasks those bodies call are checked too. The check is best-effort. It sees
+calls of a name or dotted name that resolves to a task, such as `gwas(...)` or
+`stats.gwas(...)`. It doesn't catch a task call stored in a variable and then
+returned.
 
 ## Debugging A Run
 

@@ -91,7 +91,10 @@ ginkgo why results/features.parquet --json
 
 `ginkgo why` takes a file that a task wrote or restored, or an artifact id. It
 prints the run and task that produced those bytes, the cache entry that holds
-them, and the inputs that task recorded.
+them, and the inputs that task recorded. A path inside an output folder, such
+as a file a task wrote into its `Out[folder]`, is answered for that folder:
+`why` prints "Inside <folder>, produced by <task>", and `--json` names the
+folder as `containing_output`.
 
 Ginkgo records only the outputs it tracks. If `why` finds nothing, the task
 may have returned the path as a plain `str`. Annotate the return `-> file` (or

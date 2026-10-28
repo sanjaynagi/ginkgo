@@ -11,6 +11,7 @@ rendered pages.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from typing import Any
 from ginkgo.formatting import duration_seconds, parse_timestamp
 from ginkgo.store.jsonio import loads
 from ginkgo.runtime.events import task_id_for_node
+from ginkgo.runtime.rundir import combined_log_tail
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -33,6 +35,9 @@ TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed", "skipped"})
 
 DONE_STATUSES = frozenset({"cached", "succeeded"})
 """The terminal statuses of a task that produced a result."""
+
+_ANSI_ESCAPE = re.compile(r"\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\))")
+"""A terminal colour or cursor code, stripped from log lines meant for a program."""
 
 
 def _base_name(value: Any) -> str:
@@ -427,6 +432,64 @@ class RunSummary:
             "tasks": tasks,
             "dynamic_expansions": expansions,
             "notices": list(self.notices),
+        }
+
+    def outcome_payload(self) -> dict[str, Any]:
+        """Return what an agent needs from a run: its status, counts, failures and outputs.
+
+        The compact sibling of :meth:`to_payload`, and the body of both the
+        ``run_summary`` event ``ginkgo run --agent-output`` ends with and
+        ``ginkgo runs status``/``wait``. Read from the ledger, so it is just as
+        valid for a run still going: its status is then ``running``.
+        """
+        labels = {task.task_key: task.label for task in self.tasks}
+        counts = self.task_counts()
+        run_dir = self.run_dir.resolve()
+        return {
+            "run_id": self.run_id,
+            "status": self.status,
+            "run_dir": str(run_dir),
+            "counts": {
+                "total": self.task_count,
+                "executed": counts["succeeded"] + counts["failed"],
+                "cached": self.cached_count,
+                "failed": self.failed_count,
+                "ignored": self.ignored_failure_count,
+                "skipped": self.skipped_count,
+            },
+            "failures": [
+                {
+                    "task": task.label,
+                    "category": task.failure_kind,
+                    "exit_code": task.exit_code,
+                    "ignored": task.ignored,
+                    "error": task.error,
+                    "log_tail": [
+                        _ANSI_ESCAPE.sub("", line)
+                        for line in combined_log_tail(
+                            run_dir=run_dir,
+                            stdout_log=task.stdout_log,
+                            stderr_log=task.stderr_log,
+                            lines=10,
+                        )
+                    ],
+                    "logs": [
+                        str(run_dir / log) for log in (task.stdout_log, task.stderr_log) if log
+                    ],
+                }
+                for task in self.failed_tasks
+            ],
+            "skipped": [
+                {"task": task.label, "cause": cause}
+                for task in self.tasks
+                if (cause := task.skip_cause(labels=labels)) is not None
+            ],
+            "outputs": [
+                {"task": task.label, "path": output["path"]}
+                for task in self.tasks
+                for output in task.outputs
+                if "path" in output
+            ],
         }
 
     # ----- Aggregations -----------------------------------------------------
