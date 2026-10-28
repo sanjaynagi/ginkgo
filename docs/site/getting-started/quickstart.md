@@ -1,109 +1,135 @@
 # Quickstart
 
-This quickstart uses the runnable bioinformatics example in `examples/bioinfo`
-of the Ginkgo repository. The example is not installed with the `ginkgo` CLI,
-so you need a clone of the repository. If you would rather start with no
-checkout and no external tools, run the
-[Minimal Workflow](../docs.md#a-minimal-workflow) from the docs front page, or
-scaffold a project with `ginkgo init`.
+This quickstart has two parts. First you run a one-task workflow that needs
+nothing but the `ginkgo` command. Then you run the bioinformatics example from
+the Ginkgo repository, which uses Pixi and a container.
 
-## Prerequisites
+You need the `ginkgo` command first. See [Installation](installation.md).
 
-- The `ginkgo` CLI; see [Installation](installation.md).
-- [Pixi](https://pixi.sh/) on your `PATH`: two of the example's tasks run in a
-  Pixi environment, which Ginkgo installs on first use.
-- Docker or Podman on your `PATH`: one task runs in a container image, which
-  Ginkgo pulls on first use.
+## 1. Run Your First Workflow
 
-Both are described under
-[Runtime Prerequisites](installation.md#runtime-prerequisites).
+In an empty directory, save the
+[minimal workflow](../docs.md#a-minimal-workflow) from the docs front page as
+`flow.py`. Then run it:
 
-## 1. Clone The Repository And Move Into The Example
+```bash
+ginkgo run flow.py
+```
+
+Ginkgo shows a table of tasks as they run. When the run ends, the table shows
+`write_text` as `succeeded`, and `hello.txt` is in the directory.
+
+## 2. Run It Again To See The Cache
+
+Run the same command again:
+
+```bash
+ginkgo run flow.py
+```
+
+This time nothing runs. Ginkgo reports the task as `cached`:
+
+```text
+┌────────────┬──────────┬─────────────┬──────┐
+│ Task       │ Status   │ Environment │ Time │
+├────────────┼──────────┼─────────────┼──────┤
+│ write_text │ ↺ cached │ local       │ 0.0s │
+└────────────┴──────────┴─────────────┴──────┘
+
+⏱ Completed in 0.1s - 0 tasks executed, 1 cached
+```
+
+Ginkgo reused the result because nothing changed. It decides this from the
+task's code, its inputs and its environment.
+[Cache Identity](../guide/caching-and-provenance.md#cache-identity) gives the
+exact rule. Change `message` in `flow.py` and run again, and `write_text` runs
+again.
+
+## 3. Get The Bioinformatics Example
+
+The example lives in `examples/bioinfo` in the Ginkgo repository. It is not
+installed with the `ginkgo` command, so clone the repository:
 
 ```bash
 git clone https://github.com/sanjaynagi/ginkgo.git
 cd ginkgo/examples/bioinfo
 ```
 
-The example includes:
+The example needs two programs on your `PATH`:
 
-- a `ginkgo.toml` config file
-- small FASTQ inputs
-- a workflow package under `workflow/`
-- a task-specific Pixi environment under `workflow/envs/bioinfo_tools/`
+- [Pixi](https://pixi.sh/). Two of the example's tasks run in a Pixi
+  environment, which Ginkgo installs on first use.
+- Docker or Podman. One task runs in a container image, which Ginkgo pulls on
+  first use.
 
-## 2. Inspect The Workflow Entry Point
+[Runtime Prerequisites](installation.md#runtime-prerequisites) describes both.
 
-The canonical flow lives in `examples/bioinfo/workflow/flow.py`.
+Open `workflow/flow.py`. The workflow has these tasks:
 
-At a high level it:
+- `filter_fastq` filters each sample's reads with `seqkit`, in a Pixi
+  environment. Pixi installs tools such as `seqkit` into an isolated
+  environment.
+- `fastq_stats` computes quality-control (QC) statistics for each filtered
+  sample, in the same environment.
+- `count_reads` counts the reads in each filtered sample, inside a Docker
+  container.
+- `build_summary` merges the statistics and counts into one table, in plain
+  Python.
 
-1. filters each FASTQ in a Pixi environment
-2. computes per-sample QC tables in the same environment
-3. counts reads in a container-backed shell task
-4. merges those outputs in a local Python task
+`fastq_stats` and `count_reads` both read the filtered files and don't depend
+on each other, so they run at the same time.
+[Example: Bioinformatics Workflow](../examples/bioinfo-workflow.md) walks
+through the code.
 
-## 3. Preview With A Dry Run
+## 4. Preview With A Dry Run
 
-Before running for real, confirm the workflow is wired correctly:
+Check the workflow before you run it for real:
 
 ```bash
 ginkgo run --dry-run
 ```
 
-This validates the workflow without executing any task body. Ginkgo resolves
-the expression tree, checks environments and secrets, computes cache keys for
-every task, and reports which tasks would run, which would serve from cache,
-and which resources they declare.
+A dry run checks the workflow and prints a plan. No task runs. The plan lists
+which tasks would run, which would reuse cached results, and the resources
+each task declares.
 
-A project may also keep validation workflows under `tests/workflows/`. Those are
-workflows too, so they run by path: `ginkgo run tests/workflows/smoke.py`, with
-`--dry-run` to validate instead of executing. See
-[Validation workflows](../guide/cli.md#validation-workflows).
-
-## 4. Run The Workflow
+## 5. Run The Workflow
 
 ```bash
 ginkgo run
 ```
 
-When you run from the example root, Ginkgo auto-discovers the canonical
-`workflow/flow.py` entrypoint.
-
-If you prefer to be explicit:
+With no file named, `ginkgo run` looks for `workflow/flow.py` in the current
+directory. To name the file yourself:
 
 ```bash
 ginkgo run workflow/flow.py
 ```
 
-## 5. Inspect Outputs
+## 6. Look At The Outputs
 
 After a successful run, look at:
 
-- `results/filtered/` for filtered FASTQs
-- `results/qc/` for per-sample stats
-- `results/read_counts/` for container-generated read-count tables
-- `results/summary.csv` for the merged report
-- `.ginkgo/runs/<run_id>/` for run provenance and logs
+- `results/filtered/` for the filtered reads
+- `results/qc/` for each sample's statistics
+- `results/read_counts/` for the read counts made in the container
+- `results/summary.csv` for the merged table
+- `logs/` for the tool logs
 
-## 6. Re-Run To See Cache Reuse
-
-Run the workflow again without changing inputs:
+Ginkgo also records the run, which is the run's
+[provenance](../guide/concepts.md#glossary). The last line of the run output
+names the run's directory under `.ginkgo/runs/`. To list your runs and show
+one of them:
 
 ```bash
-ginkgo run
+ginkgo runs ls
+ginkgo runs show <run_id>
 ```
 
-Ginkgo should reuse cached results where the cache key still matches. The cache
-identity includes task source, resolved inputs, and execution-environment
-identity where relevant. Task source means the whole module a task is defined
-in, so tasks sharing a file are invalidated together — see
-[Cache identity](../guide/caching-and-provenance.md#cache-identity).
+[Querying Provenance](../guide/querying-provenance.md) covers the other ways
+to read the record.
 
-```{raw} html
-<div class="section-note">
-  If you are new to Ginkgo, read <a href="../../guide/concepts/">Core Concepts</a>
-  next. It explains why task calls return deferred expressions and how that
-  affects flow authoring.
-</div>
-```
+## What To Read Next
+
+Read [Core Concepts](../guide/concepts.md) next. It explains why calling a
+task doesn't run it, and how a task can add new tasks while the workflow runs.
