@@ -3,18 +3,22 @@
 ### Overview
 
 Ginkgo is a Python-native way to write scientific workflows. You write each
-step as a normal Python function, and Ginkgo runs them as a graph, handling
-parallelism, caching, and a record of what ran. Calling a task doesn't run it
-&mdash; it returns a deferred expression, so Ginkgo can build and check the
-whole graph before anything executes. Because that graph is built from ordinary
-Python, it can change shape while it runs: a task can look at its inputs and
-add new steps, which is how Ginkgo handles dynamic DAGs. You get all of this
-without rewriting your code into a separate workflow language.
+task as a normal Python function. Ginkgo runs the tasks in the right order, runs
+them in parallel where it can, caches their results, and records what ran. That
+record is called [provenance](guide/concepts.md#glossary).
 
-New to Ginkgo? [Why Ginkgo](../motivation/) sets out the three principles it is
-built on: workflows in plain Python, graphs that change as they run, and
-workflows that AI agents can write and operate. Or jump straight to the
-[Quickstart](../getting-started/quickstart/).
+Calling a task doesn't run it. The call returns an
+[expression](guide/concepts.md#glossary), which is a placeholder for the
+result. Ginkgo links the expressions into a graph of tasks, and checks the
+whole graph before anything runs.
+
+The graph can grow while the workflow runs. A task can look at its inputs and
+add new tasks. For example, a task can read a sample list and add one task per
+sample.
+
+New to Ginkgo? Install it, run the [Quickstart](getting-started/quickstart.md),
+then read [Core Concepts](guide/concepts.md). [Why Ginkgo](motivation.md)
+explains the principles Ginkgo is built on.
 
 ```{raw} html
 <video controls muted playsinline preload="none" poster="../_static/walkthrough-poster.jpg" style="width: 100%; border-radius: 8px;">
@@ -22,32 +26,31 @@ workflows that AI agents can write and operate. Or jump straight to the
 </video>
 ```
 
-The video runs a bacterial GWAS from 60 assemblies to resistance-associated
-unitigs. It shows dynamic task graphs, pixi environments, caching, provenance,
-measured resource usage, and resuming after a failure.
+The video runs a bacterial genome-wide association study (GWAS). It shows the
+graph growing as the workflow runs, tasks running in Pixi environments,
+caching, provenance, measured resource usage, and resuming after a failure.
+Pixi is a package manager that builds the environments your tools run in.
 
 ```{raw} html
 <section class="quick-grid">
   <article class="quick-card">
-    <h3>Dynamic</h3>
-    <p>Build workflows that can expand at runtime when task results determine what should happen next.</p>
+    <h3>Plain Python</h3>
+    <p>You write workflows as ordinary Python functions, with <code>@flow</code> and <code>@task()</code>. There is no separate workflow language to learn.</p>
   </article>
   <article class="quick-card">
-    <h3>Pythonic</h3>
-    <p>Author workflows in ordinary Python with <code>@flow</code>, <code>@task()</code>, and explicit typed task boundaries.</p>
+    <h3>Graphs that grow</h3>
+    <p>A task can look at its inputs and add new tasks. The workflow takes the shape the data needs.</p>
   </article>
   <article class="quick-card">
-    <h3>Reproducible</h3>
-    <p>Reuse prior work through content-addressed caching and run shell steps in declared environments.</p>
-  </article>
-  <article class="quick-card">
-    <h3>Agent-friendly</h3>
-    <p>Inspect runs, logs, artifacts, and workflow structure through the CLI and run records.</p>
+    <h3>Built for agents</h3>
+    <p>AI agents can write, run and inspect workflows as well as people can, through plain Python, JSON output and a queryable record of every run.</p>
   </article>
 </section>
 ```
 
 ### A Minimal Workflow
+
+Save this as `flow.py`:
 
 ```python
 from ginkgo import Out, file, flow, task
@@ -64,11 +67,16 @@ def main():
     return write_text(message="hello from ginkgo", output_path="hello.txt")
 ```
 
-Run it with:
+`Out[file]` marks `output_path` as a file the task writes. The flow returns
+the task call, and that tells Ginkgo what to run.
+
+Run it from the same directory:
 
 ```bash
 ginkgo run flow.py
 ```
+
+Ginkgo runs `write_text`, and `hello.txt` appears in the current directory.
 
 ### Contents
 
@@ -87,6 +95,7 @@ ginkgo run flow.py
     <ul>
       <li><a href="../guide/concepts/">Core concepts</a></li>
       <li><a href="../guide/tasks-and-flows/">Tasks and flows</a></li>
+      <li><a href="../guide/notebooks/">Notebook task details</a></li>
       <li><a href="../guide/resources/">Resources and scheduling</a></li>
       <li><a href="../guide/environments/">Environments</a></li>
       <li><a href="../guide/reports/">Reports</a></li>
@@ -102,7 +111,7 @@ ginkgo run flow.py
   <article class="contents-block">
     <h3>Examples</h3>
     <ul>
-      <li><a href="../examples/bioinfo-workflow/">Canonical bioinformatics workflow</a></li>
+      <li><a href="../examples/bioinfo-workflow/">Bioinformatics workflow</a></li>
     </ul>
   </article>
   <article class="contents-block">
@@ -112,9 +121,6 @@ ginkgo run flow.py
     </ul>
   </article>
 </section>
-<div class="section-note">
-  The quickstart and the bioinformatics example are the best place to start.
-</div>
 ```
 
 ```{toctree}
@@ -125,6 +131,7 @@ getting-started/quickstart
 motivation
 guide/concepts
 guide/tasks-and-flows
+guide/notebooks
 guide/resources
 guide/environments
 guide/reports

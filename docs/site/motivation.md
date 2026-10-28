@@ -1,55 +1,57 @@
 # Why Ginkgo
 
-Ginkgo was built on three founding principles:
+Ginkgo is built on these founding principles:
 
 1. **Scientific workflows belong in Python.**
-2. **An orchestrator should handle a changing graph natively.**
+2. **A workflow's graph should be able to grow as it runs.**
 3. **Workflows will be written and run by AI agents as well as by people.**
 
 ## Scientific Workflows Belong In Python
 
-Data scientists and bioinformaticians already work in Python. They should not
-have to drop into a separate YAML or DSL layer to make an analysis reproducible
-— a workflow should be plain functions with `@flow` and `@task()`, in the same
-language as the analysis itself.
+Data scientists and bioinformaticians already write their analyses in Python.
+Many workflow tools ask them to describe the workflow again in a second
+language, such as YAML or a custom syntax. The analysis then lives in two
+languages, and the two can drift apart.
 
-## An Orchestrator Should Handle A Changing Graph Natively
+In Ginkgo, a workflow is plain Python functions marked with `@flow` and
+`@task()`. It sits in the same language as the analysis itself.
 
-Real analyses rarely know their full shape up front: the number of samples,
-which branches to take, the follow-up work — all depend on intermediate
-results.
+## A Workflow's Graph Should Be Able To Grow As It Runs
 
-Ginkgo handles dynamic DAG expansion directly. A task can inspect its resolved
-inputs and return new expressions, and the runtime folds them into the running
-graph, so the workflow grows as the data comes in.
+Real analyses rarely know their full shape before they start. Take a filtering
+task that decides how many samples pass a quality check. The next task needs to
+run once for each sample that passed, and nobody knows that number until the
+filter has run.
 
-## Built For The Era Of Agentic AI
+In Ginkgo, a task can look at its inputs and return new tasks. Ginkgo adds them
+to the graph and runs them. The workflow grows to match the data.
+[Core Concepts](guide/concepts.md#dynamic-expansion-a-task-can-add-tasks) shows
+an example.
+
+## Workflows Will Be Written And Run By AI Agents As Well As By People
 
 More and more analysis is written, run and debugged by AI coding agents working
-alongside scientists. A workflow tool for that era has to be as easy for an
-agent to read and operate as it is for a person.
+alongside scientists. A workflow tool should be as easy for an agent to read and
+operate as it is for a person.
 
-The first two principles already help: agents write plain Python well, and a
-graph that can change shape lets an agent express what the data calls for
-without working around the tool. Ginkgo builds on that:
+The first two principles already help. Agents write plain Python well. A graph
+that can grow lets an agent write what the data needs, without working around
+the tool.
 
-- `ginkgo init` writes a `skills/` directory and an `AGENTS.md`, so an agent
-  starts with the project's conventions instead of rediscovering them.
-- `ginkgo run --agent-output` streams the run as JSON events, and most
-  inspection commands take `--json`, so an agent reads results rather than
-  scraping a terminal UI.
-- Every run is recorded. An agent can ask which task made a file
-  (`ginkgo why`), why a step ran again (`ginkgo cache explain`), or query the
-  record with SQL (`ginkgo query`), and answer from facts rather than guesses.
-- Content-addressed caching makes iterating cheap: when an agent changes one
-  step, only that step and what depends on it run again.
+An agent also needs to see what happened in a run. A person can watch a live
+table in the terminal, but an agent works best from structured facts. So Ginkgo
+reports runs as JSON. It also records every run in the
+[provenance](guide/concepts.md#glossary) database, which an agent can query. An
+agent can then answer "which task made this file?" or "why did this task run
+again?" from the record, rather than from a guess.
 
-See [Working With Coding Agents](guide/coding-agents.md) for the details.
+[Working With Coding Agents](guide/coding-agents.md) lists the commands that
+put this into practice.
 
 ## See Also
 
-- [Quickstart](getting-started/quickstart.md) — run a workflow in a few minutes.
-- [Core Concepts](guide/concepts.md) — the deferred-expression model behind
-  dynamic expansion.
-- [Working With Coding Agents](guide/coding-agents.md) — skills, agent run mode
+- [Quickstart](getting-started/quickstart.md): run your first workflow.
+- [Core Concepts](guide/concepts.md): how task calls build a graph, and how a
+  task adds to it.
+- [Working With Coding Agents](guide/coding-agents.md): skills, agent run mode
   and the inspection commands.
