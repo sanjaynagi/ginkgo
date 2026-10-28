@@ -718,7 +718,12 @@ def _reason_text(*, reason: str, components: list[dict[str, Any]]) -> str:
 def _component_line(component: dict[str, Any]) -> str:
     """Return one moved component with its prior and current values, shortened."""
     name = escape(str(component.get("component")))
-    values = [_short_value(component[side]) for side in ("prior", "current") if side in component]
+    if "current_value" in component:
+        values = [str(component["prior_value"]), str(component["current_value"])]
+    else:
+        values = [
+            _short_value(component[side]) for side in ("prior", "current") if side in component
+        ]
     status = str(component.get("status"))
     detail = f"{status}: {' → '.join(values)}" if values else status
     return f"{name} [dim]({escape(detail)})[/]"

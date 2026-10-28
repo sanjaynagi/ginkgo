@@ -154,6 +154,36 @@ _CASES = {
             "text": ["reason: input samples changed", "inputs.samples (changed: hash-a → hash-b)"],
         },
     ),
+    # Issue #417: a short scalar shows its values; a file keeps its digests.
+    "input-values": (
+        {
+            "entries": [
+                (
+                    "prior",
+                    {"created_at": T1, "inputs": {"samples": {"type": "file"}, "threads": 10}},
+                ),
+                (
+                    "current",
+                    {
+                        "input_hashes": {"samples": "hash-b", "threads": "hash-u"},
+                        "inputs": {"samples": {"type": "file"}, "threads": 3},
+                    },
+                ),
+            ],
+            "runs": _two_runs()["runs"],
+        },
+        {
+            "components": [
+                _changed("inputs.samples", "hash-b", "hash-a"),
+                _changed("inputs.threads", "hash-u", "hash-t")
+                | {"prior_value": 10, "current_value": 3},
+            ],
+            "text": [
+                "inputs.samples (changed: hash-a → hash-b)",
+                "inputs.threads (changed: 10 → 3)",
+            ],
+        },
+    ),
     "input-added": (
         _two_runs(input_hashes={"samples": "hash-a", "threads": "hash-t", "seed": "hash-s"}),
         {

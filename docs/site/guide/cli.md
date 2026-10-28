@@ -489,6 +489,11 @@ When more than one thing moved, `details` lists every reason in a fixed order â€
 A component's `status` is `changed`, or `added` / `removed` for a parameter that
 appeared or went away.
 
+A changed input whose old and new values are both short scalars (a number, a
+bool, or a string of up to 40 characters) also carries `prior_value` and
+`current_value`, and the text shows them: `inputs.min_cases (changed: 10 â†’ 3)`.
+Files, folders, secrets and longer values show their digests.
+
 Some tasks get a summary `reason` on its own, with no `components`: a task that
 did not re-run reports `all_inputs_match`; one named by `--rerun` reports
 `rerun_requested`, since its cache was never consulted; one with no earlier entry

@@ -153,6 +153,9 @@ bytes, the cache entry holding them, and the inputs that task recorded, one
 mapping per parameter. `ginkgo why <path>` prints the same thing. When a
 dynamic task returns calls, each output is credited to the call that wrote it,
 not to the task that returned the call.
+A path inside a recorded output folder, such as a file a task wrote into its
+`Out[folder]`, is answered for that folder: `containing_output` names it, and
+`ginkgo why` prints "Inside <folder>, produced by <task>".
 
 Only outputs ginkgo tracks are on record: a path a task returns as a plain `str`
 is not one. Annotate the return `-> file` (or `-> folder`), or write the file

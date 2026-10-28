@@ -173,6 +173,8 @@ def test_a_rerun_parent_does_not_claim_its_cached_childs_output(tmp_path: Path) 
     ("target", "message"),
     [
         ("not-an-artifact", "Nothing"),
+        # Only a recorded output folder answers for a path beneath it.
+        ("results/summary.txt/inner", "Nothing"),
         # A path returned as a plain ``str`` leaves no record; say what would.
         ("results/returned_as_str.txt", r"plain `str` is not tracked.*-> file"),
     ],
@@ -230,3 +232,16 @@ def test_a_non_string_value_is_shown_as_json_and_not_read_as_markup() -> None:
 
     assert "flags = [true]" in output
     assert "scratch = (untracked-di)" in output
+
+
+def test_a_path_inside_an_output_folder_names_that_folder(workspace: Path) -> None:
+    """Only the folder root is materialized; a file in it answers for the folder."""
+    folder_path = workspace / "results" / "tetracycline"
+    with _reader(workspace) as reader:
+        provenance = reader.why("results/tetracycline/hit.txt")
+
+    assert provenance.path == str(folder_path.resolve() / "hit.txt")
+    assert provenance.containing_output == str(folder_path.resolve())
+    assert provenance.to_payload()["containing_output"] == provenance.containing_output
+    assert str(provenance.task_name).endswith("_write_folder")
+    assert f"Inside {folder_path.resolve()}, produced by" in _render(provenance)
