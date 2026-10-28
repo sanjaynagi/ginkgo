@@ -53,8 +53,8 @@ How you add a package depends on how you installed Ginkgo:
   every plugin you installed before, such as `ginkgo-pixi`, in the `--with`
   list, because `--force` replaces the whole list.
   [Plugins](../getting-started/installation.md#plugins) shows the command.
-- **From a Pixi workspace.** Add the package to that workspace's manifest and
-  run `pixi install`.
+- **From a Pixi environment.** Add the package to that environment's
+  `pixi.toml` and run `pixi install`.
 - **With `pip install -e .`** Run `pip install pandas` in the same environment.
 
 Ginkgo does not manage the CLI's environment for you. When a task needs
