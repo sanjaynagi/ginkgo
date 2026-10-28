@@ -175,6 +175,8 @@
     font: 300 clamp(1.7rem, 2.7vw, 2.5rem)/1.1 var(--display); letter-spacing: -.015em;
   }
   .caption code { font: 500 .9em var(--mono); color: #8fd3c9; white-space: nowrap; }
+  .roots[data-graph="tree"] .caption[data-mode="example"],
+  .roots[data-graph="example"] .caption[data-mode="tree"] { display: none; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .roots.settled { height: auto; }
   .roots.settled .roots-stage { position: static; height: auto; }
@@ -253,16 +255,20 @@
   </div>
 </header>
 
-<section class="roots" aria-labelledby="roots-title">
+<section class="roots" data-graph="tree" aria-labelledby="roots-title">
   <div class="roots-stage">
     <canvas id="roots" aria-hidden="true"></canvas>
     <div class="captions">
       <h2 id="roots-title" class="sr-only">How a workflow grows</h2>
-      <p class="caption" data-from="0" data-to="0.3"><b>A flow plans the work.</b> Calling tasks builds a graph, and Ginkgo checks all of it before anything runs.</p>
-      <p class="caption" data-from="0.3" data-to="0.5"><b>Then it grows with the data.</b> Discovery finds 60 assemblies and adds a cleaning task for each one.</p>
-      <p class="caption" data-from="0.5" data-to="0.66"><b>Results shape what comes next.</b> QC reads the graph genome and adds a GWAS for each antibiotic with enough resistant samples.</p>
-      <p class="caption" data-from="0.66" data-to="0.79"><b>Change your mind, and it changes with you.</b> Run with <code>--min-cases 3</code> and a GWAS for ampicillin grows in. Everything else stays cached.</p>
-      <p class="caption" data-from="0.79" data-to="1.01"><b>Whatever is ready, runs.</b> Independent tasks run in parallel, and every result is recorded and kept.</p>
+      <p class="caption" data-mode="tree" data-from="0" data-to="0.32"><b>A flow plans the work.</b> Calling tasks builds a graph, and Ginkgo checks all of it before anything runs.</p>
+      <p class="caption" data-mode="tree" data-from="0.32" data-to="0.5"><b>Whatever is ready, runs.</b> Independent branches run in parallel as soon as their inputs exist.</p>
+      <p class="caption" data-mode="tree" data-from="0.5" data-to="0.8"><b>The graph grows as it runs.</b> A task can look at its results and add new tasks, so the work follows the data.</p>
+      <p class="caption" data-mode="tree" data-from="0.8" data-to="1.01"><b>Every result is kept.</b> Run it again and only what changed runs. The rest comes from the cache.</p>
+      <p class="caption" data-mode="example" data-from="0" data-to="0.3"><b>A flow plans the work.</b> Calling tasks builds a graph, and Ginkgo checks all of it before anything runs.</p>
+      <p class="caption" data-mode="example" data-from="0.3" data-to="0.5"><b>Then it grows with the data.</b> Discovery finds 60 assemblies and adds a cleaning task for each one.</p>
+      <p class="caption" data-mode="example" data-from="0.5" data-to="0.66"><b>Results shape what comes next.</b> QC reads the graph genome and adds a GWAS for each antibiotic with enough resistant samples.</p>
+      <p class="caption" data-mode="example" data-from="0.66" data-to="0.79"><b>Change your mind, and it changes with you.</b> Run with <code>--min-cases 3</code> and a GWAS for ampicillin grows in. Everything else stays cached.</p>
+      <p class="caption" data-mode="example" data-from="0.79" data-to="1.01"><b>Whatever is ready, runs.</b> Independent tasks run in parallel, and every result is recorded and kept.</p>
     </div>
   </div>
 </section>
@@ -638,7 +644,11 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
   const roots = document.querySelector(".roots");
   const rootsCanvas = document.getElementById("roots");
   const gctx = rootsCanvas.getContext("2d");
-  const captions = [...document.querySelectorAll(".caption")];
+  // "tree" grows an abstract graph in the tree's style; "example" draws the
+  // bacterial GWAS workflow. ?graph=example in the URL picks the second.
+  const mode = new URLSearchParams(location.search).get("graph") || roots.dataset.graph;
+  roots.dataset.graph = mode;
+  const captions = [...document.querySelectorAll(`.caption[data-mode="${mode}"]`)];
   const scrolly = animate && typeof window.ScrollTrigger !== "undefined";
   if (!scrolly) roots.classList.add("settled");
   const story = { p: scrolly ? 0 : 1 };
@@ -686,12 +696,85 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
     return { nodes, edges };
   }
 
+  // Roots grown like the tree: curved branches splitting downward, a task at
+  // each fork, some roots merging into one task, and a run that sprouts more.
+  function buildRootTree() {
+    const r = rng(21);
+    const narrow = SW < 760, centred = narrow || !scrolly;
+    const cx = centred ? SW * 0.5 : SW * 0.66;
+    const xmin = centred ? SW * 0.07 : SW * 0.4, xmax = SW * 0.96;
+    const top = narrow && scrolly ? SH * 0.38 : SH * 0.15, bottom = SH * 0.93;
+    const L0 = (bottom - top) * 0.34;
+    const nodes = {}, edges = [];
+    let count = 0;
+    const node = (x, y, opts) => { const id = `n${count++}`; nodes[id] = { id, x, y, ...opts }; return id; };
+    const edge = (a, b, show, opts = {}) => {
+      const A = typeof a === "string" ? nodes[a] : a, B = nodes[b];
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1, bend = (r() - 0.5) * len * 0.3;
+      edges.push({ a, b, show, c: { x: (A.x + B.x) / 2 - (dy / len) * bend, y: (A.y + B.y) / 2 + (dx / len) * bend }, ...opts });
+    };
+
+    // The planned graph, timed in raw units and scaled into [0, 0.3] below.
+    const hub = node(cx, top, { r: 6.5, show: [0.7, 1] });
+    edge({ x: tree.baseX, y: narrow && scrolly ? SH * 0.26 : -4 }, hub, [0, 0.9], { width: 3 });
+    const leaves = [];
+    function grow(from, angle, len, depth, t0) {
+      const A = nodes[from];
+      if (A.x > xmax) angle += 0.5; else if (A.x < xmin) angle -= 0.5;
+      angle = Math.max(0.35, Math.min(Math.PI - 0.35, angle));
+      const x = A.x + Math.cos(angle) * len, y = Math.min(bottom, A.y + Math.sin(angle) * len);
+      const dur = len / L0;
+      const b = node(x, y, { r: 2.8 + depth * 0.8, show: [t0 + dur * 0.85, t0 + dur * 1.25] });
+      edge(from, b, [t0, t0 + dur], { width: 0.9 + depth * 0.5 });
+      if (depth === 0) { leaves.push(b); return; }
+      const n = depth >= 2 && r() < 0.45 ? 3 : 2;
+      for (let i = 0; i < n; i++) {
+        const spread = (i - (n - 1) / 2) * (0.62 + r() * 0.35);
+        grow(b, angle + spread + (r() - 0.5) * 0.25, len * (0.76 + r() * 0.12), depth - 1, t0 + dur);
+      }
+    }
+    grow(hub, Math.PI / 2 + (r() - 0.5) * 0.2, L0 * 0.7, 3, 1);
+
+    // Neighbouring roots merge into one task: the graph is a DAG, not a tree.
+    leaves.sort((a, b) => nodes[a].x - nodes[b].x);
+    for (let i = 0; i + 1 < leaves.length; i += 3) {
+      const A = nodes[leaves[i]], B = nodes[leaves[i + 1]];
+      if (Math.abs(A.x - B.x) > SW * 0.12) continue;
+      const t0 = Math.max(A.show[1], B.show[1]);
+      const m = node((A.x + B.x) / 2, Math.min(SH * 0.97, Math.max(A.y, B.y) + L0 * 0.32), { r: 3.6, show: [t0 + 0.35, t0 + 0.65] });
+      edge(leaves[i], m, [t0, t0 + 0.4], { width: 1 });
+      edge(leaves[i + 1], m, [t0, t0 + 0.4], { width: 1 });
+    }
+    const end = Math.max(...Object.values(nodes).map((n) => n.show[1]));
+    const f = 0.3 / end;
+    for (const n of Object.values(nodes)) n.show = n.show.map((v) => v * f);
+    for (const e of edges) e.show = e.show.map((v) => v * f);
+
+    // The run flows down the graph...
+    for (const n of Object.values(nodes)) n.run = 0.33 + 0.38 * ((n.y - top) / (bottom - top)) + r() * 0.02;
+
+    // ...and some tasks, once they run, add more tasks below them.
+    const sprouting = Object.values(nodes).filter((n) => n.y < bottom - L0 * 0.5 && n.y > top + 1);
+    for (const n of sprouting) {
+      if (r() > 0.5) continue;
+      const k = 2 + (r() < 0.5 ? 1 : 0);
+      for (let j = 0; j < k; j++) {
+        const a = Math.PI / 2 + (j - (k - 1) / 2) * 0.7 + (r() - 0.5) * 0.3;
+        const len = L0 * 0.45 * (0.8 + r() * 0.4);
+        const c = node(n.x + Math.cos(a) * len, n.y + Math.sin(a) * len,
+          { r: 3.6, grown: true, show: [n.run + 0.04, n.run + 0.08], run: n.run + 0.1 + r() * 0.04 });
+        edge(n.id, c, [n.run + 0.01, n.run + 0.06], { width: 1.1, grown: true });
+      }
+    }
+    return { nodes, edges };
+  }
+
   function resizeRoots() {
     const box = rootsCanvas.getBoundingClientRect();
     if (!box.width || !box.height || !tree) return;
     SW = box.width; SH = box.height;
     rootsCanvas.width = Math.round(SW * DPR); rootsCanvas.height = Math.round(SH * DPR);
-    graph = buildGraph();
+    graph = mode === "example" ? buildGraph() : buildRootTree();
     renderRoots();
   }
 
@@ -723,26 +806,26 @@ samples = [<span class="s">"S01"</span>, <span class="s">"S02"</span>, <span cla
     const fade = e.fade ? 1 - at(p, e.fade) : 1;
     if (fade <= 0) return;
     const A = point(e.a), B = point(e.b), dy = B.y - A.y;
-    const c1x = A.x, c1y = A.y + dy * 0.55, c2x = B.x, c2y = B.y - dy * 0.55;
+    // A tree-style edge bends through one control point; the example's
+    // edges drop vertically out of one task and into the next.
+    const pos = e.c
+      ? (t, m = 1 - t) => [m * m * A.x + 2 * m * t * e.c.x + t * t * B.x, m * m * A.y + 2 * m * t * e.c.y + t * t * B.y]
+      : (t, m = 1 - t) => [m * m * m * A.x + 3 * m * t * (m * A.x + t * B.x) + t * t * t * B.x,
+                           m * m * m * A.y + 3 * m * m * t * (A.y + dy * 0.55) + 3 * m * t * t * (B.y - dy * 0.55) + t * t * t * B.y];
     gctx.strokeStyle = e.grown ? rgb(TEAL, 0.75 * fade) : `rgba(188, 211, 204, ${0.55 * fade})`;
-    gctx.lineWidth = e.root ? 3 : 1.6;
+    gctx.lineWidth = e.width || (e.root ? 3 : 1.6);
+    gctx.lineCap = "round";
     gctx.beginPath();
     gctx.moveTo(A.x, A.y);
     const steps = 28;
-    for (let i = 1; i <= steps * k; i++) {
-      const t = i / steps, m = 1 - t;
-      gctx.lineTo(
-        m * m * m * A.x + 3 * m * m * t * c1x + 3 * m * t * t * c2x + t * t * t * B.x,
-        m * m * m * A.y + 3 * m * m * t * c1y + 3 * m * t * t * c2y + t * t * t * B.y,
-      );
-    }
+    for (let i = 1; i <= steps * k; i++) gctx.lineTo(...pos(i / steps));
     gctx.stroke();
   }
 
   function drawNode(nd, p) {
     const k = easeOutBack(at(p, nd.show));
     if (k <= 0) return;
-    const ran = clamp01((p - nd.run) / 0.03), r = 6.5 * k;
+    const ran = clamp01((p - nd.run) / 0.03), r = (nd.r || 6.5) * k;
     if (ran > 0 && ran < 1) {
       gctx.strokeStyle = rgb(GOLD, 0.6 * (1 - ran));
       gctx.lineWidth = 1.5;
