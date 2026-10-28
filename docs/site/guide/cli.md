@@ -491,8 +491,9 @@ appeared or went away.
 
 A changed input whose old and new values are both short scalars (a number, a
 bool, or a string of up to 40 characters) also carries `prior_value` and
-`current_value`, and the text shows them: `inputs.min_cases (changed: 10 → 3)`.
-Files, folders, secrets and longer values show their digests.
+`current_value`, and the text shows them as JSON: `inputs.min_cases (changed: 10 → 3)`,
+with strings quoted. Files, folders, secrets and longer values show their digests,
+and so does a plain string naming a file, which is tracked by the file's contents.
 
 Some tasks get a summary `reason` on its own, with no `components`: a task that
 did not re-run reports `all_inputs_match`; one named by `--rerun` reports

@@ -8,6 +8,7 @@ entries to compare it against, then checks the explanation.
 from __future__ import annotations
 
 import json
+import re
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -152,36 +153,6 @@ _CASES = {
             "reason": "input_changed",
             "components": [_changed("inputs.samples", "hash-b", "hash-a")],
             "text": ["reason: input samples changed", "inputs.samples (changed: hash-a → hash-b)"],
-        },
-    ),
-    # Issue #417: a short scalar shows its values; a file keeps its digests.
-    "input-values": (
-        {
-            "entries": [
-                (
-                    "prior",
-                    {"created_at": T1, "inputs": {"samples": {"type": "file"}, "threads": 10}},
-                ),
-                (
-                    "current",
-                    {
-                        "input_hashes": {"samples": "hash-b", "threads": "hash-u"},
-                        "inputs": {"samples": {"type": "file"}, "threads": 3},
-                    },
-                ),
-            ],
-            "runs": _two_runs()["runs"],
-        },
-        {
-            "components": [
-                _changed("inputs.samples", "hash-b", "hash-a"),
-                _changed("inputs.threads", "hash-u", "hash-t")
-                | {"prior_value": 10, "current_value": 3},
-            ],
-            "text": [
-                "inputs.samples (changed: hash-a → hash-b)",
-                "inputs.threads (changed: 10 → 3)",
-            ],
         },
     ),
     "input-added": (
@@ -414,7 +385,7 @@ def produce(value: str) -> str:
     return value
 
 
-def _save(store: CacheStore, value: str, extra: str = "notebook-1") -> tuple[str, dict]:
+def _save(store: CacheStore, value: Any, extra: str = "notebook-1") -> tuple[str, dict]:
     args = {"value": value}
     cache_key, input_hashes = store.build_cache_key(
         task_def=produce, resolved_args=args, extra_source_hash=extra
@@ -460,6 +431,36 @@ def test_a_saved_entry_records_the_components_explain_diffs(tmp_path: Path) -> N
     assert components["env_hash.pixi_lock"] is None
     assert components["inputs.value"] == input_hashes["value"]
     assert entry is not None and entry["function"] == produce.name
+
+
+@pytest.mark.parametrize(
+    ("prior", "current", "values", "shown"),
+    [
+        # Issue #417: a scalar shows its values, quoted when it is a string.
+        (10, "10", (10, "10"), '10 → "10"'),
+        # A str naming a file is tracked by its bytes (#307): digests, not paths.
+        ("data.csv", "data.csv", None, r"[0-9a-f]{12}… → [0-9a-f]{12}…"),
+    ],
+)
+def test_a_changed_scalar_shows_its_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior, current, values, shown
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    index, store = _store(tmp_path)
+    (tmp_path / "data.csv").write_text("a\n")
+    prior_key, _ = _save(store, prior)
+    (tmp_path / "data.csv").write_text("a,b\n")
+    current_key, _ = _save(store, current)
+    index.close()
+
+    explanation = _explain(
+        tmp_path, entries=[], runs=[_run("run-1", T1, prior_key), _run("run-2", T2, current_key)]
+    )
+    (component,) = explanation["components"]
+    assert (component.get("prior_value"), component.get("current_value")) == (
+        values or (None, None)
+    )
+    assert re.search(rf"inputs\.value \(changed: {shown}\)", _text(explanation))
 
 
 @pytest.mark.parametrize(

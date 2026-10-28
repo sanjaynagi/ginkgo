@@ -719,7 +719,7 @@ def _component_line(component: dict[str, Any]) -> str:
     """Return one moved component with its prior and current values, shortened."""
     name = escape(str(component.get("component")))
     if "current_value" in component:
-        values = [str(component["prior_value"]), str(component["current_value"])]
+        values = [json.dumps(component[side]) for side in ("prior_value", "current_value")]
     else:
         values = [
             _short_value(component[side]) for side in ("prior", "current") if side in component

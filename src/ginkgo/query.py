@@ -538,19 +538,31 @@ def _add_scalar_values(
     A digest says only that an input moved; ``10 → 3`` says how. Files, folders,
     redacted secrets and long strings keep their digests alone.
     """
-    values = {"prior_value": prior["inputs"] or {}, "current_value": current["inputs"] or {}}
+    prior_inputs = prior["inputs"] or {}
+    current_inputs = current["inputs"] or {}
     for item in components:
         name = str(item["component"]).removeprefix("inputs.")
         if item["status"] != "changed" or name == item["component"]:
             continue
-        pair = {side: inputs.get(name) for side, inputs in values.items()}
-        if all(_is_short_scalar(value) for value in pair.values()):
-            item.update(pair)
+        prior_value, current_value = prior_inputs.get(name), current_inputs.get(name)
+        if _is_short_scalar(item["prior"], prior_value) and _is_short_scalar(
+            item["current"], current_value
+        ):
+            item.update(prior_value=prior_value, current_value=current_value)
 
 
-def _is_short_scalar(value: Any) -> bool:
-    """Return whether *value* reads inline: a number, a bool or a short string."""
-    return isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= 40)
+def _is_short_scalar(record: Any, value: Any) -> bool:
+    """Return whether an input hashed as *record* reads inline as *value*.
+
+    The hash record's type, not the value, decides: a ``str`` naming a file
+    is hashed by its contents (#307), so its path is not what changed.
+    """
+    return (
+        isinstance(record, dict)
+        and record.get("type") in {"bool", "int", "float", "str"}
+        and isinstance(value, (bool, int, float, str))
+        and not (isinstance(value, str) and len(value) > 40)
+    )
 
 
 class Query:
@@ -1259,8 +1271,8 @@ class Query:
         FileNotFoundError
             If nothing in the ledger matches.
         """
-        artifact_id, path = self._resolve_artifact(path_or_artifact_id)
-        asked = None if path is None else self._workspace_path(path_or_artifact_id)
+        artifact_id, path, containing_output = self._resolve_artifact(path_or_artifact_id)
+        output_path = containing_output or path
         producers = [
             row
             for row in self._store.query(
@@ -1272,7 +1284,7 @@ class Query:
                 ") ASC, t.cached ASC, o.run_id DESC",
                 (artifact_id,),
             )
-            if path is None or self._workspace_path(row["path"]) == path
+            if output_path is None or self._workspace_path(row["path"]) == output_path
         ]
         run_id = _first(producers, "run_id")
         task_id = _first(producers, "task_id")
@@ -1293,8 +1305,8 @@ class Query:
             task_id = _first(produced_by, "task_id")
         return Provenance(
             artifact_id=artifact_id,
-            path=asked,
-            containing_output=path if path != asked else None,
+            path=path,
+            containing_output=containing_output,
             run_id=run_id,
             task_id=task_id,
             task_name=self._task_name(run_id=run_id, task_id=task_id),
@@ -1302,30 +1314,34 @@ class Query:
             inputs=self._task_inputs(run_id=run_id, task_id=task_id),
         )
 
-    def _resolve_artifact(self, path_or_artifact_id: str) -> tuple[str, str | None]:
-        """Return the artifact id *path_or_artifact_id* names, and the path used.
+    def _resolve_artifact(self, path_or_artifact_id: str) -> tuple[str, str | None, str | None]:
+        """Return the artifact id *path_or_artifact_id* names, the path, and its folder.
 
-        Only an output folder's root is materialized, so a path with no record
-        of its own resolves to the nearest recorded output folder holding it.
+        Only an output folder's root is materialized, so an existing path with
+        no record of its own resolves to the nearest recorded output folder
+        holding it, returned third; otherwise the third item is ``None``.
         """
-        workspace = Path(self._workspace_path("."))
-        resolved = Path(self._workspace_path(path_or_artifact_id))
-        for candidate in [resolved, *resolved.parents]:
-            if candidate != resolved and not candidate.is_relative_to(workspace):
-                break
-            rows = self._store.query(
-                "SELECT m.artifact_id FROM materializations m WHERE m.path = ? AND (? OR "
-                "EXISTS (SELECT 1 FROM task_outputs o WHERE o.artifact_id = m.artifact_id "
-                "AND o.value_type = 'folder'))",
-                (str(candidate), candidate == resolved),
-            )
-            if rows:
-                return str(rows[0]["artifact_id"]), str(candidate)
+        resolved = self._workspace_path(path_or_artifact_id)
+        rows = self._store.query(
+            "SELECT artifact_id FROM materializations WHERE path = ?", (resolved,)
+        )
+        if rows:
+            return str(rows[0]["artifact_id"]), resolved, None
+        if Path(resolved).exists():
+            for parent in Path(resolved).parents:
+                rows = self._store.query(
+                    "SELECT m.artifact_id FROM materializations m JOIN task_outputs o "
+                    "ON o.artifact_id = m.artifact_id "
+                    "WHERE m.path = ? AND o.value_type = 'folder' LIMIT 1",
+                    (str(parent),),
+                )
+                if rows:
+                    return str(rows[0]["artifact_id"]), resolved, str(parent)
         known = self._store.query(
             "SELECT artifact_id FROM artifacts WHERE artifact_id = ?", (path_or_artifact_id,)
         )
         if known:
-            return path_or_artifact_id, None
+            return path_or_artifact_id, None, None
         # A ledger lost or replaced since the run that wrote the path knows
         # nothing of it, whatever the task's annotations were.
         ledger_gap = runs_without_ledger_warning(layout=self._layout)
