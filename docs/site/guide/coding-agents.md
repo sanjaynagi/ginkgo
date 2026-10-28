@@ -1,84 +1,112 @@
 # Working With Coding Agents
 
-Ginkgo is built to be authored and operated by AI coding agents as well as by
-people. Two features make that practical: a generated skills directory that
-gives an agent project-specific guidance, and a structured run mode that emits
-machine-readable events.
+Ginkgo is built to be written and run by AI coding agents as well as by
+people. It gives agents a `skills/` folder of project guidance, and a run mode
+that prints machine-readable events.
 
-## The `skills/` Directory
+## The `skills/` Folder
 
-`ginkgo init` scaffolds a new project *and* writes a `skills/` directory
-alongside it:
+`ginkgo init` creates a new project, with a `skills/` folder in it:
 
 ```bash
 ginkgo init my-project
 ```
 
-The `skills/` directory is concise operational guidance for contributors and
-coding agents working in the repository:
+`skills/` is a folder of plain Markdown files. They tell an agent how your
+project is organised and which `ginkgo` commands to run. Any agent that can
+read files can use them.
 
-- `index.md` — entry point and a map of the other files
-- `project.md` — canonical layout and where code should live
-- `config.md` — config loading and CLI overlay patterns
-- `commands.md` — validation, execution, and inspection commands
-- `workflow-patterns.md` — task-kind syntax, environments, notebooks,
-  workflow parameters, and remote staging
-- `local.md` — repository-specific conventions that refine the defaults
+- `index.md` is the entry point, with a map of the other files.
+- `project.md` covers the project layout and where code should live.
+- `config.md` covers loading config, and overriding it with `--config` on the
+  command line.
+- `commands.md` covers the commands that check, run and inspect a workflow.
+- `workflow-patterns.md` covers task kinds, environments, notebooks, workflow
+  parameters, and staging inputs for remote tasks.
+- `local.md` is yours to edit. Add your project's own conventions here. Where
+  it conflicts with the other files, an agent follows `local.md`.
 
-Point an agent at `skills/index.md` and it has enough context to author and run
-workflows correctly without rediscovering the project's conventions each time.
-`init` also writes a short `AGENTS.md` at the project root that does this,
-since many agents read that file first; a project that already has an
-`AGENTS.md` keeps its own. Claude Code reads `CLAUDE.md` instead: add a line
-`@AGENTS.md` to it to pull the pointer in.
+### Pointing An Agent At The Skills
 
-Two flags control what `init` writes:
+`skills/index.md` is the entry point. Tell your agent to read it first.
+
+`ginkgo init` also writes a short `AGENTS.md` at the project root, which points
+to `skills/index.md`. Many agents read `AGENTS.md` first. If the project
+already has an `AGENTS.md`, `init` keeps it and writes none.
+
+Claude Code reads `CLAUDE.md`, not `AGENTS.md`. Add the line `@AGENTS.md` to
+`CLAUDE.md` to include it.
+
+### Choosing What `init` Writes
 
 ```bash
-ginkgo init my-project --no-skills   # project scaffold only, no skills/ or AGENTS.md
-ginkgo init --skills-only            # add skills/ to an existing project
+ginkgo init my-project --no-skills   # the project only, with no skills/ or AGENTS.md
+ginkgo init --skills-only            # skills/ and AGENTS.md, in the current directory
 ```
 
-Pass `--force` to overwrite existing files.
+`init` refuses to overwrite files that already exist. Pass `--force` to
+overwrite them. Don't pass `--force` if you have edited `skills/local.md` or
+the other `skills/` files, because it replaces them with the defaults. It
+never replaces an existing `AGENTS.md`.
 
 ## Agent Run Mode
 
-`ginkgo run --agent-output` replaces the live terminal UI with a stream of
-newline-delimited JSON events on stdout:
+`ginkgo run --agent-output` replaces the live terminal display with a stream
+of events on stdout. The events are JSON Lines (JSONL): one JSON object per
+line.
 
 ```bash
 ginkgo run flow.py --agent-output
 ```
 
-Each line is one JSON event — graph registration, task started, cache hit, task
-completed, run completed, and so on. An agent can parse the stream to follow run
-progress, detect failures, and read task results without scraping a rendered
-terminal UI.
+An agent can read the stream to follow progress, spot failures and read task
+results. It doesn't need to read a terminal display. Each event names its type
+in its `event` field. The ones an agent most often needs are these:
 
-A run rejected before it starts — a missing workflow file, an unknown parameter,
-a graph that does not validate — prints a single `run_rejected` event, with the
-`error` message and its `error_type`, and no `run_id`: there is no run. The
-command exits non-zero, and the same message is on stderr.
+- `run_started`: the run began.
+- `task_cache_hit`: a task's result came from the cache.
+- `task_completed`: a task finished.
+- `task_failed`: a task failed.
+- `run_completed`: the run ended. Its `status` is `success`, `failed` or
+  `cancelled`.
 
-Add `--verbose` (`ginkgo run --agent-output --verbose`) to also include task log output
-in the event stream.
+To see every event type, run `ginkgo export events <run_id>` on a finished
+run. It prints the run's events in the same shape.
+
+If a run can't start, Ginkgo prints one `run_rejected` event. A missing
+workflow file, an unknown parameter, or a graph that does not validate all
+cause this. The event has an `error` message and an `error_type`. It has no
+`run_id`, because no run exists. The command exits non-zero, and writes the
+same message to stderr.
+
+Add `--verbose` (`ginkgo run --agent-output --verbose`) to include each task's
+log output in the stream.
 
 ## Inspection Commands
 
-These read-only commands give an agent — or a person — a stable view of a
-workflow and its runs:
+These commands let an agent, or a person, look at a workflow and its runs.
+They do not change the workflow or its results.
 
-- `ginkgo inspect workflow` — the resolved task graph, before running anything
-- `ginkgo runs show <run_id> --json` — the structure of a recorded run
-- `ginkgo history <task-name> --json` — every run of one task, across runs
-- `ginkgo query "<sql>" --json` — one read-only SQL statement over the ledger
-- `ginkgo export events <run_id>` — a finished run's events as JSONL
-- `ginkgo debug <run_id>` — task status, logs, and failure detail
-- `ginkgo why <path>` — the task and run that produced a file, and its inputs
-- `ginkgo report <run_id>` — a full HTML report of a run (see
-  [Reports](reports.md))
+- `ginkgo doctor --json` checks the workflow and its setup for problems.
+- `ginkgo run --dry-run` shows which tasks would run, and why, without running
+  any.
+- `ginkgo inspect workflow` shows the task graph, before anything runs.
+- `ginkgo runs show <run_id> --json` shows a recorded run.
+- `ginkgo history <task-name> --json` shows every run of one task.
+- `ginkgo cache explain <run_id> --json` shows why each task ran or came from
+  the cache.
+- `ginkgo debug <run_id>` shows task status, logs and failure detail.
+- `ginkgo why <path>` names the task and run that produced a file, and its
+  inputs.
+- `ginkgo export events <run_id>` prints a finished run's events as JSONL.
+- `ginkgo query "<sql>" --json` runs one read-only SQL statement over the
+  [provenance](concepts.md#glossary) database. The tables can change between releases (see
+  [Querying Provenance](querying-provenance.md)).
+- `ginkgo report <run_id>` builds an HTML report of a run (see
+  [Reports](reports.md)). It writes the report files under
+  `.ginkgo/reports/`.
 
 ## See Also
 
-- [CLI](cli.md) — the full command surface.
-- [Reports](reports.md) — rendering a run as HTML.
+- [CLI](cli.md): every command.
+- [Reports](reports.md): rendering a run as HTML.
