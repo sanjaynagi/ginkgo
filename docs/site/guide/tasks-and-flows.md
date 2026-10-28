@@ -240,44 +240,20 @@ existing branches form the outer loop, and the new values form the inner loop.
 
 ### How Branches Are Labelled
 
-Ginkgo labels each branch with its varying values, for example
-`train[sample=sample_a,lr=0.01]`. The same label appears in the live table,
-`--dry-run`, `runs show`, `debug` and the HTML report.
-`ginkgo history "de[batch]"` finds that branch. `cache ls` shows the label from
-the most recent run that recorded each cache entry.
+Each branch of a fan-out is labelled with the values that tell it apart. The
+label appears in the live table, `--dry-run`, `runs show`, `debug` and the HTML
+report, and commands that take a task name accept it, as in
+`ginkgo history 'align[sample_a]'` or `--rerun 'align[sample_a]'`.
 
-The rules are:
+- `.map()` uses the bare values, as in `align[sample_a]`.
+- `.product_map()` names each value, as in `train[sample=sample_a,lr=0.01]`.
+- Long values, and values that look like paths, are left out of the label.
+- If two tasks would end up with the same name, the second gets a number, as
+  in `align[2]`.
 
-- `.product_map()` labels every varying argument as `name=value`, as in
-  `train[sample=sample_a,lr=0.01]`.
-- `.map()` uses bare values. It takes the varying arguments in the order you
-  pass them, and adds one at a time until the labels tell every branch apart.
-  `.map(factor=["condition", "batch"])` gives `de[condition]` and `de[batch]`.
-  `.map(factor=["c", "c", "b"], adjust_for=["batch", "", "batch"])` needs both
-  arguments, and gives `de[c,batch]`, `de[c,]` and `de[b,batch]`. An empty
-  string still counts as a value.
-- `.map()` skips a value longer than 24 characters, or one that looks like a
-  path because it contains `/` or ends in a file extension. If no varying
-  argument has a usable value, the branch takes the label of the upstream
-  branch it was mapped over. If there is none, it takes the first varying
-  argument's value in full.
-- Chained fan-out joins the labels, as in `train[sample_a,lr=0.01,epochs=10]`.
-- Plain calls of one task, gathered in one list, are labelled as a `.map()`
-  over the arguments that differ. `[score(name=n) for n in ["ann", "bo"]]`
-  gives `score[ann]` and `score[bo]`. This works in a flow, and in the list a
-  dynamic task returns.
-- Any other call has no label, and is shown by its task name.
-
-When two tasks would be shown under the same name or label, the second and
-later ones take a number, in the order they run: `child`, `child[2]`,
-`child[3]`. Each runs after its upstream calls. In a chain such as
-`step(x=step(x=step(x=0)))`, the innermost call runs first and is `step`, and
-the one the flow returns is `step[3]`.
-
-A `.map()` label comes from the values. So if you change the `.map()`
-arguments, a label can move onto different inputs. `ginkgo history` shows the
-cache key of each row. Two rows with the same label and the same cache key ran
-the same code on the same inputs.
+A label comes from the values, so changing the `.map()` arguments can move a
+label onto different inputs. `ginkgo history` shows each row's cache key: check
+it before comparing two rows with the same label.
 
 ## Dynamic Graphs: Returning Tasks From A Task
 
