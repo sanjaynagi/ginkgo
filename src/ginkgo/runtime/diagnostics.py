@@ -589,9 +589,9 @@ def task_call_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagn
     pending, seen = list(task_defs), set()
     while pending:
         task_def = pending.pop(0)
-        if task_def.name in seen:
+        if id(task_def) in seen:
             continue
-        seen.add(task_def.name)
+        seen.add(id(task_def))
         try:
             lines, first_line = inspect.getsourcelines(task_def.fn)
             path = inspect.getsourcefile(task_def.fn)
