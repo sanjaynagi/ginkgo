@@ -20,7 +20,7 @@ task graphs, pixi environments, caching, provenance, measured resource usage, an
 resuming after a failure. The workflow is in
 [`examples/bacterial_gwas`](examples/bacterial_gwas).
 
-<p align="center"><a href="https://sanjaynagi.github.io/ginkgo/#watch"><img src="docs/site/_static/walkthrough-poster.jpg" alt="Watch the walkthrough: a bacterial GWAS run with Ginkgo"></a></p>
+<p align="center"><a href="https://sanjaynagi.github.io/ginkgo/#watch"><img src="docs/site/public/_static/walkthrough-poster.jpg" alt="Watch the walkthrough: a bacterial GWAS run with Ginkgo"></a></p>
 
 ## Documentation
 

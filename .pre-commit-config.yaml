@@ -5,7 +5,7 @@ repos:
     rev: v4.6.0
     hooks:
       - id: check-added-large-files
-        exclude: ^docs/site/_static/walkthrough\.(gif|mp4)$
+        exclude: ^docs/site/public/_static/walkthrough\.(gif|mp4)$
       - id: check-merge-conflict
       - id: end-of-file-fixer
       - id: trailing-whitespace

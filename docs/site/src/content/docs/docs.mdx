@@ -1,0 +1,84 @@
+---
+title: Overview
+tableOfContents: false
+description: Scientific workflows written in plain Python, with graphs that grow as they run.
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Ginkgo is a Python-native way to write scientific workflows. You write each
+task as a normal Python function. Ginkgo runs the tasks in the right order, runs
+them in parallel where it can, caches their results, and records what ran. That
+record is called [provenance](/ginkgo/guide/concepts/#glossary).
+
+Calling a task doesn't run it. The call returns an
+[expression](/ginkgo/guide/concepts/#glossary), which is a placeholder for the
+result. Ginkgo links the expressions into a graph of tasks, and checks the
+whole graph before anything runs. The graph can then grow while the workflow
+runs: a task can look at its inputs and add new tasks, such as one task per
+sample in a sample list.
+
+## Three Founding Principles
+
+<Card title="Plain Python" icon="seti:python">
+  You write workflows as ordinary Python functions, with `@flow` and
+  `@task()`. There is no separate workflow language to learn.
+</Card>
+<Card title="Graphs that grow" icon="random">
+  A task can look at its inputs and add new tasks. The workflow takes the
+  shape the data needs.
+</Card>
+<Card title="Built for agents" icon="rocket">
+  AI agents can write, run and inspect workflows as well as people can,
+  through plain Python, JSON output and a queryable record of every run.
+</Card>
+
+[Why Ginkgo](/ginkgo/motivation/) explains each principle.
+
+## See It Run
+
+<video controls muted playsinline preload="none" poster="/ginkgo/_static/walkthrough-poster.jpg" style="width: 100%; border-radius: 10px;">
+  <source src="/ginkgo/_static/walkthrough.mp4" type="video/mp4" />
+</video>
+
+The video runs a bacterial genome-wide association study (GWAS). It shows the
+graph growing as the workflow runs, tasks running in Pixi environments,
+caching, provenance, measured resource usage, and resuming after a failure.
+
+## A Minimal Workflow
+
+Save this as `flow.py`:
+
+```python
+from ginkgo import Out, file, flow, task
+
+
+@task()
+def write_text(message: str, output_path: Out[file]):
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(message)
+
+
+@flow
+def main():
+    return write_text(message="hello from ginkgo", output_path="hello.txt")
+```
+
+`Out[file]` marks `output_path` as a file the task writes. The flow returns
+the task call, and that tells Ginkgo what to run. Run it from the same
+directory:
+
+```bash
+ginkgo run flow.py
+```
+
+Ginkgo runs `write_text`, and `hello.txt` appears in the current directory.
+
+## Where To Go Next
+
+<CardGrid>
+  <LinkCard title="Installation" description="Install the ginkgo CLI." href="/ginkgo/getting-started/installation/" />
+  <LinkCard title="Quickstart" description="Run a real workflow in a few minutes." href="/ginkgo/getting-started/quickstart/" />
+  <LinkCard title="Core Concepts" description="Flows, tasks, expressions and the graph." href="/ginkgo/guide/concepts/" />
+  <LinkCard title="Tasks And Flows" description="Everything you write a workflow with." href="/ginkgo/guide/tasks-and-flows/" />
+</CardGrid>
