@@ -1,20 +1,38 @@
 # Remote Execution
 
-Ginkgo can dispatch individual tasks to cloud infrastructure while keeping the
-rest of the workflow running locally. This is useful when specific tasks need
-GPUs, large memory, or other resources not available on the local machine.
+Ginkgo can send single tasks to cloud machines while the rest of the workflow
+runs on your own machine. Use this when a task needs a GPU, a lot of memory, or
+anything else your machine does not have.
 
 ## How It Works
 
-Remote execution is opt-in at the task level. `remote=True` dispatches to the
-run's **default executor** — whichever one `--executor` names. `executor="name"`
-pins a task to one specific configured executor whatever the run default is. A
-`gpu=` requirement only goes remote when the local `--gpus` budget can't satisfy
-it — a `gpu=1` task still runs locally if `ginkgo run --gpus 1` (or higher) is
-passed, even with `--executor` set. Any route without a usable executor is a
-build error rather than a silent local run. The evaluator resolves cache hits
-before dispatching, so only tasks that genuinely need to execute are sent to the
-cloud.
+A few terms come first:
+
+- The **driver** is the `ginkgo run` process. It runs on your machine, schedules
+  the tasks, and submits remote tasks as jobs.
+- An **[executor](concepts.md)** is a configured place where tasks can run,
+  such as a Kubernetes cluster or GCP Batch. You name executors in
+  `ginkgo.toml`.
+- A **worker** is the process that runs one task on the executor. It runs inside
+  a Docker image you provide.
+
+Tasks run on your machine by default. A task goes to an executor in one of these
+ways:
+
+- `remote=True` sends the task to the run's **default executor**. That is the
+  executor `ginkgo run --executor <name>` names.
+- `executor="name"` sends the task to that executor, whatever the run's default
+  is.
+- `gpu=N` sends the task to the default executor only when the local `--gpus`
+  budget can't cover it. A `gpu=1` task still runs on your machine with
+  `ginkgo run --gpus 1`, even when `--executor` is set.
+
+If a task's route has no executor to use, the run fails before any task starts.
+Ginkgo never falls back to running it on your machine.
+
+Ginkgo checks the cache before it sends a task. So only tasks that really need
+to run reach the cloud, and a rerun skips the finished tasks without contacting
+it. Each retry of a remote task submits a new job.
 
 ```python
 from ginkgo import file, task
@@ -24,13 +42,13 @@ from ginkgo import file, task
 def preprocess(data_path: file) -> str:
     ...
 
-# Runs locally if --gpus covers the request; otherwise dispatched to the
+# Runs locally if --gpus covers the request; otherwise goes to the
 # run's default executor (requires --executor to be set).
 @task(threads=8, memory="16Gi", gpu=1)
 def train_model(dataset: str) -> str:
     ...
 
-# Explicitly remote, on whichever executor --executor names.
+# Always remote, on whichever executor --executor names.
 @task(remote=True, memory="32Gi")
 def large_computation(input_path: file) -> str:
     ...
@@ -41,7 +59,7 @@ def train(dataset: str) -> str:
     ...
 ```
 
-Run the workflow with a remote executor, naming a table from
+Run the workflow with a default executor, named after a table in
 `[remote.executors]`:
 
 ```bash
@@ -50,23 +68,27 @@ ginkgo run --executor gpu-k8s flow.py
 ginkgo run --executor cheap-batch flow.py
 ```
 
+A task's `threads`, `memory` and `gpu` become the resource request of its remote
+job. See [Resources And Scheduling](resources.md#where-a-task-runs) for how
+remote tasks count against the run's budgets.
+
 ## Installing an Executor
 
-Executors are plugins, not part of core. Each executor type comes from a
-separate distribution in the ginkgo repository:
+Executors are [plugins](concepts.md), not part of core Ginkgo. Each executor
+type comes from a separate package in the Ginkgo repository:
 
 | Type | Backend | Plugin |
 |------|---------|--------|
 | `k8s` | Kubernetes | `ginkgo-k8s` |
 | `batch` | GCP Batch | `ginkgo-gcp` |
 
-Install ginkgo with every first-party plugin:
+Install Ginkgo with every first-party plugin:
 
 ```bash
 uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
 ```
 
-or add only the one you need:
+Or add only the one you need:
 
 ```bash
 uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
@@ -80,16 +102,15 @@ no installed plugin provides fails before the run starts:
 [remote.executors.k8s]: No installed plugin provides executor type 'k8s'. Available: none. Install ginkgo-k8s to add it.
 ```
 
-The plugins are needed where `ginkgo run` submits jobs. A worker needs none,
-but the repository's image includes `ginkgo-k8s` so it can run a driver too
-(see [Worker Docker Image](#worker-docker-image)).
+Install the executor plugins where you run `ginkgo run`. A worker does not need
+them, because it runs tasks rather than submitting them.
 
 ## Named Executors
 
-Every executor is a named table under `[remote.executors]`, with a `type`
-saying which backend it uses. A workflow can span several backends — training
-on a GPU Kubernetes namespace, bulk work on a cheap batch queue — by naming
-each one and routing tasks to it by name:
+Every executor is a named table under `[remote.executors]`, with a `type` that
+says which backend it uses. A workflow can use several backends at once. For
+example, training on a GPU Kubernetes namespace, and bulk work on a cheap batch
+queue. Name each executor, and route tasks to it by name:
 
 ```toml
 # ginkgo.toml
@@ -104,87 +125,56 @@ type = "batch"
 project = "my-gcp-project"
 region = "europe-west2"
 image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
-
-[remote.executors.cheap-batch.code]
-mode = "sync"
-package = "my_workflow"
 ```
 
-Each table takes a `type`, the settings for that type (see
-[Supported Executors](#supported-executors)), and its own optional `code`
-sub-table for code sync. The name is yours to choose: `--executor k8s` needs a
-table named `k8s`, and there is no implicit executor per type.
+Each table takes a `type` and the settings for that type. You choose the name.
+`--executor k8s` needs a table named `k8s`, because there is no built-in
+executor for each type.
 
 - **`@task(executor="gpu-k8s")`** always runs on that executor. An unknown name
-  fails at build time, before any task runs, listing the configured names.
-- **`@task(remote=True)`** runs on the run's default executor — the one
-  `--executor` names — which keeps a workflow portable across sites: the same
-  file runs on Kubernetes at one site and GCP Batch at another with no code
-  change.
-- **`--executor local`** (the default) leaves the run with no default executor.
-  Tasks that name an executor still dispatch to it; `remote=True` tasks and
-  GPU overflow fail with a build error.
-- Executor clients are constructed on first dispatch, so a configured executor
-  no task reaches is never contacted.
+  fails before any task runs, and the error lists the configured names.
+- **`@task(remote=True)`** runs on the run's default executor. This keeps a
+  workflow portable. The same file can run on Kubernetes at one site and on GCP
+  Batch at another, with no code change.
+- **`--executor local`** is the default. It gives the run no default executor.
+  Tasks that name an executor still go to it. A `remote=True` task, or a GPU
+  task that doesn't fit `--gpus`, fails the run before any task starts.
 
-## Task Resource Declarations
+Ginkgo contacts an executor only when it sends the first task to it. So a
+configured executor that no task uses is never contacted.
 
-The `@task` decorator accepts resource hints that control scheduling locally
-and map to cloud resource requests remotely:
+## The Artifact Store
 
-| Parameter | Type | Effect |
-|-----------|------|--------|
-| `threads` | `int` | CPU cores (local scheduler budget + pod CPU request) |
-| `memory` | `str` | Memory in K8s notation, e.g. `"4Gi"` (local scheduler budget + pod memory request) |
-| `gpu` | `int` | GPU count (no local effect; maps to `nvidia.com/gpu` on K8s, accelerator on GCP Batch) |
-| `remote` | `bool` | Force dispatch to the run's default executor, even without GPU |
-| `executor` | `str` | Force dispatch to a named executor from `[remote.executors]` |
-
-## Supported Executors
-
-Each type below is configured as a `[remote.executors.<name>]` table, as many
-times over as you need. The examples name each executor after its type.
-
-### Kubernetes (`type = "k8s"`)
-
-Submits tasks as `batch/v1` Jobs on a Kubernetes cluster. It has run on GKE
-Autopilot; nothing in it is GKE-specific beyond the defaults noted below.
-Requires the `ginkgo-k8s` plugin.
+Every remote run needs an artifact store. This is a bucket where Ginkgo passes
+files and large results between the driver and its workers. Set it in
+`ginkgo.toml`:
 
 ```toml
-# ginkgo.toml
-[remote.executors.k8s]
-type = "k8s"
-image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
-namespace = "ginkgo"
-gpu_type = "nvidia-l4"        # GKE accelerator node selector (GPU tasks only)
-service_account = "ginkgo-worker"  # optional
-pull_policy = "IfNotPresent"       # optional
-ttl_seconds_after_finished = 300   # auto-cleanup delay (default 3600)
-node_selector = { "cloud.google.com/gke-nodepool" = "pool-1" }  # optional
-tolerations = []                   # optional, list of V1Toleration dicts
-ephemeral_storage = "10Gi"         # optional, per-pod scratch disk (default shown)
-backoff_limit = 0                  # optional, K8s-level pod retries (default shown; raise on Autopilot/spot)
-unschedulable_timeout = 300.0      # optional, seconds before an unschedulable pod fails
-gpu_node_selector_key = "cloud.google.com/gke-accelerator"  # optional, node label gpu_type sets (default shown)
-env = { GINKGO_REMOTE_OCI_AUTH = "oke_workload_identity" }  # optional, every worker container
-pod_annotations = { "karpenter.sh/do-not-disrupt" = "true" } # optional, every worker pod
-pod_labels = { team = "gpas" }     # optional, every worker pod and Job
-image_pull_secrets = ["ocir-pull"] # optional, Secrets for a private worker image
-fuse_annotations = {}              # optional; empty means none (default: GKE's gcsfuse annotation)
+[remote.artifacts]
+store = "gs://my-bucket/ginkgo-artifacts/"
 ```
 
-An unknown setting is an error, so a misspelt key fails at once rather than
-being ignored. A task placed on an executor needs `[remote.artifacts] store`
-set; without it the run stops before anything is submitted. When
-`GINKGO_PARENT_RUN_ID` is set in the driver's environment, every Job and pod
-carries a `ginkgo/parent-run-id` label with its value, so whatever launched the
-run can delete them by selector, for example with
-`kubectl delete jobs -l ginkgo/parent-run-id=<id>`.
+Without it, a task placed on an executor stops the run before anything is
+submitted.
 
-**OCI Object Storage auth.** The `oci://` store signs requests with an API key
-from `~/.oci/config` by default. In a pod on OKE, use Workload Identity
-instead, so no key is mounted:
+The store's URI scheme says which object store it uses. Each scheme comes from a
+plugin. See [Plugins](../getting-started/installation.md#plugins).
+
+| Scheme | Object store | Plugin |
+|--------|--------------|--------|
+| `s3://` | Amazon S3 | `ginkgo-aws` |
+| `gs://` | Google Cloud Storage | `ginkgo-gcp` |
+| `oci://` | Oracle Cloud Infrastructure (OCI) Object Storage | `ginkgo-oci` |
+
+The same schemes name remote input files, which a later section covers. This
+`oci://` is unrelated to the `oci://` container images in
+[Environments](environments.md#container-environments).
+
+### OCI Object Storage Sign-In
+
+Ginkgo signs `oci://` requests with the API key in `~/.oci/config` by default.
+This applies wherever Ginkgo reads `oci://`: the artifact store and remote
+inputs, on your machine and on a worker. Set another method in `[remote.oci]`:
 
 ```toml
 [remote.oci]
@@ -192,72 +182,79 @@ auth = "oke_workload_identity"   # or "api_key", "instance_principal", "resource
 region = "uk-london-1"
 ```
 
-`GINKGO_REMOTE_OCI_AUTH` and `GINKGO_REMOTE_OCI_REGION` override these, which
-is how a worker gets them: set them in the executor's `env`. Workflow code that
-reads or writes OCI Object Storage itself can use `ginkgo_oci.filesystem()`,
-which returns an `ocifs` filesystem signed the same way.
+The environment variables `GINKGO_REMOTE_OCI_AUTH` and
+`GINKGO_REMOTE_OCI_REGION` override these settings. A worker gets them that
+way: set them in the executor's `env`. Workload Identity lets a pod on Oracle
+Kubernetes Engine (OKE) sign requests as its Kubernetes service account, so no
+key is mounted. See [Running On OKE](remote-oke.md).
 
-**Setup with GKE Autopilot:**
+Workflow code that reads or writes OCI Object Storage itself can call
+`ginkgo_oci.filesystem()`. It returns an `ocifs` filesystem that signs requests
+the same way.
+
+## Supported Executors
+
+You can configure each type below as many `[remote.executors.<name>]` tables as
+you need. The examples name each executor after its type.
+
+### Kubernetes (`type = "k8s"`)
+
+The Kubernetes executor submits each task as a Kubernetes Job. A Job runs a pod
+until it finishes, and a pod is one or more running containers on the cluster.
+The executor has run on Google Kubernetes Engine (GKE) Autopilot. Nothing in it
+is specific to GKE, except some defaults in the table below. It needs the
+`ginkgo-k8s` plugin.
+
+```toml
+# ginkgo.toml
+[remote.executors.k8s]
+type = "k8s"
+image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
+namespace = "ginkgo"
+gpu_type = "nvidia-l4"        # GPU tasks only
+```
+
+`image` is required. These settings are optional:
+
+| Setting | Meaning | Default |
+|---------|---------|---------|
+| `namespace` | Namespace the Jobs run in | `"default"` |
+| `gpu_type` | GPU kind a GPU task asks for, as a node label value | none |
+| `gpu_node_selector_key` | Node label that `gpu_type` sets | `"cloud.google.com/gke-accelerator"` |
+| `service_account` | Kubernetes service account for worker pods | none |
+| `pull_policy` | Image pull policy | `"IfNotPresent"` |
+| `image_pull_secrets` | Secrets for a private worker image | none |
+| `node_selector` | Node labels a pod must match | none |
+| `tolerations` | Tolerations, as a list of tables | none |
+| `ephemeral_storage` | Scratch disk for each pod | `"10Gi"` |
+| `backoff_limit` | Times Kubernetes retries a failed pod. Raise it on Autopilot or spot nodes | `0` |
+| `ttl_seconds_after_finished` | Seconds before Kubernetes deletes a finished Job | `3600` |
+| `unschedulable_timeout` | Seconds before a pod that can't be placed fails | `300.0` |
+| `env` | Environment variables for every worker container | none |
+| `pod_annotations` | Annotations on every worker pod | none |
+| `pod_labels` | Labels on every worker pod and Job | none |
+| `fuse_image`, `fuse_privileged`, `fuse_annotations` | Settings for streamed inputs, covered later | |
+
+An unknown setting is an error, so a misspelt key fails at once.
+
+A task's `threads` sets the pod's CPU request and limit, and `memory` sets its
+memory request and limit. `gpu` sets an `nvidia.com/gpu` limit.
+
+To set up a GKE Autopilot cluster, a registry and an image, and to delete them
+when you are done, run the scripts in the Ginkgo repository:
 
 ```bash
 bash scripts/gke-setup.sh     # creates cluster, registry, builds/pushes image
 bash scripts/gke-teardown.sh   # deletes everything when done
 ```
 
-### Running on OKE
-
-On Oracle Kubernetes Engine the driver runs as a Job beside its workers, and
-both sign their OCI requests with Workload Identity, so no API key is mounted
-anywhere. `deploy/oke/` in the ginkgo repository holds a reference for each
-piece below. The `kind` job in CI runs this layout on a generic cluster with
-an S3 store; it has not yet run on OKE itself.
-
-1. **Identity.** Workload Identity needs an Enhanced cluster. Choose the
-   namespace and service account the driver and its workers run as, and let
-   them read the source buckets and read and write the artifact store. The
-   driver needs read access too: it checks each remote input's version or ETag
-   to build cache keys before anything is dispatched.
-
-    ```text
-    Allow any-user to read objects in compartment <compartment> where all {
-      request.principal.type = 'workload',
-      request.principal.cluster_id = '<cluster-ocid>',
-      request.principal.namespace = '<namespace>',
-      request.principal.service_account = '<service-account>' }
-    Allow any-user to manage objects in compartment <compartment> where all {
-      request.principal.type = 'workload',
-      request.principal.cluster_id = '<cluster-ocid>',
-      request.principal.namespace = '<namespace>',
-      request.principal.service_account = '<service-account>',
-      target.bucket.name = '<artifacts-bucket>' }
-    ```
-
-2. **Image.** Build the repository's `Dockerfile` and push it to OCIR as the
-   base, then build the workflow's image on it with `deploy/oke/Dockerfile`.
-   The driver and its workers run that one image, so a worker loads a task
-   from the same path the driver did. Create a pull secret for OCIR in the
-   namespace.
-3. **Permissions.** The driver creates a Job per task, lists the Job's pods,
-   reads their logs, and deletes Jobs when a run is cancelled. Apply
-   `deploy/oke/driver-role.yaml` and `driver-role-binding.yaml`. CI's kind
-   test runs its driver with only this Role.
-4. **Config.** `deploy/oke/ginkgo.toml` sets Workload Identity for the driver
-   (`[remote.oci]`) and for workers (the executor's `env`), the artifact
-   store, and an `oke` executor. Tasks run there when they name it,
-   `@task(executor="oke")`, or when the run makes it the default with
-   `--executor oke`.
-5. **Run.** `deploy/oke/driver-job.yaml` runs `ginkgo run` in the image.
-   It mounts a PVC at the project's `.ginkgo/`, so run history and the cache
-   outlive the pod and a rerun reuses earlier results. `.ginkgo/` holds a
-   SQLite database, so check that the volume supports its file locking, and
-   give each workflow its own `subPath`. Set `GINKGO_PARENT_RUN_ID` to the
-   caller's run ID, then delete a cancelled run's workers with
-   `kubectl delete jobs -l ginkgo/parent-run-id=<run-id>`.
+To run a whole workflow inside an OKE cluster, see
+[Running On OKE](remote-oke.md).
 
 ### GCP Batch (`type = "batch"`)
 
-Submits tasks as serverless GCP Batch jobs. No cluster to manage -- each job
-runs on Google-managed infrastructure and you pay only for compute time.
+GCP Batch runs each task as a job on machines that Google manages. There is no
+cluster to manage, and you pay only for compute time.
 
 ```toml
 # ginkgo.toml
@@ -272,54 +269,24 @@ max_run_duration = "3600s"         # optional, default 1 hour
 service_account = "sa@proj.iam"    # optional
 ```
 
-**Prerequisites:**
+`project` and `image` are required, and `region` defaults to `europe-west2`. A
+GPU task needs a `gpu_type`, from the task or from this table.
 
-```bash
-gcloud services enable batch.googleapis.com
-```
+Before you start:
 
-and the `ginkgo-gcp` plugin installed where you run `ginkgo` (see
-[Installing an Executor](#installing-an-executor)); it brings
-`google-cloud-batch` and `google-cloud-logging` with it.
+1. Install the `ginkgo-gcp` plugin where you run `ginkgo`, as
+   [Installing an Executor](#installing-an-executor) shows. It brings
+   `google-cloud-batch` and `google-cloud-logging` with it.
+2. Turn on the Batch API:
 
-## Code Sync
-
-By default, the worker image must already contain your workflow code ("baked"
-mode). For iterative development, **code-sync** mode bundles your workflow
-package as a tarball, uploads it to cloud storage, and each worker pod
-downloads and extracts it before executing the task.
-
-```toml
-# ginkgo.toml — add alongside your executor config
-
-[remote.executors.k8s.code]   # [remote.executors.<name>.code]
-mode = "sync"
-package = "my_workflow"  # directory name of your Python package
-exclude = ["*.ipynb_checkpoints", "notebooks/scratch/"]  # optional extra excludes
-
-[remote.artifacts]
-store = "gs://my-bucket/ginkgo-artifacts/"
-```
-
-The code bundle is content-addressed (SHA-256). Unchanged code is not
-re-uploaded, and executors sharing a package and exclude list share one
-bundle rather than uploading it twice.
-
-Code config is read from the executor that runs the task, and only from it.
-A `[remote.executors.k8s.code]` table does not apply to an executor named
-`batch` — give each
-executor that needs code sync its own `code` table. When one executor syncs
-code and an executor the run dispatches to has no `code` table, the run warns
-before starting, since tasks there would silently use the code baked into the
-image.
+   ```bash
+   gcloud services enable batch.googleapis.com
+   ```
 
 ## Worker Docker Image
 
-The worker image needs Python 3.11+, ginkgo, and the plugin for each object
-store it reads. It needs no executor plugin, since a worker runs tasks rather
-than submitting them. The repository's `Dockerfile` adds `ginkgo-k8s` anyway,
-so the same image can run a driver on Kubernetes with the command
-`ginkgo run <workflow>`:
+A worker image needs Python 3.11 or later, Ginkgo, and the plugin for each
+object store the worker reads. The repository's `Dockerfile` builds one:
 
 ```dockerfile
 FROM python:3.11-slim
@@ -336,35 +303,24 @@ COPY plugins/ginkgo-oci/ plugins/ginkgo-oci/
 COPY plugins/ginkgo-k8s/ plugins/ginkgo-k8s/
 RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci \
     ./plugins/ginkgo-k8s
-
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]
 ```
 
-Build for Linux (required for cloud VMs, even when building on macOS):
+This image also has `ginkgo-k8s`, so it can run the driver inside a cluster
+too, as [Running On OKE](remote-oke.md) does.
+
+Build it for Linux, because cloud machines run Linux. This holds even when you
+build on macOS:
 
 ```bash
 docker buildx build --platform linux/amd64 -t <image-uri> --push .
 ```
 
-### What a worker needs to read
+### Adding Workflow Dependencies To The Image
 
-A worker reads and writes object storage itself: the artifact store
-(`[remote.artifacts] store`) for `file`/`folder` values and large results,
-and, in `direct` mode (the default), the bucket of every remote input it is
-given. Grant the worker's identity (the Kubernetes service account, or the
-GCP Batch service account) read access to those source buckets as well as
-read/write access to the artifact store. A worker without it fails on the
-input it cannot read, naming the URI. To keep source-bucket access on the
-driver alone, set `[remote.access] default = "stage"`, or `access="stage"`
-on the input; the driver then downloads it and hands it over through the
-artifact store.
-
-### Adding workflow dependencies on top of the base image
-
-Most workflows need extra Python packages (PyTorch, scikit-learn, biopython,
-...) that should not live in ginkgo's base image. The recommended pattern is
-to build a **project-specific image** that extends the ginkgo worker base with
-your `[project].dependencies` from `pyproject.toml`:
+Most workflows need extra Python packages, such as PyTorch, scikit-learn or
+biopython. Keep them out of Ginkgo's base image. Build a project image on top of
+the base image instead, with your workflow's dependencies:
 
 ```dockerfile
 FROM <registry>/ginkgo/worker:v2
@@ -372,12 +328,15 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 ```
 
-A helper script, `scripts/build-worker.sh` in the ginkgo repo, automates
-this. It reads `[project].dependencies` from your project's `pyproject.toml`,
-content-addresses the image tag by hashing the dependency list (so it rebuilds
-only when deps change), skips the build if the image already exists in the
-registry, and prints the exact `image = "..."` line to paste into
-`ginkgo.toml`:
+Here `requirements.txt` lists your workflow's dependencies. The helper script
+`scripts/build-worker.sh` in the Ginkgo repository builds this image for you.
+It does these steps:
+
+1. Reads `[project].dependencies` from your project's `pyproject.toml`.
+2. Names the image tag after a hash of the dependency list and the base image,
+   so it rebuilds only when either changes.
+3. Skips the build if the registry already has that image.
+4. Prints the `image = "..."` line to paste into `ginkgo.toml`.
 
 ```bash
 export GINKGO_REGISTRY=europe-west2-docker.pkg.dev/my-project/ginkgo
@@ -385,86 +344,87 @@ cp <ginkgo-repo>/scripts/build-worker.sh ./scripts/build-worker.sh
 ./scripts/build-worker.sh
 ```
 
-The script is registry-agnostic — it works against Artifact Registry, GHCR,
-ECR, Docker Hub, Harbor, and any other OCI-compliant registry (uses
-`docker manifest inspect` for the existence check, not cloud-specific CLIs).
+The script works with any registry that follows the Open Container Initiative
+standard, for example Artifact Registry, GHCR, ECR, Docker Hub or Harbor. It
+checks for an image with `docker manifest inspect`, not with a cloud-specific
+tool.
 
-Optional overrides via env var:
-`GINKGO_BASE_IMAGE` (default: `${GINKGO_REGISTRY}/worker:v2`),
-`GINKGO_REPO_NAME` (default: `<project-dir>-worker`).
+Two environment variables change its defaults. `GINKGO_BASE_IMAGE` sets the base
+image (default `${GINKGO_REGISTRY}/worker:v2`). `GINKGO_REPO_NAME` sets the image
+name (default `<project-dir>-worker`).
 
-## CLI Feedback
+## Code Sync
 
-The CLI distinguishes remote task states:
+By default, the worker image must already contain your workflow code. This is
+**baked** mode: your code is copied into the image when you build it.
 
-| Symbol | State | Meaning |
-|--------|-------|---------|
-| `⚙` | preparing env | Environment (image/deps) being prepared |
-| `↓` | staging | Remote inputs downloading/hydrating before the task starts |
-| `↑` | submitted | Job created, waiting for cloud resources |
-| `◐` | running | Pod/container is actively executing |
+For iterative development, use **sync** mode instead. Ginkgo packs your workflow
+package into a tarball and uploads it to the artifact store. Each worker
+downloads and unpacks it before it runs the task. Add a `code` table to the
+executor:
 
-The header line also reflects the executor:
-
+```toml
+# ginkgo.toml, alongside your executor config
+[remote.executors.k8s.code]   # [remote.executors.<name>.code]
+mode = "sync"
+package = "my_workflow"  # directory name of your Python package
+exclude = ["*.ipynb_checkpoints", "notebooks/scratch/"]  # optional extra excludes
 ```
-☁️  Running on Kubernetes (CPU 8.1%  RSS 258 MiB  Procs 4)
-☁️  Running on GCP Batch (CPU 8.1%  RSS 258 MiB  Procs 4)
-```
 
-## Provenance
+Ginkgo names the bundle after a hash of its contents, so unchanged code is not
+uploaded again. Executors with the same package and exclude list share one
+bundle.
 
-Remote task execution is fully tracked in run provenance:
+Give each executor that needs code sync its own `code` table. A
+`[remote.executors.k8s.code]` table does not apply to an executor named
+`batch`. If one executor syncs code and another that the run uses does not,
+Ginkgo warns before the run starts. Tasks on the second executor would use the
+older code baked into its image.
 
-- `execution_backend` records where a task ran: `local`, or the executor's
-  name (`gpu-k8s`, `k8s`, ...)
-- `remote_job_id` records the K8s job name or GCP Batch job ID
-- `resources` records the CPU, memory, and GPU requests
-- Pod logs are captured at task completion
+## Remote Inputs
 
-All of this is visible in `ginkgo runs show <run_id>`.
+A remote input is a file in an object store, such as
+`remote_file("gs://my-bucket/sample.bam")`. It reaches a worker in one of these
+modes:
 
-## Tips
+- **`direct`** (the default). The worker downloads the whole object before the
+  task starts. The worker needs read access to the bucket.
+- **`stage`**. The driver downloads the object and passes it to the worker
+  through the artifact store. Use it for workers that can't read the source
+  bucket.
+- **`fuse`**. The worker mounts the bucket as a folder and reads the object as
+  the task asks for it. This uses FUSE (Filesystem in Userspace). It helps with
+  sparse reads, such as BAM index lookups or reading a few Parquet columns. It
+  also helps a task start without waiting for a multi-GB download.
 
-- **Cache still works.** The evaluator checks cache before dispatching, so
-  re-runs skip completed tasks without touching the cloud.
-- **Local tasks stay local.** Only tasks with `gpu > 0`, `remote=True`, or an
-  `executor=` name are sent to an executor. Everything else runs on your
-  machine.
-- **Retries work.** Each retry submits a new cloud job. The existing retry
-  mechanism applies unchanged.
-- **Device portability.** Use `device = "auto"` in your config so PyTorch
-  picks MPS on Mac, CUDA on cloud GPUs, or CPU as fallback.
+Each object-store plugin brings its own FUSE driver: mountpoint-s3 for `s3://`,
+gcsfuse for `gs://` and rclone for `oci://`.
 
-## Remote-Input Access: Stage or Stream
+Ginkgo reads a remote input the same way wherever it sits in a task's
+arguments. That includes inside a list, tuple or dict, under any annotation or
+none. It also makes no difference whether the workflow named the input or an
+upstream task returned it.
 
-Remote inputs reach a worker in one of three modes. Each scheme comes from a
-plugin, which provides both the object store and its FUSE driver: `s3://` from
-`ginkgo-aws` (mountpoint-s3), `gs://` from `ginkgo-gcp` (gcsfuse) and `oci://`
-from `ginkgo-oci` (rclone). See
-[Plugins](../getting-started/installation.md#plugins).
+### What A Worker Needs To Read
 
-**Direct** (default) has the worker download the whole object from its
-source before the task starts, so the worker needs read access to the
-bucket. **Stage** has the driver download it instead and hand it over
-through the artifact store, for workers that cannot read the source.
-**Fuse** mounts the bucket in-container and streams reads
-on demand — useful for sparse random access (BAM index lookups, Parquet
-column projection) or whole-file reads that would otherwise block on a
-multi-GB download.
+A worker reads and writes object storage itself. It reads and writes the
+artifact store, for `file` and `folder` values and large results. In `direct`
+mode, it also reads the bucket of every remote input it gets.
 
-A remote input is read the same way wherever it sits in a task's arguments: in
-a list, tuple or dict, under any annotation or none, and whether the workflow
-named it or an upstream task returned it. Each input is fetched as a job of its
-own, `[remote] staging_jobs` at a time across the run (`GINKGO_STAGING_JOBS`
-overrides it; the default is 16, whatever `-j` is), so a task with thousands of
-inputs doesn't wait for them one by one. A pod downloads its `direct` inputs the
-same number at a time.
+Grant the worker's identity read access to those source buckets, and read and
+write access to the artifact store. The identity is the Kubernetes service
+account, or the GCP Batch service account. A worker without access fails on the
+input it can't read, and the error names the URI.
 
-Declare the mode per input:
+To keep source-bucket access on the driver alone, use `stage` mode. Set
+`[remote.access] default = "stage"`, or `access="stage"` on the input.
+
+### Choosing The Mode
+
+Set the mode on an input, or as a default for a task:
 
 ```python
-from ginkgo import remote_file, task
-from ginkgo.core.types import file
+from ginkgo import file, remote_file, task
 
 @task(remote=True, remote_input_access="fuse", streaming_compatible=True)
 def count_reads(bam: file) -> int:
@@ -476,27 +436,43 @@ bam = remote_file("gs://my-bucket/sample.bam", access="fuse")
 count_reads(bam=bam)
 ```
 
-The access policy resolves layered: `ref.access` → task decorator
-(`remote_input_access=`) → pattern match → size-based auto-enable heuristic
-→ config default.
-
-Config defaults live under `[remote.access]`:
+Set defaults for the whole run under `[remote.access]`:
 
 ```toml
 [remote.access]
 default = "direct"         # or "stage", "fuse"
-auto_fuse = false          # enable the size-based auto-fuse heuristic
-auto_fuse_min_bytes = 2147483648  # 2GiB default; threshold for auto_fuse
-default_for_pattern = [    # optional, first match wins over `default`
+auto_fuse = false          # true: use fuse for large inputs
+auto_fuse_min_bytes = 2147483648  # 2 GiB default; the size auto_fuse starts at
+default_for_pattern = [    # optional; the first matching glob wins
     { glob = "*.bam", access = "fuse" },
 ]
 ```
 
-### Worker image for streaming
+A pattern matches the object's key or its full URI. For each input, Ginkgo uses
+the first of these that sets a mode:
 
-Fuse mode needs a worker image with `gcsfuse` / `mountpoint-s3` /
-`rclone` and (on most clouds) a privileged container. The repo ships
-`Dockerfile.worker-fuse`:
+1. `access=` on the input.
+2. `remote_input_access=` on the task.
+3. The first `default_for_pattern` entry that matches.
+4. `auto_fuse`, for an input at least `auto_fuse_min_bytes` in size.
+5. `[remote.access] default`.
+
+Set `streaming_compatible=False` on a task that can't read a file as a stream.
+Ginkgo then never uses `fuse` for it, and downloads its inputs instead.
+
+### Downloading Many Inputs
+
+Ginkgo fetches remote inputs 16 at a time across the run, whatever `-j` is. So
+a task with thousands of inputs doesn't wait for them one by one. Change
+the number with `[remote] staging_jobs`, or with the `GINKGO_STAGING_JOBS`
+environment variable, which wins. A worker downloads its `direct` inputs the
+same number at a time.
+
+### A Worker Image For Streaming
+
+`fuse` mode needs a worker image with `gcsfuse`, `mountpoint-s3` or `rclone`.
+On most clouds it also needs a privileged container. The repository has
+`Dockerfile.worker-fuse` for this:
 
 ```bash
 docker buildx build --platform linux/amd64 \
@@ -504,37 +480,37 @@ docker buildx build --platform linux/amd64 \
   -t <registry>/ginkgo/worker-fuse:latest --push .
 ```
 
-Wire it in `ginkgo.toml`:
+Set it in the executor table. Ginkgo uses `fuse_image` instead of `image` for a
+task that needs `fuse`:
 
 ```toml
-[remote.executors.k8s]   # any executor table
+[remote.executors.k8s]
 type = "k8s"
-image = "<registry>/ginkgo/worker:v2"            # regular workloads
-fuse_image = "<registry>/ginkgo/worker-fuse:latest"  # swapped in when a
-                                                     # task needs fuse
+image = "<registry>/ginkgo/worker:v2"                # regular tasks
+fuse_image = "<registry>/ginkgo/worker-fuse:latest"  # tasks that need fuse
 fuse_privileged = true   # required on EKS, GKE Standard, GCP Batch
 fuse_annotations = { "gke-gcsfuse/volumes" = "true" }  # optional override
 ```
 
-Any pod that needs fuse gets the `gke-gcsfuse/volumes: "true"` annotation
-by default, regardless of `fuse_privileged` — override it with
-`fuse_annotations` if you're not on GKE. GKE Autopilot rejects privileged
-pods; use the gcsfuse CSI sidecar by keeping `fuse_privileged = false`, and
-the default annotation wires the sidecar in automatically.
+On Kubernetes, a pod that needs `fuse` gets the annotation
+`gke-gcsfuse/volumes: "true"` by default. On GKE, this annotation adds the
+gcsfuse sidecar container to the pod. On GKE Autopilot, keep
+`fuse_privileged = false`, because Autopilot rejects privileged pods. The
+sidecar then mounts the bucket. On a cluster that is not GKE, set
+`fuse_annotations` to the annotations your cluster needs, or to `{}` for none.
 
-### When fuse falls back
+### When Fuse Falls Back
 
-If a mount fails (driver missing, `/dev/fuse` not accessible, permission
-denied) the worker falls back to staged download and the CLI shows a
-`TaskNotice`:
+If a mount fails, the worker downloads that input instead, and the CLI shows a
+notice. A mount can fail because the driver is missing, `/dev/fuse` is not
+available, or permission is denied:
 
 ```
 ⚠ FUSE access fell back to staging: gcsfuse failed: rc=1 ...
 ```
 
-The fallback reason is also recorded in
-the task's `remote_input_access.fallback_reason`, so silent
-downgrades can't hide.
+The task's provenance also records the reason, in
+`remote_input_access.fallback_reason`. So a fallback is never silent.
 
 ### Diagnostics
 
@@ -542,5 +518,36 @@ downgrades can't hide.
 ginkgo doctor
 ```
 
-reports available FUSE drivers, `/dev/fuse` presence, and whether
-`fuse_image` is configured.
+`ginkgo doctor` reports which FUSE drivers are available, whether `/dev/fuse`
+exists, and whether `fuse_image` is set.
+
+## CLI Feedback
+
+The CLI shows these states for a remote task:
+
+| Symbol | State | Meaning |
+|--------|-------|---------|
+| `⚙` | preparing env | The environment (image or dependencies) is being prepared |
+| `↓` | staging | Remote inputs are downloading before the task starts |
+| `↑` | submitted | The job exists and is waiting for cloud resources |
+| `◐` | running | The pod or container is running the task |
+
+The header line also shows the executor:
+
+```
+☁️  Running on Kubernetes (CPU 8.1%  RSS 258 MiB  Procs 4)
+☁️  Running on GCP Batch (CPU 8.1%  RSS 258 MiB  Procs 4)
+```
+
+## Provenance
+
+The [provenance](concepts.md) database records these facts for each remote
+task:
+
+- `execution_backend`: where the task ran. This is `local`, or the executor's
+  name, such as `gpu-k8s` or `k8s`.
+- `remote_job_id`: the Kubernetes Job name or the GCP Batch job ID.
+- `resources`: the CPU, memory and GPU requests.
+- The pod logs, captured when the task finishes.
+
+`ginkgo runs show <run_id>` shows all of this.
