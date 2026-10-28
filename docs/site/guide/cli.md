@@ -354,6 +354,15 @@ it yields a literal, an f-string, or arithmetic over names, as in
 Without the warning the task fails only when the run reaches it. The check is
 best-effort: a `return` of a call or a variable is never flagged.
 
+Two mistakes in a task body are errors, which `ginkgo doctor` reports and
+`ginkgo run`, with or without `--dry-run`, refuses before any task runs: a
+positional task call (`positional_task_call`), and a task with `Out[...]`
+parameters and no return annotation whose body returns task calls
+(`inferred_return_task_call`). Tasks those bodies call are checked too. The
+check is best-effort: it sees only calls of a name or dotted name, such as
+`gwas(...)` or `stats.gwas(...)`, that resolves to a task. A task call stored
+in a variable and then returned is not caught.
+
 A mistyped flag is refused with the closest flag the command or the workflow's
 declared parameters accept, as in `--jbos: did you mean --jobs?`.
 
@@ -503,6 +512,12 @@ When more than one thing moved, `details` lists every reason in a fixed order â€
 
 A component's `status` is `changed`, or `added` / `removed` for a parameter that
 appeared or went away.
+
+A changed input whose old and new values are both short scalars (a number, a
+bool, or a string of up to 40 characters) also carries `prior_value` and
+`current_value`, and the text shows them as JSON: `inputs.min_cases (changed: 10 â†’ 3)`,
+with strings quoted. Files, folders, secrets and longer values show their digests,
+and so does a plain string naming a file, which is tracked by the file's contents.
 
 Some tasks get a summary `reason` on its own, with no `components`: a task that
 did not re-run reports `all_inputs_match`; one named by `--rerun` reports

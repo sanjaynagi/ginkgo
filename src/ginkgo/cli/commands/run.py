@@ -78,6 +78,7 @@ from ginkgo.runtime.diagnostics import (
     path_like_str_param_diagnostics,
     spaced_command_path_diagnostics,
     static_notice_diagnostics,
+    task_call_diagnostics,
     unreachable_call_diagnostics,
 )
 from ginkgo.runtime.dry_run import build_dry_run_plan
@@ -488,6 +489,15 @@ def run_workflow(
         )
     try:
         evaluator.validate_graph()
+        # A wrong task call in a task body fails only when the run reaches that
+        # task, so it is refused now, before any earlier task has run.
+        call_errors = task_call_diagnostics(
+            task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
+        )
+        if call_errors:
+            raise GinkgoError(
+                "\n".join(f"{error.location}: {error.message}" for error in call_errors)
+            )
     except Exception:
         if plan_reports_dropped:
             _print_dropped_calls(diagnostics=dropped_calls)

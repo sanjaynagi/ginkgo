@@ -18,6 +18,7 @@ from ginkgo.runtime.diagnostics import (
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
     spaced_command_path_diagnostics,
+    task_call_diagnostics,
 )
 from ginkgo.runtime.graph import TaskGraph
 from ginkgo.runtime.placement import Placement
@@ -242,3 +243,20 @@ def main():
 )
 def test_every_diagnostic_code_is_snake_case(exc: Exception, code: str) -> None:
     assert _diagnostic_code_and_suggestion(exc=exc, message=str(exc))[0] == code
+
+
+def _with_an_empty_cell():
+    """Return a task whose closure cell is never filled."""
+
+    @task()
+    def reads_later(x: int) -> int:
+        return later(x)
+
+    return reads_later
+    later = greet  # noqa: F841 - never reached, so the cell stays empty
+
+
+def test_task_call_check_skips_tasks_it_cannot_read() -> None:
+    """An empty closure cell or a lambda task must not abort doctor or run."""
+    lambda_task = task()(lambda x: greet(x))
+    assert task_call_diagnostics(task_defs=[_with_an_empty_cell(), lambda_task]) == []

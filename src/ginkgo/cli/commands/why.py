@@ -35,9 +35,12 @@ def _render_why(rich_console, *, provenance: Provenance, as_json: bool) -> int:
     if provenance.path:
         rich_console.print(f"Path: {escape(provenance.path)}", soft_wrap=True)
     rich_console.print(f"Artifact ID: [bold]{provenance.artifact_id}[/]")
-    rich_console.print(
-        f"Produced by: {provenance.task_name or '-'} [dim]({provenance.task_id})[/]"
-    )
+    producer = f"{provenance.task_name or '-'} [dim]({provenance.task_id})[/]"
+    if provenance.containing_output:
+        inside = escape(provenance.containing_output)
+        rich_console.print(f"Inside {inside}, produced by {producer}", soft_wrap=True)
+    else:
+        rich_console.print(f"Produced by: {producer}")
     rich_console.print(f"Run: {provenance.run_id or '-'}")
     rich_console.print(f"Cache key: {provenance.cache_key or '-'}")
     if not provenance.inputs:
