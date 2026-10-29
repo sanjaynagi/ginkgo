@@ -2,7 +2,10 @@ name: Release
 
 # Pushing a v* tag builds ginkgo-workflow and every first-party plugin and
 # publishes them to PyPI. They are released together at the same version, so
-# the tag must match every package's version.
+# the tag must match every package's version. Each package publishes from an
+# environment of its own, pypi-<package>, because PyPI lets only one new
+# project register a given repository, workflow and environment as its
+# trusted publisher.
 on:
   push:
     tags:
@@ -34,11 +37,11 @@ jobs:
 
       - name: Build
         run: |
-          uv build --out-dir dist .
-          for plugin in plugins/*/; do uv build --out-dir dist "$plugin"; done
+          uv build --out-dir dist/ginkgo-workflow .
+          for plugin in plugins/*/; do uv build --out-dir "dist/$(basename "$plugin")" "$plugin"; done
 
       - name: Check the distributions
-        run: uvx twine check --strict dist/*
+        run: uvx twine check --strict dist/*/*
 
       - uses: actions/upload-artifact@v4
         with:
@@ -48,7 +51,20 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - ginkgo-workflow
+          - ginkgo-aws
+          - ginkgo-gcp
+          - ginkgo-k8s
+          - ginkgo-notebook
+          - ginkgo-oci
+          - ginkgo-pixi
+          - ginkgo-report
+          - ginkgo-slack
+    environment: pypi-${{ matrix.package }}
     permissions:
       id-token: write
     steps:
@@ -58,3 +74,5 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/${{ matrix.package }}/
