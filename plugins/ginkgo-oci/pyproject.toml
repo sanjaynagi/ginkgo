@@ -3,9 +3,10 @@ name = "ginkgo-oci"
 version = "0.4.0"
 description = "Oracle Cloud integrations for ginkgo: the oci:// object store and rclone driver"
 requires-python = ">= 3.11"
+readme = { text = "# ginkgo-oci\n\nOracle Cloud integrations for ginkgo: the oci:// object store and rclone driver.\n\nA plugin for [Ginkgo](https://sanjaynagi.github.io/ginkgo/). Install it with `pip install \"ginkgo-workflow[oci]\"`, and see the [plugins guide](https://sanjaynagi.github.io/ginkgo/getting-started/installation/#plugins).", content-type = "text/markdown" }
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.4.0",
+    "ginkgo-workflow==0.4.0",
     "ocifs>=1.3.2",
 ]
 

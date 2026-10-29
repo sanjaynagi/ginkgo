@@ -10,4 +10,4 @@ python = ">=3.11"
 pytest = ">=8.0"
 
 [pypi-dependencies]
-ginkgo = { path = "../../../../..", editable = true }
+ginkgo-workflow = { path = "../../../../..", editable = true }

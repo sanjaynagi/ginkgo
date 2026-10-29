@@ -1,0 +1,60 @@
+name: Release
+
+# Pushing a v* tag builds ginkgo-workflow and every first-party plugin and
+# publishes them to PyPI. They are released together at the same version, so
+# the tag must match every package's version.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Check the tag matches every package's version
+        run: |
+          python3 - <<'EOF'
+          import glob, os, sys, tomllib
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          paths = ["pyproject.toml", *sorted(glob.glob("plugins/*/pyproject.toml"))]
+          wrong = []
+          for path in paths:
+              with open(path, "rb") as f:
+                  version = tomllib.load(f)["project"]["version"]
+              if version != tag:
+                  wrong.append(f"{path}: {version}")
+          if wrong:
+              sys.exit(f"Tag v{tag} does not match: " + ", ".join(wrong))
+          EOF
+
+      - name: Build
+        run: |
+          uv build --out-dir dist .
+          for plugin in plugins/*/; do uv build --out-dir dist "$plugin"; done
+
+      - name: Check the distributions
+        run: uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

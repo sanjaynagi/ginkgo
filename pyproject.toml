@@ -1,8 +1,9 @@
 [project]
-name = "ginkgo"
+name = "ginkgo-workflow"
 version = "0.4.0"
 description = "A dynamic, reproducible workflow orchestrator for scientific and data workflows"
 requires-python = ">= 3.11"
+readme = "README.md"
 license = "Apache-2.0"
 dependencies = [
     "blake3>=1.0.0",
@@ -15,18 +16,32 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Every first-party plugin. They are not on PyPI, so each is referenced at the
-# same git ref as ginkgo itself; plugins pin the exact core version.
+# First-party plugins, one extra each. They are released with core at the same
+# version, and each plugin pins the exact core version.
+aws = ["ginkgo-aws==0.4.0"]
+k8s = ["ginkgo-k8s==0.4.0"]
+gcp = ["ginkgo-gcp==0.4.0"]
+notebook = ["ginkgo-notebook==0.4.0"]
+oci = ["ginkgo-oci==0.4.0"]
+pixi = ["ginkgo-pixi==0.4.0"]
+report = ["ginkgo-report==0.4.0"]
+slack = ["ginkgo-slack==0.4.0"]
 all = [
-    "ginkgo-aws @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-aws",
-    "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s",
-    "ginkgo-gcp @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-gcp",
-    "ginkgo-notebook @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-notebook",
-    "ginkgo-oci @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-oci",
-    "ginkgo-pixi @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-pixi",
-    "ginkgo-report @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-report",
-    "ginkgo-slack @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-slack",
+    "ginkgo-aws==0.4.0",
+    "ginkgo-k8s==0.4.0",
+    "ginkgo-gcp==0.4.0",
+    "ginkgo-notebook==0.4.0",
+    "ginkgo-oci==0.4.0",
+    "ginkgo-pixi==0.4.0",
+    "ginkgo-report==0.4.0",
+    "ginkgo-slack==0.4.0",
 ]
+
+[project.urls]
+Homepage = "https://sanjaynagi.github.io/ginkgo/"
+Documentation = "https://sanjaynagi.github.io/ginkgo/docs/"
+Repository = "https://github.com/sanjaynagi/ginkgo"
+Issues = "https://github.com/sanjaynagi/ginkgo/issues"
 
 [project.scripts]
 ginkgo = "ginkgo.cli:main"
@@ -38,20 +53,15 @@ requires = ["hatchling"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/ginkgo"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
-[tool.hatch.build]
-include = [
-    "src/ginkgo/templates/**",
-]
+[tool.hatch.build.targets.sdist]
+include = ["src/ginkgo", "README.md", "LICENSE"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [tool.pixi.pypi-dependencies]
-ginkgo = { path = ".", editable = true }
+ginkgo-workflow = { path = ".", editable = true }
 numpy = ">=2.0"
 ortools = ">=9.11"
 pandas = ">=2.0"

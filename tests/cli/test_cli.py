@@ -747,11 +747,16 @@ class TestCliInit:
             for name in set(manifest["dependencies"]) | set(manifest["pypi-dependencies"])
         }
         assert manifest["workspace"]["name"] == "demo-project"
-        assert {"ginkgo", "ginkgo_pixi"} <= declared
-        assert _third_party_imports(project_dir=project) <= declared
+        assert {"ginkgo_workflow", "ginkgo_pixi"} <= declared
+        # The ginkgo import comes from the ginkgo-workflow distribution.
+        imports = {
+            "ginkgo_workflow" if name == "ginkgo" else name
+            for name in _third_party_imports(project_dir=project)
+        }
+        assert imports <= declared
         assert manifest["tasks"]["run"] == "ginkgo run"
         # #284: the manifest tracks a branch; the committed pixi.lock pins the commit.
-        requirement = manifest["pypi-dependencies"]["ginkgo"]
+        requirement = manifest["pypi-dependencies"]["ginkgo-workflow"]
         assert (requirement["git"], requirement["branch"]) == (GINKGO_REPO_URL, GINKGO_BRANCH)
         assert "rev" not in requirement and "tag" not in requirement
         patterns = {

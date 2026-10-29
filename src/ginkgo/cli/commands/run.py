@@ -115,7 +115,7 @@ def _ginkgo_version() -> str | None:
     from importlib.metadata import PackageNotFoundError, version
 
     try:
-        return version("ginkgo")
+        return version("ginkgo-workflow")
     except PackageNotFoundError:  # pragma: no cover - editable installs always resolve
         return None
 

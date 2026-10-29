@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/ginkgo-logo.png" alt="Ginkgo" width="360"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/docs/ginkgo-logo.png" alt="Ginkgo" width="360"></p>
 
 <p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality"></a> <a href="https://sanjaynagi.github.io/ginkgo/"><img src="https://img.shields.io/badge/docs-sanjaynagi.github.io%2Fginkgo-0e7c7e.svg" alt="Documentation"></a></p>
 
@@ -18,9 +18,9 @@ Ginkgo is a scientific workflow orchestrator built for the 21st century.
 A bacterial GWAS, from 60 assemblies to resistance-associated unitigs: dynamic
 task graphs, pixi environments, caching, provenance, measured resource usage, and
 resuming after a failure. The workflow is in
-[`examples/bacterial_gwas`](examples/bacterial_gwas).
+[`examples/bacterial_gwas`](https://github.com/sanjaynagi/ginkgo/tree/main/examples/bacterial_gwas).
 
-<p align="center"><a href="https://sanjaynagi.github.io/ginkgo/#watch"><img src="docs/site/public/_static/walkthrough-poster.jpg" alt="Watch the walkthrough: a bacterial GWAS run with Ginkgo"></a></p>
+<p align="center"><a href="https://sanjaynagi.github.io/ginkgo/#watch"><img src="https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/docs/site/public/_static/walkthrough-poster.jpg" alt="Watch the walkthrough: a bacterial GWAS run with Ginkgo"></a></p>
 
 ## Documentation
 
@@ -40,14 +40,19 @@ to be installed:
 curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh | sh
 ```
 
-This installs `ginkgo` from `main` into an isolated environment via `uv tool
-install`. Re-run the same command to upgrade.
+This installs the `ginkgo-workflow` package from PyPI into an isolated
+environment via `uv tool install`. Re-run the same command to upgrade. The
+package is `ginkgo-workflow`; the command and the import are both `ginkgo`:
+
+```bash
+pip install ginkgo-workflow
+```
 
 ### Plugins
 
 The installer gives you core plus `ginkgo-pixi`, which runs tasks' bare
 `env="name"` Pixi environments. Other optional integrations ship as separate
-plugins in this repository:
+plugins in this repository, each one an extra of `ginkgo-workflow`:
 
 - `ginkgo-aws`: the `s3://` object store and the mountpoint-s3 FUSE driver
 - `ginkgo-gcp`: the `gs://` object store, the gcsfuse FUSE driver and the GCP
@@ -62,14 +67,13 @@ plugins in this repository:
 To install ginkgo with every first-party plugin:
 
 ```bash
-uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
+uv tool install --force "ginkgo-workflow[all]"
 ```
 
-Or add a single plugin alongside core:
+Or name only the plugins you want:
 
 ```bash
-uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
-  --with "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s"
+uv tool install --force "ginkgo-workflow[pixi,k8s]"
 ```
 
 `ginkgo plugins` lists what is installed. A `remote_file()` or
@@ -198,12 +202,12 @@ whole module it is defined in — so editing any one of them invalidates the
 cached results of all three. That is what makes an edit to module-level state
 such as `POPULATIONS` invalidate the tasks that read it. Once a step is
 expensive enough that you mind re-running it, give it its own module; see the
-[caching guide](docs/site/guide/caching-and-provenance.md).
+[caching guide](https://sanjaynagi.github.io/ginkgo/guide/caching-and-provenance/).
 
 ## Canonical Example
 
 The docs and examples are centered on
-[`examples/bioinfo`](examples/bioinfo), which demonstrates:
+[`examples/bioinfo`](https://github.com/sanjaynagi/ginkgo/tree/main/examples/bioinfo), which demonstrates:
 
 - Pixi-backed shell tasks
 - a container-backed shell task
@@ -223,7 +227,7 @@ To confirm a workflow is wired correctly, run `ginkgo run --dry-run`: it preview
 the plan for the entrypoint you actually run without executing any task body.
 Validation workflows a project keeps under `tests/workflows/` are workflows too,
 so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
-[CLI guide](docs/site/guide/cli.md).
+[CLI guide](https://sanjaynagi.github.io/ginkgo/guide/cli/).
 
 - `ginkgo run`
 - `ginkgo doctor`
@@ -244,7 +248,7 @@ so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
 - `ginkgo env ls` (from the `ginkgo-pixi` plugin)
 - `ginkgo db` (`db path`, `db check`, `db prune`, `db vacuum`)
 
-For full details on every command, see the [CLI reference](docs/site/guide/cli.md).
+For full details on every command, see the [CLI reference](https://sanjaynagi.github.io/ginkgo/guide/cli/).
 
 ## Repository Layout
 

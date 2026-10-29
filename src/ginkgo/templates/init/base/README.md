@@ -29,7 +29,7 @@ generated directories (`.pixi/`, `.ginkgo/`, `results/`, `logs/`) and
 deliberately does not ignore the lock. A clone without the lock re-resolves
 `main` and may get a different ginkgo than the one your results came from.
 
-Use `pixi update ginkgo` to move to the current `main`, or swap `branch` for
+Use `pixi update ginkgo-workflow` to move to the current `main`, or swap `branch` for
 `rev`/`tag` in `pixi.toml` to hold this project on one ginkgo permanently.
 
 Python tasks cannot declare `env=` — they execute in the same interpreter as the

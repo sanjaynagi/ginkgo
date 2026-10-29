@@ -31,7 +31,7 @@ Ginkgo is installed:
 - **As a uv tool** (the
   [curl installer](/ginkgo/getting-started/installation/#quick-install-curl)):
   rerun `uv tool install --force` with `--with pandas`, and keep every plugin
-  you had in the `--with` list. [Plugins](/ginkgo/getting-started/installation/#plugins)
+  you had as extras. [Plugins](/ginkgo/getting-started/installation/#plugins)
   shows the command.
 - **From a Pixi environment:** add the package to its `pixi.toml` and run
   `pixi install`.

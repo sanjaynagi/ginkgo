@@ -3,9 +3,10 @@ name = "ginkgo-slack"
 version = "0.4.0"
 description = "Slack run notifications for ginkgo"
 requires-python = ">= 3.11"
+readme = { text = "# ginkgo-slack\n\nSlack run notifications for ginkgo.\n\nA plugin for [Ginkgo](https://sanjaynagi.github.io/ginkgo/). Install it with `pip install \"ginkgo-workflow[slack]\"`, and see the [plugins guide](https://sanjaynagi.github.io/ginkgo/getting-started/installation/#plugins).", content-type = "text/markdown" }
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.4.0",
+    "ginkgo-workflow==0.4.0",
 ]
 
 [project.entry-points."ginkgo.plugins"]

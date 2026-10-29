@@ -3,9 +3,10 @@ name = "ginkgo-k8s"
 version = "0.4.0"
 description = "Kubernetes executor for ginkgo: run tasks as batch/v1 Jobs"
 requires-python = ">= 3.11"
+readme = { text = "# ginkgo-k8s\n\nKubernetes executor for ginkgo: run tasks as batch/v1 Jobs.\n\nA plugin for [Ginkgo](https://sanjaynagi.github.io/ginkgo/). Install it with `pip install \"ginkgo-workflow[k8s]\"`, and see the [plugins guide](https://sanjaynagi.github.io/ginkgo/getting-started/installation/#plugins).", content-type = "text/markdown" }
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.4.0",
+    "ginkgo-workflow==0.4.0",
     "kubernetes>=28.1",
 ]
 
