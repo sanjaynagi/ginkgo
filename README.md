@@ -13,6 +13,15 @@ Ginkgo is a scientific workflow orchestrator built for the 21st century.
 - cloud-native I/O — stream inputs directly from S3, GCS, or Azure and stage outputs back, without local copies
 - deep observability — provenance and CLI tooling
 
+## See it in action
+
+A bacterial GWAS, from 60 assemblies to resistance-associated unitigs: dynamic
+task graphs, pixi environments, caching, provenance, measured resource usage, and
+resuming after a failure. The workflow is in
+[`examples/bacterial_gwas`](examples/bacterial_gwas).
+
+<p align="center"><a href="https://sanjaynagi.github.io/ginkgo/#watch">Watch the walkthrough: a bacterial GWAS run with Ginkgo</a></p>
+
 ## Documentation
 
 📖 **[sanjaynagi.github.io/ginkgo](https://sanjaynagi.github.io/ginkgo/)**
