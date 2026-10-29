@@ -17,8 +17,15 @@ Install the `ginkgo` command in one line. This needs
 curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh | sh
 ```
 
-This installs `ginkgo` and its Pixi plugin from the `main` branch, into an
-isolated environment that uv manages. Run the same command again to upgrade.
+This installs Ginkgo and its Pixi plugin from PyPI, into an isolated
+environment that uv manages. Run the same command again to upgrade.
+
+The package on PyPI is `ginkgo-workflow`. The command and the Python import are
+both `ginkgo`. To install it into an existing environment instead:
+
+```bash
+pip install ginkgo-workflow
+```
 
 The installer gives you only the `ginkgo` command. The example workflows are
 not included. To get them, clone the repository:
@@ -38,8 +45,9 @@ ginkgo --help
 ## Plugins
 
 Extra features come as [plugins](/ginkgo/guide/concepts/#glossary), which you
-install alongside the `ginkgo` package. The curl installer includes
-`ginkgo-pixi`.
+install as extras of `ginkgo-workflow`. Each extra is named after its plugin
+without the `ginkgo-` prefix, so `ginkgo-k8s` is `ginkgo-workflow[k8s]`. The
+curl installer includes `ginkgo-pixi`.
 
 | Plugin | Adds |
 |---|---|
@@ -57,16 +65,14 @@ The `oci://` container images in a task's `env=` need no plugin.
 To install Ginkgo with every first-party plugin:
 
 ```bash
-uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
+uv tool install --force "ginkgo-workflow[all]"
 ```
 
-To add a single plugin, list it with `--with`. Keep `ginkgo-pixi` in the list,
-because `--force` replaces the plugins the tool had before:
+To pick plugins, list them as extras. Keep `pixi` in the list, because
+`--force` replaces the plugins the tool had before:
 
 ```bash
-uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
-  --with "ginkgo-pixi @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-pixi" \
-  --with "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s"
+uv tool install --force "ginkgo-workflow[pixi,k8s]"
 ```
 
 `ginkgo plugins` lists what is installed. If a task needs a missing plugin,

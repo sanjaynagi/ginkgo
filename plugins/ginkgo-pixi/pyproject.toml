@@ -3,9 +3,10 @@ name = "ginkgo-pixi"
 version = "0.4.0"
 description = "Pixi environments for ginkgo tasks, and the ginkgo env command"
 requires-python = ">= 3.11"
+readme = { text = "# ginkgo-pixi\n\nPixi environments for ginkgo tasks, and the ginkgo env command.\n\nA plugin for [Ginkgo](https://sanjaynagi.github.io/ginkgo/). Install it with `pip install \"ginkgo-workflow[pixi]\"`, and see the [plugins guide](https://sanjaynagi.github.io/ginkgo/getting-started/installation/#plugins).", content-type = "text/markdown" }
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.4.0",
+    "ginkgo-workflow==0.4.0",
 ]
 
 [project.entry-points."ginkgo.plugins"]

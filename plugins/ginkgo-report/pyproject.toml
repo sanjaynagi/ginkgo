@@ -3,9 +3,10 @@ name = "ginkgo-report"
 version = "0.4.0"
 description = "Static HTML run reports for ginkgo: the ginkgo report command"
 requires-python = ">= 3.11"
+readme = { text = "# ginkgo-report\n\nStatic HTML run reports for ginkgo: the ginkgo report command.\n\nA plugin for [Ginkgo](https://sanjaynagi.github.io/ginkgo/). Install it with `pip install \"ginkgo-workflow[report]\"`, and see the [plugins guide](https://sanjaynagi.github.io/ginkgo/getting-started/installation/#plugins).", content-type = "text/markdown" }
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.4.0",
+    "ginkgo-workflow==0.4.0",
     "jinja2>=3.1",
 ]
 

@@ -186,9 +186,10 @@ tasks, Slack notifications and HTML reports are not in core. They live in separa
 | `plugins/ginkgo-report` | `ginkgo_report` | `report = "ginkgo_report:PLUGIN"` | `CliCommand` `report` | `jinja2` |
 | `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |
 
-Each pins the exact core version (`ginkgo==0.4.0`). They are not on PyPI: core's
-`all` extra installs every one through git direct references at the same ref as
-core.
+Each is published to PyPI alongside core (`ginkgo-workflow`), at the same
+version, and pins the exact core version (`ginkgo-workflow==0.4.0`). Core's
+`all` extra installs every one, and an extra per plugin
+(`ginkgo-workflow[k8s]`) installs one.
 
 An executor plugin implements `RemoteExecutor` / `RemoteJobHandle`
 (`runtime/remote_executor.py`) and runs tasks by starting

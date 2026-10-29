@@ -22,7 +22,7 @@ WORKDIR /app
 # Install ginkgo, the object-store plugins (s3://, gs://, oci://) and the
 # Kubernetes executor, which only a driver uses. ginkgo-gcp brings the Batch
 # client libraries along with the gs:// store.
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 COPY src/ginkgo/ src/ginkgo/
 COPY plugins/ginkgo-aws/ plugins/ginkgo-aws/
 COPY plugins/ginkgo-gcp/ plugins/ginkgo-gcp/

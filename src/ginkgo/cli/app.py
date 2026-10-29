@@ -245,7 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _ginkgo_version() -> str:
     """Return the installed ginkgo package version, or ``"unknown"`` if unavailable."""
     try:
-        return importlib.metadata.version("ginkgo")
+        return importlib.metadata.version("ginkgo-workflow")
     except importlib.metadata.PackageNotFoundError:  # pragma: no cover
         return "unknown"
 

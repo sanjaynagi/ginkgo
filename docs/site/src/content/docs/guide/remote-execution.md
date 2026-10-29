@@ -50,14 +50,13 @@ type comes from a separate package in the Ginkgo repository:
 Install Ginkgo with every first-party plugin:
 
 ```bash
-uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
+uv tool install --force "ginkgo-workflow[all]"
 ```
 
 Or add only the one you need:
 
 ```bash
-uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
-  --with "ginkgo-gcp @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-gcp"
+uv tool install --force "ginkgo-workflow[pixi,gcp]"
 ```
 
 `ginkgo plugins` lists the installed executor types. A config that names a type

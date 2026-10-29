@@ -11,4 +11,5 @@ tests
 benchmarks
 examples
 *.md
+!README.md
 .vscode

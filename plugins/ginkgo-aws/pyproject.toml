@@ -3,9 +3,10 @@ name = "ginkgo-aws"
 version = "0.4.0"
 description = "AWS integrations for ginkgo: the s3:// object store and mountpoint-s3 driver"
 requires-python = ">= 3.11"
+readme = { text = "# ginkgo-aws\n\nAWS integrations for ginkgo: the s3:// object store and mountpoint-s3 driver.\n\nA plugin for [Ginkgo](https://sanjaynagi.github.io/ginkgo/). Install it with `pip install \"ginkgo-workflow[aws]\"`, and see the [plugins guide](https://sanjaynagi.github.io/ginkgo/getting-started/installation/#plugins).", content-type = "text/markdown" }
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.4.0",
+    "ginkgo-workflow==0.4.0",
     "s3fs>=2024.10.0",
 ]
 

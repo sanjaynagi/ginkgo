@@ -10,7 +10,7 @@
 
 set -eu
 
-REPO_URL="git+https://github.com/sanjaynagi/ginkgo.git@main"
+PACKAGE="ginkgo-workflow[pixi]"
 
 info() { printf '\033[1;32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$1" >&2; }
@@ -24,12 +24,11 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
-# Install (or reinstall) the ginkgo CLI into its own isolated environment,
-# with ginkgo-pixi: tasks' bare env= names (and `ginkgo init`'s scaffold) need
-# it, and it brings no dependencies beyond the pixi binary.
-PIXI_PLUGIN_URL="ginkgo-pixi @ ${REPO_URL}#subdirectory=plugins/ginkgo-pixi"
-info "Installing ginkgo from ${REPO_URL}"
-uv tool install --force "$REPO_URL" --with "$PIXI_PLUGIN_URL"
+# Install (or reinstall) the ginkgo CLI from PyPI into its own isolated
+# environment, with ginkgo-pixi: tasks' bare env= names (and `ginkgo init`'s
+# scaffold) need it, and it brings no dependencies beyond the pixi binary.
+info "Installing ${PACKAGE} from PyPI"
+uv tool install --force "$PACKAGE"
 
 # Pixi is needed at runtime for pixi-backed task environments; warn if absent.
 if ! command -v pixi >/dev/null 2>&1; then

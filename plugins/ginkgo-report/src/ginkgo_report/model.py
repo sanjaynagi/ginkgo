@@ -1152,7 +1152,7 @@ def _resolve_ginkgo_version(provided: str | None) -> str:
     try:
         from importlib.metadata import PackageNotFoundError, version
 
-        return version("ginkgo")
+        return version("ginkgo-workflow")
     except (ImportError, PackageNotFoundError):  # pragma: no cover
         return "unknown"
     except Exception:  # pragma: no cover
