@@ -28,6 +28,15 @@ def empty(tmp_path: Path):
         yield q
 
 
+def test_a_ledger_without_its_schema_yet_reads_as_empty(tmp_path: Path) -> None:
+    layout = WorkspaceLayout(root=tmp_path / ".ginkgo")
+    Path(layout.db).parent.mkdir(parents=True)
+    Path(layout.db).touch()
+
+    with query.open(layout, missing_ok=True) as q:
+        assert q.runs() == []
+
+
 def test_a_select_returns_columns_and_rows(reader) -> None:
     run_id = reader.runs()[0].run_id
 
