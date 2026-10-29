@@ -33,7 +33,7 @@ from ginkgo.runtime.caching.index import ENTRY_COLUMNS, PRIOR_ENTRY_WINDOW, Cach
 from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.rundir import runs_without_ledger_warning
-from ginkgo.store.errors import StoreError
+from ginkgo.store.errors import StoreError, UninitializedStoreError
 from ginkgo.store.protocol import ProvenanceStore, event_fields
 from ginkgo.store.sqlite import MEMORY, open_store
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -1420,7 +1420,8 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     missing_ok : bool, optional
         Read an empty ledger instead of raising when the workspace has none.
         What a listing wants: a workspace nobody has run anything in holds no
-        runs, and that is an answer rather than a failure. The
+        runs, and that is an answer rather than a failure. So is a ledger a
+        first run has created but not yet given a schema. The
         empty ledger is in memory, so a read path still never creates a file.
 
     Returns
@@ -1440,13 +1441,24 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     if readonly and not path.is_file():
         if not missing_ok:
             raise FileNotFoundError(f"No runs found: there is no provenance database at {path}")
-        # Write-mode, because the schema has to exist before anything can be
-        # selected from it — then closed to writes, so an empty workspace
-        # refuses the same statements a populated one does.
-        empty = open_store(MEMORY)
-        empty.restrict_to_reads()
-        return Query(empty, layout=layout)
-    return Query(open_store(path, readonly=readonly), layout=layout)
+        return _empty_query(layout)
+    try:
+        return Query(open_store(path, readonly=readonly), layout=layout)
+    except UninitializedStoreError:
+        # A first run has created the file but not yet its schema.
+        if not missing_ok:
+            raise
+        return _empty_query(layout)
+
+
+def _empty_query(layout: WorkspaceLayout) -> Query:
+    """A ``Query`` over an empty in-memory ledger, for a workspace with no runs."""
+    # Write-mode, because the schema has to exist before anything can be
+    # selected from it — then closed to writes, so an empty workspace
+    # refuses the same statements a populated one does.
+    empty = open_store(MEMORY)
+    empty.restrict_to_reads()
+    return Query(empty, layout=layout)
 
 
 def _mentions(statement: str, table: str) -> bool:
