@@ -4,12 +4,12 @@
    Light, crisp, contemporary. One confident teal accent, drawn straight from
    the ginkgo-leaf logo mark.
 
-   Display  Space Grotesk — technical grotesk with a quirky lowercase "g"
+   Display  Outfit — light, rounded geometric, echoing the ginkgo wordmark
    Body     Hanken Grotesk — clean modern sans
    Mono     IBM Plex Mono — engineered monospace
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500..700&family=Hanken+Grotesk:ital,wght@0,300..700;1,400..600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300..500&family=Hanken+Grotesk:ital,wght@0,300..700;1,400..600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 
 /* ─── Design tokens ───────────────────────────────────────────────────────── */
@@ -44,7 +44,7 @@
 
   /* Font stacks */
   --gk-font-body:    "Hanken Grotesk", -apple-system, "Segoe UI", system-ui, sans-serif;
-  --gk-font-display: "Space Grotesk", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --gk-font-display: "Outfit", -apple-system, "Segoe UI", system-ui, sans-serif;
   --gk-font-mono:    "IBM Plex Mono", "SFMono-Regular", "Consolas", monospace;
 
   /* Furo also reads these names directly */
@@ -165,7 +165,7 @@ body {
 .sidebar-brand-text {
   font-family: var(--gk-font-display);
   font-size: 1.4rem;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: -0.01em;
   color: var(--gk-ink-950) !important;
 }
@@ -235,10 +235,10 @@ h1, h2,
 
 .content h1 {
   font-family: var(--gk-font-display);
-  font-size: clamp(2.3rem, 4.6vw, 3.4rem);
-  font-weight: 600;
-  line-height: 1.08;
-  letter-spacing: -0.015em;
+  font-size: clamp(2.6rem, 5vw, 3.6rem);
+  font-weight: 300;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
   color: var(--gk-ink-950);
   margin-bottom: 0.6rem;
 }
@@ -246,21 +246,21 @@ h1, h2,
 .content h2 {
   font-family: var(--gk-font-display);
   font-size: clamp(1.5rem, 3vw, 2rem);
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-weight: 400;
+  letter-spacing: -0.015em;
   color: var(--gk-ink-950);
   margin-top: 2.8rem;
   padding-top: 1.4rem;
   border-top: 1px solid var(--gk-line);
 }
 
-/* h3–h6 — clean sans, deep green for a quiet botanical tie */
+/* h3–h6 — the display face at a firmer weight, deep green for a quiet botanical tie */
 .content h3,
 .content h4,
 .content h5,
 .content h6 {
-  font-family: var(--gk-font-body);
-  font-weight: 700;
+  font-family: var(--gk-font-display);
+  font-weight: 500;
   letter-spacing: -0.005em;
 }
 
@@ -278,7 +278,7 @@ h1, h2,
 
 .content p,
 .content li {
-  font-size: 1.02rem;
+  font-size: 1.04rem;
   line-height: 1.72;
   color: var(--gk-ink-700);
 }

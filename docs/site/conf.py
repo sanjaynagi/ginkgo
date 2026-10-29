@@ -21,9 +21,14 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
+
+# The site root is the home page, docs/site/_extra/index.html, copied in by
+# html_extra_path below. The docs' own front page is docs.md, served at /docs/.
+root_doc = "docs"
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
-# Static redirect stubs, copied verbatim into the build output. The
+# Static files copied verbatim into the build output: the home page, and
+# redirect stubs. The
 # Resources guide's title ("Resources And Scheduling") slugifies to
 # guide/resources-and-scheduling/, which 404s since the page actually lives
 # at guide/resources/ -- a title-derived guess visitors are likely to make.
