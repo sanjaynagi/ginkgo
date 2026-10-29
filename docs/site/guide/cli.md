@@ -1,216 +1,204 @@
 # CLI
 
-The `ginkgo` CLI is the main operator surface for authoring, validating,
-running, and inspecting workflows. Every command operates on the project rooted
-at the nearest `ginkgo.toml`.
+The `ginkgo` command is how you create, check, run and inspect workflows. Each
+command works on one project. The project root is the nearest directory, at or
+above the one you run from, that holds a `ginkgo.toml`. Without one, the
+directory you run from is the root, so run from the top of the project.
 
 ## Command Overview
 
+Run `ginkgo <command> --help` for every flag of a command.
+
+### Create And Run
+
 `ginkgo init`
-: Scaffold a new project &mdash; `ginkgo.toml`, a starter `workflow/flow.py`, the
-  canonical layout, and a `skills/` directory for coding agents. See
-  [Working with Coding Agents](coding-agents.md).
+: Create a new project: a `ginkgo.toml`, a starter `workflow/flow.py`, and a
+  `skills/` folder for coding agents. See
+  [Working With Coding Agents](coding-agents.md).
 
 `ginkgo run`
-: Build the expression tree, validate the workflow, evaluate ready tasks, and
-  record the run. The command you reach for most.
+: Check a workflow, run its tasks, and record the run.
 
-`ginkgo inspect`
-: Inspect the resolved task graph of a workflow without running it
-  (`inspect workflow`).
-
-`ginkgo runs`
-: List recorded runs (`runs ls`) and show one of them (`runs show <run_id>`),
-  including the pages its tasks rendered, such as marimo notebooks.
-  See [Querying Provenance](querying-provenance.md). `runs status <run_id>`
-  prints a run's status, task counts, failures and outputs, even while it runs;
-  `runs wait <run_id> [--timeout SECONDS]` waits for it to finish and exits as
-  `ginkgo run` would have: 0 if it succeeded, 1 if it failed or was rejected
-  before it started, 3 if its only failures were ones its failure policy let
-  pass, 130 if it was cancelled. It exits 124 at the timeout, 130 on Ctrl-C
-  (the run carries on), and 2 for an unknown run ID. Both take `--json`. See
-  [Working with Coding Agents](coding-agents.md#long-runs).
-
-`ginkgo history`
-: Show every run of one task, with its status, duration, and cache key. Runs in
-  which the task never started, such as one that skipped it after an upstream
-  failure, are left out; `--include-unstarted` lists them too. `--limit` counts
-  runs, so every branch of a fan-out in a listed run is shown.
-
-`ginkgo query`
-: Run one read-only SQL statement against the provenance database.
-  `ginkgo query --schema` prints the tables and their columns.
-
-`ginkgo export`
-: Write a run's ledger events as JSONL (`export events`) or its manifest as
-  YAML (`export manifest`).
-
-`ginkgo debug`
-: Inspect a finished run &mdash; task status, timing, logs, and cache decisions
-  &mdash; from its recorded run directory.
+### Check
 
 `ginkgo doctor`
-: Check a workflow and its environment for problems: missing environments,
-  unresolved secrets, malformed config.
+: Check a workflow and its setup for problems, such as missing environments,
+  unresolved secrets or bad config.
 
-`ginkgo report`
-: Provided by the `ginkgo-report` plugin. Render a finished run as an HTML report. By default this produces a
-  directory bundle (`index.html` plus an `assets/` folder); pass
-  `--single-file` for a single self-contained HTML file. See
-  [Reports](reports.md).
-
-`ginkgo cache`
-: List, clear, and prune cached task results. See
-  [Caching and Provenance](caching-and-provenance.md).
-
-`ginkgo why`
-: Name the task and run that produced a materialized file (or an artifact id),
-  its cache key, and the inputs that task recorded. Add `--json` for a
-  structured payload. See [Querying Provenance](querying-provenance.md).
-
-`ginkgo plugins`
-: List the installed plugins and what each contributes: executor types,
-  object stores, FUSE drivers, secret backends, run notifications, task kinds,
-  environments and CLI commands (the bare-name environment shows as
-  `(bare name)`). The Kubernetes and GCP Batch executors, Slack notifications
-  and `ginkgo report` appear only once their plugins are installed. Add `--json` for a structured payload.
-
-`ginkgo env`
-: Provided by the `ginkgo-pixi` plugin. List and reset the Pixi environments
-  backing shell tasks. See [Environments](environments.md).
+`ginkgo inspect workflow`
+: Show a workflow's task graph without running it.
 
 `ginkgo secrets`
-: List and validate the secret references a workflow resolves at run time.
+: List and check the secret references a workflow uses.
+
+### Inspect Runs
+
+`ginkgo runs`
+: List recorded runs (`runs ls`) and show one of them (`runs show`),
+  including the pages its tasks rendered. See
+  [Querying Provenance](querying-provenance.md). `runs status` and
+  `runs wait` follow a run started with `--detach`. See
+  [Running In The Background](#running-in-the-background).
+
+`ginkgo history`
+: Show every run of one task, with its status, duration and cache key.
+
+`ginkgo debug`
+: Show a finished run's task status, timing, logs and cache decisions.
+
+`ginkgo why`
+: Name the task and run that produced a file, and the inputs that task
+  recorded.
+
+`ginkgo query`
+: Run one read-only SQL statement against the [provenance](concepts.md#glossary) database.
+
+`ginkgo export`
+: Write a run's events as JSON Lines (JSONL), or its manifest as YAML.
+
+`ginkgo report` (plugin)
+: Render a finished run as an HTML report. See [Reports](reports.md).
+
+### Maintain
+
+`ginkgo cache`
+: List, explain, clear and prune cached task results.
 
 `ginkgo db`
-: Maintain the provenance database. `db path` prints where it is,
-  `db check` reports anything the database and the files
-  beside it disagree about (`--verify` also rehashes every stored artifact,
-  `--fix` first removes what nothing can use any more),
-  `db prune` deletes history you no longer need, and
-  `db vacuum` gives the freed space back. See
-  [Caching and Provenance](caching-and-provenance.md).
+: Check and shrink the provenance database. See
+  [Maintaining The Database And Cache](maintenance.md).
 
-Run `ginkgo <command> --help` for the full flag set of any command.
+### Configure
+
+`ginkgo plugins`
+: List the installed plugins and what each one adds.
+
+`ginkgo env` (plugin)
+: List and reset the Pixi environments behind shell tasks. See
+  [Environments](environments.md).
+
+A command marked (plugin) appears once its [plugin](concepts.md#glossary) is installed: `ginkgo report`
+comes from `ginkgo-report`, and `ginkgo env` from `ginkgo-pixi`. See
+[Plugins](../getting-started/installation.md#plugins).
+
+## A Typical Loop
+
+1. Write or change tasks in code.
+2. Check the workflow with `ginkgo doctor`.
+3. Check the plan with `ginkgo run --dry-run`.
+4. Run it with `ginkgo run`.
+5. Look into failures with `ginkgo debug`, and into cache reuse with
+   `ginkgo cache explain`.
+
+Ginkgo caches finished tasks. When you change a later stage of a workflow,
+only the tasks it affects run again. Earlier tasks come from the cache.
 
 ## Running Workflows
 
 ```bash
-ginkgo run flow.py
-ginkgo run flow.py --jobs 8 --cores 32 --memory 64
-ginkgo run flow.py --dry-run
+ginkgo run                                          # runs workflow/flow.py
+ginkgo run workflow/qc_flow.py
+ginkgo run workflow/flow.py --jobs 8 --cores 32 --memory 64
 ```
 
-`ginkgo run` builds the expression tree, validates the workflow, evaluates ready
-tasks subject to the `--jobs`, `--cores`, `--memory`, and `--gpus` budgets,
-and writes run history under `.ginkgo/runs/`. Run it from a project root with
-no path argument and Ginkgo discovers the canonical `workflow/flow.py`
-entrypoint. Output then names the workflow by its discovered path, marked
-`(auto-discovered)`, so you can see which file is running.
+`ginkgo run` builds the workflow's task graph, checks it, runs the tasks, and
+records the run in `.ginkgo/`. With no path, it runs `workflow/flow.py` in the
+project root.
 
-Commands may be run from any directory inside the project. Ginkgo locates the
-root — the nearest enclosing `ginkgo.toml` — and works from there, so
-`.ginkgo/`, config files, and task environments resolve identically wherever
-you invoke from. Paths you pass on the command line are relative to where you
-stand; a task's own relative output paths are relative to the project root.
-`ginkgo.toml` is optional: without one, the directory you run from is the
-project root, so run from the top of the project.
+You can run a command from any directory inside the project. A path you pass
+on the command line is relative to the directory you run from. A relative
+output path in a task's arguments is relative to the project root.
 
-A workflow file imports its own modules from three import roots: the file's
-own directory, the parent of the package it sits in (when its directory has
-an `__init__.py`), and the project root. So `exp/flow.py` can import
-`exp/tasks.py` either as `tasks` or as `exp.tasks`, and a test workflow under
-`tests/workflows/` can import the project's own package.
+A workflow file can import modules from its own directory and from the project
+root.
 
-Repeated `--resource name=value` flags budget any custom resource dimensions
-tasks declare (e.g. `--resource api_calls=10`) — see
-[Custom Resource Dimensions](resources.md#custom-resource-dimensions).
+### Budgets
 
-`--dry-run` resolves the graph and computes cache keys without executing any
-task body &mdash; the fastest way to confirm a workflow is wired correctly.
-On a warm cache it goes further: with cached upstream outputs in hand, each
-downstream task's arguments run through the same input validation the real
-run applies, so a kind/path mismatch (say, a DataFrame wired into a
-`file` parameter) is reported under **Problems** before anything runs &mdash;
-and the command exits non-zero, so a scripted preflight fails loudly. A
-first, cold dry run cannot resolve those arguments and so makes no claim.
-**Problems** also lists, cold or warm, any task whose `threads` or `memory`
-exceeds the run's `--cores` or `--memory` (or a custom resource its
-`--resource` budget), with the message the run would fail with.
-A task that returns tasks at runtime is covered as far as the cache reaches:
-when its own entry is a hit, the tasks it returned last time are expanded and
-each is shown with its own status, so a child whose code or inputs changed
-shows `will_run` under a `cached` parent. Nothing runs to find them, so a
-dynamic task that will run itself has its children left out, and for such a
-workflow the plan is a lower bound on what the real run executes.
+- `--jobs` is the most tasks that run at once.
+- `--cores` caps the total threads that running tasks declare.
+- `--memory` caps the total memory that running tasks declare. It takes whole
+  GiB, such as `64`, or Kubernetes notation, such as `80Gi` or `512Mi`.
+- `--gpus` caps the total GPUs that running tasks declare.
+- `--resource name=value` sets a budget for a custom resource that tasks
+  declare, such as `--resource api_calls=10`. Repeat it for each resource. See
+  [Custom Resource Dimensions](resources.md#custom-resource-dimensions).
 
-`--rerun TASK` runs a task again rather than serve it from the cache, without
-touching the cache by hand. It is repeatable, and takes a task the way
-[Task Names](#task-names) describe: a function name reruns every branch of a
-fan-out, a display label such as `align[sample_a]` reruns one. The rerun
-saves its result as usual. Tasks downstream run again only if that result
-changed, and a dynamic task's children are still looked up on their own,
-and can be named by their labels too. A name that no task in the workflow's
-modules carries is a usage error (exit 2) before anything runs, and so is a
-label of a task the graph does call that matches none of its calls
-(`align[sample_z]` for samples without one), which the error lists. A name of a
-defined task that the flow's graph lacks may still match a task a dynamic task
-returns; if nothing in the finished run matched it, the run warns. A dry run
-shows a rerun task as `will_run`.
+A task that declares more than a budget can never run. A dry run lists it as a
+problem before anything runs.
 
-`--keep-going` stops a task failure from ending the run: every task is treated
-as `on_failure="ignore"`, so each branch that does not depend on the failure
-still runs, and the tasks that do depend on it are reported `skipped`. The run
-is still recorded as failed &mdash; see
-[When a Failure Should Not Stop the Run](resources.md#when-a-failure-should-not-stop-the-run).
+### Task Names
 
-`--agent-output` swaps the live terminal UI for a stream of newline-delimited JSON
-events, for programmatic use by AI coding agents &mdash; see
-[Working with Coding Agents](coding-agents.md).
+Output names a task by its function name, such as `align`. One branch of a
+[fan-out](concepts.md#glossary) is named by its label, such as
+`align[sample_a]`. See
+[How Branches Are Labelled](tasks-and-flows.md#how-branches-are-labelled).
+`history`, `cache ls --task`, `cache clear --task` and `--rerun` accept either
+form.
 
-`ginkgo run --detach` starts the run in the background and prints its run ID
-and log path. It returns once the run is recorded, or after 30 seconds if
-loading the workflow takes longer. A workflow that fails validation before then
-is reported straight away. Follow the run with `ginkgo runs wait <run_id>`,
-which also reports a run that was rejected before it started. Ctrl-C while
-`--detach` waits leaves the run going and prints its ID. `--detach` cannot be
-combined with `--dry-run`.
+JSON output gives the function name as `task_name` and the branch label as
+`display_label`. Some commands also give a `qualified_name`, the task's full
+module path, such as `workflow.modules.align.align`.
 
-The run header names the workflow by its path from where you stand, and
-carries the run id only once the run is about to be created: a run rejected
-while loading or validating (a missing file, `--cores 0`) never had an id, so
-none is printed.
+### Running A Task Again
+
+`--rerun TASK` runs a task again instead of using its cached result. You don't
+need to clear the cache first.
+
+- Repeat the flag to rerun several tasks.
+- A function name reruns every branch of a fan-out, as in `--rerun align`.
+- A branch label reruns one branch, as in `--rerun 'align[sample_a]'`.
+
+Tasks downstream run again only if the new result differs from the cached
+one. A name that no task has, or a label that matches no branch, is a usage
+error (exit 2) before anything runs.
+
+### Continuing After A Failure
+
+`--keep-going` lets a run continue after a task fails. Tasks that don't depend
+on the failed task still run. Tasks that do depend on it are skipped. The run
+is recorded as failed, and `ginkgo run` exits with code 3.
+
+`--keep-going` treats every task as `on_failure="ignore"`. See
+[When A Failure Should Not Stop The Run](resources.md#when-a-failure-should-not-stop-the-run).
+
+### Output For Agents
+
+`--agent-output` replaces the live terminal display with a stream of JSONL
+events. It is for AI coding agents and other programs. See [Working With Coding Agents](coding-agents.md).
+
+### Running In The Background
+
+`--detach` starts the run in the background and prints its run ID and log
+path. It returns once the run is recorded, or after 30 seconds if loading the
+workflow takes longer. A workflow that fails its checks before then is
+reported straight away. Ctrl-C while it waits leaves the run going.
+`--detach` can't be combined with `--dry-run`. Follow the run with one of
+these:
+
+- `ginkgo runs status <run_id>` shows the run once: its status, task counts,
+  failures and outputs.
+- `ginkgo runs wait <run_id> [--timeout SECONDS]` waits for the run to finish.
+  It exits as `ginkgo run` would have (see [Exit Statuses](#exit-statuses)),
+  124 at the timeout, or 2 for an unknown run ID. Ctrl-C stops the wait, not
+  the run.
+
+Both commands take `--json`. See [Long Runs](coding-agents.md#long-runs) for
+how an agent uses them.
 
 ### Exit Statuses
 
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
-| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key or flag, `cache prune` or `db prune` with no limit, `query` with no statement, `run --rerun` naming no task the workflow defines. The message goes to stderr. |
-| 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
-| 130 | Interrupted with Ctrl-C. The run is recorded `cancelled`; every task it had not finished, running or not yet started, is recorded `skipped` as interrupted, not `failed`. To resume, run `ginkgo run` again: what finished is served from the cache. |
-
-### Task Names
-
-Output names a task the way its code does: by its function name, such as
-`align`, or by the display label of one branch of a fan-out, such as
-`align[sample_a]` or `align[2]`. Failure messages, `runs show`, `debug`,
-`history`, `why` and the `cache` commands all use these names, and `history`
-and `cache ls --task` accept them.
-
-JSON output carries the function name as `task_name` and the branch label as
-`display_label`. Where two modules could define a same-named task, it also
-carries the qualified name as `qualified_name` (`history --json`, `cache ls
---json`, `cache stats --json`): the module path for a task in a package, such
-as `workflow.modules.align.align`, and `<workflow>.align` for a task defined
-in a single-file workflow, whatever that file is called or wherever it lives.
-Events and the ledger's `tasks.name` column record that same qualified name.
+| 1 | The run failed, or could not start. For example, a missing workflow file, a flag the workflow does not declare, a bad parameter value, or a budget such as `--cores 0`. |
+| 2 | The command line is wrong. For example, an unknown subcommand, a bad option value such as `--jobs abc`, `cache clear` with no key, or `--rerun` naming no task in the workflow. The message is on stderr. |
+| 3 | The run finished, with failures that `--keep-going` or `on_failure="ignore"` let pass. The run is recorded as failed. |
+| 130 | Interrupted with Ctrl-C. The run is recorded as `cancelled`. Run `ginkgo run` again to resume: the tasks that finished come from the cache (see [Partial Resume](caching-and-provenance.md#partial-resume)). |
 
 ## Workflow Parameters
 
-A workflow declares the inputs it accepts with `ginkgo.param(...)`, and each one
-becomes a command-line flag:
+A workflow declares the inputs it accepts with `ginkgo.param(...)`. Each one
+becomes a command-line flag, with dashes for underscores:
 
 ```python
 import ginkgo
@@ -223,8 +211,8 @@ region = ginkgo.param("region", help="Genome region")   # no default: required
 ginkgo run flow.py --n-replicates 24 --region 2L:1-100000
 ```
 
-The flag is the dashed form of the name. A value resolves from the command line
-first, then the `[params]` table of `ginkgo.toml`, then the declared default:
+Ginkgo takes a value from the command line first, then from the `[params]`
+table of `ginkgo.toml`, then from the declared default:
 
 ```toml
 [params]
@@ -232,158 +220,120 @@ n_replicates = 24
 region = "2L:1-100000"
 ```
 
-`ginkgo run flow.py --help` lists the parameters that workflow declares,
-with their types and defaults. A parameter set in `[params]` shows that value
-as its default and the file it came from, such as `(default: 24, from
-ginkgo.toml)`, since that is what a run without the flag would use. With no
-path, `ginkgo run --help` lists the parameters of the auto-discovered workflow
-and says so. A flag the workflow does not declare is rejected
-before anything runs, and the error names the parameters it does declare. A
-required parameter that is not supplied fails the same way.
+- `ginkgo run flow.py --help` lists the workflow's parameters, with their
+  types and defaults.
+- A flag the workflow does not declare, or a missing required parameter, is an
+  error before anything runs.
+- `--config extra.toml` adds a config file whose `[params]` override the same
+  parameters in `ginkgo.toml`.
+- Ginkgo records each value with the run, and where it came from.
+  `ginkgo runs show --json` shows both.
 
-`type` follows `argparse`'s convention, so `type=int`, `type=float`, and
-`type=Path` all work. Without `type`, a `bool`, `int` or `float` default sets
-it, so `ginkgo.param("threshold", default=40.0)` reads `--threshold 2.5` as a
-float; any other default leaves values as strings. Booleans accept a bare `--flag` or an explicit
-`--flag false`, which is how to turn off one whose default is `True`. `multiple=True`
-makes a flag repeatable, and the value is then a tuple (`("alpha", "beta")`),
-also when it comes from a list in `[params]` or a single value:
+Parameter types:
 
-```bash
-ginkgo run flow.py --item alpha --item beta --verbose
-```
+- `type=int`, `type=float` and `type=Path` convert the value. If you leave out
+  `type`, a `bool`, `int` or `float` default sets it. Any other default leaves
+  values as strings.
+- A boolean takes a bare `--flag`, or `--flag false` to turn off one whose
+  default is `True`.
+- `multiple=True` makes the flag repeatable, as in `--item alpha --item beta`.
+  The value is always a tuple.
 
-Resolved values are recorded with the run, along with where each came from
-&mdash; the CLI, config, or the default. `ginkgo runs show --json` shows both.
+Pass a parameter into a task as an argument, so the cache can see it. A task
+body that reads it from a module global hides it from the cache. See
+[A Task Sees Only Its Arguments](caching-and-provenance.md#a-task-sees-only-its-arguments).
 
-The `[params]` table layers across config files, so `--config extra.toml` setting
-one parameter leaves the others in `ginkgo.toml` alone.
-
-```{important}
-**Pass a parameter into a task as an argument.** Cache keys hash task arguments,
-so a parameter passed as one correctly re-runs the tasks that used it. A
-parameter read from a module global inside a task body is not part of the key, so
-changing it would silently reuse the previous result. Both `ginkgo run` and
-`ginkgo doctor` warn when they spot this.
-```
-
-```{important}
-**Pass a data file into a task as a `file` argument.** A file opened by a literal
-path inside a task body, such as `open("data/samples.tsv")`, is invisible to the
-cache: editing it does not re-run the task, and Ginkgo does not warn. Declare it
-as a `file` parameter instead (`def summarise(samples: file)`) and pass the path
-at the call site, so its bytes are hashed into the key and, when another task
-produces it, the dependency edge is created. `version=` on the task is the
-stopgap when the path cannot be passed in.
-```
-
-## Validation And Diagnostics
-
-Use these commands to inspect a workflow without committing to the full
-workload:
+## Checking A Workflow
 
 ```bash
+ginkgo doctor
+ginkgo doctor workflow/qc_flow.py --json
 ginkgo run --dry-run
-ginkgo doctor flow.py
+```
+
+### Doctor
+
+`ginkgo doctor` checks for environment and configuration problems before a
+run. Pass `--json` for output a program can read.
+
+Doctor checks the imports that run when the workflow module loads. An import
+inside a task body runs only when the task does, so doctor can't check it. A
+missing package imported there is not caught until the run reaches that task.
+Import at module level to have doctor check it.
+
+### Dry Run
+
+`ginkgo run --dry-run` checks the workflow and works out each task's cache key
+without running any task. It prints:
+
+- the waves the tasks fall into, where a wave is a group of tasks that can run
+  at the same time
+- which tasks would run, and why (see
+  [Why Did A Task Run Again?](caching-and-provenance.md#why-did-a-task-run-again))
+- which tasks would come from the cache
+- the resources the tasks declare, and the most work running at once
+- any problems, under **Problems**
+
+A fan-out is shown on one line, with its branches counted by reason:
+
+```
+align × 96   90 cached, 6 will run (6 input changed)
+```
+
+A task marked `? [unknown]` has a cache status that dry run can't work out
+without running anything. Most often it is downstream of a task that will run.
+
+**Problems** lists any task that declares more than a budget, such as
+`--cores` or `--memory`, with the message the run would fail with. If there
+are problems, the dry run exits with code 1.
+
+Dry run can't see everything a run will do:
+
+- It misses a dependency on a path that a task writes without declaring it
+  `Out[...]`, or on a path built at run time. Pass the producer's return value
+  to the reader instead.
+- It leaves out the tasks that a task will return, if that task will run.
+- A script, notebook or subworkflow task shows `? [unknown]`, with every task
+  after it, unless its body is a single `return script(...)`,
+  `return notebook(...)` or `return subworkflow(...)` with a simple path, such
+  as a literal, a task parameter or an f-string.
+
+### Warnings
+
+`ginkgo doctor` and `ginkgo run --dry-run` also warn about these:
+
+- `path_like_str_param`: a parameter whose name looks like a path, such as
+  `output_dir`, is annotated `str`. Annotate it `file`, `folder` or `Out[...]`
+  (see [Declaring Outputs](outputs.md#reads-and-writes)).
+- `spaced_command_path`: a shell task reads another task's `Out[...]` path
+  that contains a space, which the shell would split.
+- `missing_directive_return`: a task whose kind needs its body to return a
+  call never does, as in a shell task that returns `f"wc -l {path}"` instead
+  of `shell(cmd=f"wc -l {path}")`.
+
+These two are errors. `ginkgo doctor` reports them, and `ginkgo run` refuses
+them before any task runs:
+
+- `positional_task_call`: a task called with positional arguments. Task calls
+  are keyword-only.
+- `inferred_return_task_call`: a task with `Out[...]` parameters and no return
+  annotation returns task calls. Add a return annotation.
+
+These checks are best-effort, so they can miss a case.
+
+## Debugging A Run
+
+```bash
 ginkgo debug <run_id>
 ```
 
-`ginkgo run --dry-run` previews the plan for the entrypoint you actually run,
-reporting the waves tasks fall into, which would run and which would serve from
-cache, and the resources they declare. It is a quick way to confirm the wiring
-you *expressed* — one task's return value passed as another's argument — is
-correct, but it can only show the dependency edges the graph actually has: if
-two tasks are wired by repeating the same literal path instead of passing the
-producer's return value, dry-run sees no edge between them and cannot flag that
-the consumer might run before or alongside the producer.
+`ginkgo debug` shows a finished run's task status, logs and cache decisions,
+from its run directory under `.ginkgo/runs/`. A retried task's attempts share
+one log file, and each retry starts with a `--- attempt N/M ---` line.
 
-A task that would run says why, in the terms `ginkgo cache explain` uses
-after the fact: `[will run: no prior entry]` for a task never run before, or
-`source changed`, `input changed`, `version changed`, `environment changed`
-when its newest cache entry differs in that part of the key. A collapsed
-fan-out counts its branches by reason, as in
-`align × 96   90 cached, 6 will run (6 input changed)`.
+## Projects With Several Workflows
 
-A task marked `? [unknown]` has a cache status dry-run cannot work out without
-running anything, most often because it sits downstream of a task that would
-run; the plan prints a one-line legend saying so. A task whose body calls
-other tasks, a dynamic fan-out, adds the tasks it returns only when it runs, so
-the plan names it and leaves those tasks out of its counts. The closing line
-sizes the busiest wave among the tasks that will run: `up to 3 tasks at once,
-one thread each` when none asks for more than the default thread, and
-`12 threads requested at peak` when some do. Tasks served from the cache hold
-no threads and are not counted. Dry-run never calls a task
-body, but a script, notebook or subworkflow task's key includes the file its
-body names, so dry-run reads the body instead. When the body is a single
-`return script(...)` (or `notebook(...)`, `subworkflow(...)`) whose arguments
-are literals, the task's parameters, module-level names, f-strings, `+`, `/`,
-`Path(...)`, `str(...)` and pure path operations (`.parent`, `.name`,
-`.stem`, `.suffix`, `.resolve()`, `.with_suffix()`, `.with_name()`,
-`.joinpath()`), dry-run evaluates it and predicts the task like any other.
-Any other body, such as one that computes the path in an earlier statement or
-calls a helper function, leaves the task, and everything downstream of it,
-`unknown`. Where the cache check itself fails, dry-run says so and counts the
-tasks affected; `--verbose` names each one and the error behind it.
-
-Both `ginkgo doctor` and `ginkgo run --dry-run` also flag, statically and
-without touching the filesystem, a parameter whose name looks like a path
-(`path`, `output_dir`, `report_files`, ...) but is annotated a bare `str`
-shape rather than `file`/`folder` — a `path_like_str_param` warning. Such a
-parameter is content-tracked only when its value names an existing regular
-file and reads as a path (it contains a separator or has a file extension); a
-directory, a bare word, or any other non-file path is tracked by its string
-alone, and nothing checks that it exists. A path the task writes belongs in
-`Out[...]` (see the FAQ entry on `file`/`folder`). A parameter that every call
-fills from another task's result is not flagged: the producing task's return
-annotation decides how that value is tracked.
-
-They also warn, as `spaced_command_path`, where a shell task reads the result
-of a task whose literal `Out[...]` path contains a space. A shell command is a
-string the shell splits on whitespace, so the run would refuse that path when
-it reaches the shell task, after the work upstream of it; a literal path given
-to the shell task itself is already a dry-run problem.
-
-Every diagnostic code is lower snake_case, such as `missing_secret` or
-`invalid_env_kind`. An error doctor does not recognise is reported under its
-exception's name, as in `file_not_found_error`.
-
-They also warn (`missing_directive_return`) about a driver task, such as
-`@task("shell")`, whose body can never return its directive: every `return` in
-it yields a literal, an f-string, or arithmetic over names, as in
-`return f"wc -l {path}"` where `return shell(cmd=f"wc -l {path}")` was meant.
-Without the warning the task fails only when the run reaches it. The check is
-best-effort: a `return` of a call or a variable is never flagged.
-
-Two mistakes in a task body are errors, which `ginkgo doctor` reports and
-`ginkgo run`, with or without `--dry-run`, refuses before any task runs: a
-positional task call (`positional_task_call`), and a task with `Out[...]`
-parameters and no return annotation whose body returns task calls
-(`inferred_return_task_call`). Tasks those bodies call are checked too. The
-check is best-effort: it sees only calls of a name or dotted name, such as
-`gwas(...)` or `stats.gwas(...)`, that resolves to a task. A task call stored
-in a variable and then returned is not caught.
-
-A mistyped flag is refused with the closest flag the command or the workflow's
-declared parameters accept, as in `--jbos: did you mean --jobs?`.
-
-### Validation workflows
-
-A project may keep workflow files under `tests/workflows/` that exercise its own
-flow. There is no separate command for them: a validation workflow is a workflow,
-so run it by path like any other.
-
-```bash
-ginkgo run tests/workflows/smoke.py --dry-run  # validate
-ginkgo run tests/workflows/smoke.py            # execute
-```
-
-Each such file must expose a flow, usually by re-exporting the project's own.
-`ginkgo init` scaffolds one `tests/workflows/smoke.py` that re-exports `main`
-from `workflow/flow.py`.
-
-### Several workflows in one project
-
-A file holds exactly one `@flow`, so a project with several workflows keeps one
+A file holds exactly one `@flow`. So a project with several workflows keeps one
 entry file per workflow, each importing tasks from the shared modules:
 
 ```text
@@ -394,160 +344,49 @@ workflow/
 └── modules/         # tasks the flows share
 ```
 
-Auto-discovery only ever picks `flow.py`, so run the others by path. They all
-share the project's `.ginkgo/`: one ledger, one cache. A cache key depends on
-the task and its inputs, not on which flow called it, so a task two flows call
-with the same arguments runs once and is a cache hit in the other. Each run
-records the entry file it ran, and `ginkgo runs ls --workflow
+`ginkgo run` with no path only ever picks `flow.py`, so run the others by path.
+They all share the project's `.ginkgo/`, with one provenance database and one
+cache. A cache key depends on the task and its inputs, not on which flow called
+it. So a task that two flows call with the same arguments runs once, and the
+other flow gets a cache hit.
+
+Each run records the entry file it ran. `ginkgo runs ls --workflow
 workflow/qc_flow.py` lists one workflow's runs. `ginkgo doctor <path>` and
 `ginkgo run <path> --dry-run` check one entry file at a time.
 
-`ginkgo doctor` catches environment and configuration problems before a run.
-Pass `--json` for structured output suitable for programmatic use:
+### Validation Workflows
+
+A project can keep workflow files under `tests/workflows/` that test its own
+flow. A validation workflow is a workflow, so run it by path like any other:
 
 ```bash
-ginkgo doctor flow.py --json
+ginkgo run tests/workflows/smoke.py --dry-run  # check
+ginkgo run tests/workflows/smoke.py            # run
 ```
 
-Doctor checks the imports that run when the workflow module loads. An import
-inside a task body runs only when the task does, so a missing package
-imported there is not caught until the run reaches that task. Import at
-module level to have doctor check it.
+Each such file must expose a flow, usually by re-exporting the project's own.
+`ginkgo init` creates one, `tests/workflows/smoke.py`, which re-exports `main`
+from `workflow/flow.py`.
 
-`ginkgo debug` is most useful after the fact: once a run directory exists, it
-surfaces recorded task status, logs, and cache behavior without manually
-navigating `.ginkgo/runs/`. A retried task's attempts share one log file, so
-each retry starts with a `--- attempt N/M ---` line.
-
-`ginkgo cache` has several subcommands beyond listing:
+## Cache Commands
 
 ```bash
 ginkgo cache ls                          # list cached task results
 ginkgo cache ls --task align --json      # one task's entries, as JSON
-ginkgo cache stats                       # size, artifact-store bytes, hit counts, biggest tasks
-ginkgo cache explain [run_id]            # explain cache decisions for a run (default: latest)
-ginkgo cache explain [run_id] --json     # same, as JSON
+ginkgo cache stats                       # size, hit counts, biggest tasks
+ginkgo cache explain [run_id]            # why each task ran or was cached (default: latest run)
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
-ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
-ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
-ginkgo cache clear <cache_key>           # remove a specific cache entry
+ginkgo cache prune --max-size 10GB       # remove entries to stay under a size
+ginkgo cache prune --max-entries 500     # remove entries to stay under a count
+ginkgo cache clear <cache_key>           # remove one entry
 ginkgo cache clear --task align          # remove every entry one task wrote
 ginkgo cache clear --all                 # remove every entry
 ginkgo cache clear --orphans             # remove entries the database has lost
 ```
 
-`cache ls` prints each full cache key on one line, so it can be copied into
-`cache clear`; `--task` narrows the list to one task's entries, named the way
-`history` takes it, and `--json` prints the entries as JSON. `cache clear`
-takes exactly one of a key, `--task`, `--all` or `--orphans`, and removes what
-it names at once, with no prompt, as `cache prune` does without `--dry-run`:
-`--task` removes every entry the task wrote (`cache ls --task` lists them
-first), naming none is an error, and `--all` also removes the directories
-`--orphans` would. Artifacts no remaining entry names are collected each time. `cache prune`
-requires at least one of `--older-than`, `--max-size`, or `--max-entries`. A
-duration is a positive whole number of minutes, hours or days (`45m`, `12h`,
-`30d`). Add `--least-recently-hit` to give up unused entries before old
-ones, and `--dry-run` to preview what would be removed. `cache stats` takes
-`--json`. Its artifact-store figure (`artifact_bytes` in JSON) is separate from
-the entries' total size: the store also holds bytes no entry names, so pruning
-entries does not bound it. Both are apparent sizes; `On disk` (`disk_bytes`) is
-the space the cache and the artifact store occupy in allocated blocks, as `du`
-counts it, and the space `clear` and `prune` report freed is measured the same
-way.
-
-### Why Did This Task Run Again?
-
-`ginkgo cache explain <run_id>` prints formatted text by default, one entry per
-task, naming each input's cache-tracking label (`content`, `version`, `path`,
-`value`, `output`, `untracked` — see
-[Caching and Provenance](caching-and-provenance.md#how-is-each-input-tracked)) alongside
-it, with a `path` label highlighted: since #307 phase 2 a `str` naming an
-existing *file* is content-tracked by default, so what remains labelled
-`path` is a directory (annotate `folder` to track its contents) or a
-deliberately `untracked` parameter. Pass `--json` for the same data as JSON.
-
-For a task that re-ran, it also names the components of the cache key that
-moved, so the answer is a specific fact rather than "the key changed". The
-JSON shape (`--json`):
-
-```json
-{
-  "task_name": "produce",
-  "cache_key": "fddb71a9…",
-  "input_labels": {"samples": "path", "threads": "value"},
-  "compared_with": {"cache_key": "4388619b…", "strategy": "same_node"},
-  "reason": "input_changed",
-  "details": ["input_changed"],
-  "components": [
-    {
-      "component": "inputs.samples",
-      "status": "changed",
-      "current": {"type": "str", "digest": "2f64dc9d…"},
-      "prior": {"type": "str", "digest": "f7a9858a…"}
-    }
-  ]
-}
-```
-
-`reason` and `details` are the summary; `components` lists what actually
-differs. Component names follow the cache key: `task`, `version`, `source_hash`,
-`extra_source_hash` (the notebook or script a driver task runs), `env`,
-`env_hash.pixi_lock` (the identity of the declared environment), and one
-`inputs.<parameter>` per task argument.
-
-`compared_with` says what the entry was compared against, and how it was found.
-`"strategy": "same_node"` means the key this same node used in the most recent
-earlier run of the workflow — the entry this run superseded, which is the
-comparison you want. `"strategy": "most_similar_by_function"` is the fallback
-used when the node is new or its label changed: of the task's recent earlier
-entries, the one that differs from this node least, which may be a different
-branch of a fan-out. Nothing of the
-node's own changed then, so its `reason` is `no_prior_entry`; `details` and
-`components` describe how it differs from that sibling, as context.
-
-When more than one thing moved, `details` lists every reason in a fixed order —
-`source_hash_changed`, `version_bump`, `env_changed`, `input_changed` — and
-`reason` is the first of them. A moved component none of those covers reports
-`cache_key_changed`.
-
-A component's `status` is `changed`, or `added` / `removed` for a parameter that
-appeared or went away.
-
-A changed input whose old and new values are both short scalars (a number, a
-bool, or a string of up to 40 characters) also carries `prior_value` and
-`current_value`, and the text shows them as JSON: `inputs.min_cases (changed: 10 → 3)`,
-with strings quoted. Files, folders, secrets and longer values show their digests,
-and so does a plain string naming a file, which is tracked by the file's contents.
-
-Some tasks get a summary `reason` on its own, with no `components`: a task that
-did not re-run reports `all_inputs_match`; one named by `--rerun` reports
-`rerun_requested`, since its cache was never consulted; one with no earlier entry
-of any kind to compare against reports `no_prior_entry`; and one whose node ran
-under this very key before, but whose entry is gone — pruned, cleared, or never
-written because that run failed — reports `no_entry_for_key`. When the key moved
-but the entry it moved from has since been removed, the reason is
-`prior_entry_removed`: there is nothing left to name the moved component from.
-A task that an earlier run of the same workflow knew under another module or
-qualified name — moved to another file, or renamed with its parameters kept —
-reports `task_moved`, with that name as `moved_from`: a task's cache identity
-includes its module and name, so moving or renaming it starts it without a cache
-entry.
-
-A source change where the task's own text is unchanged reports
-`module_source_changed` instead of `source_hash_changed`: the source hash also
-covers the task's module and the local modules it imports, so editing another
-task defined in the same file re-runs this one too (see
-[Caching and Provenance](caching-and-provenance.md)). The text form names the
-changed inputs and shows each moved component's earlier and current value.
-
-## A Typical Loop
-
-For local development, a practical cycle looks like this:
-
-1. author and adjust tasks in code
-2. check the wiring with `ginkgo run --dry-run`
-3. run with `ginkgo run`
-4. inspect failures or cache reuse with `ginkgo debug`
-
-Because Ginkgo caches completed tasks, iterating on a later stage of a workflow
-re-executes only that stage &mdash; earlier tasks serve straight from cache.
+`cache clear` and `cache prune` remove what they name at once, with no prompt.
+Pass `--dry-run` to `cache prune` to preview it. See
+[Maintaining The Database And Cache](maintenance.md) for what each command
+removes and how sizes are counted. See
+[Why Did A Task Run Again?](caching-and-provenance.md#why-did-a-task-run-again)
+for `cache explain`.

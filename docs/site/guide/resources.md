@@ -1,14 +1,32 @@
 # Resources And Scheduling
 
-Every `@task` can declare the resources it needs and how it should be scheduled.
-The runtime uses these declarations to pack ready tasks against the run's
-resource budget and to decide ordering and retry behaviour.
+Every `@task` can declare the resources it needs, such as CPU threads and
+memory. Ginkgo starts a task only when the run has enough of each left. A task
+can also declare its priority, and how to retry when it fails.
+
+## Limiting What A Run Uses
+
+A run has a budget for each resource. You set the budgets with flags on
+`ginkgo run`:
+
+- `--jobs N` caps how many tasks run at once. It defaults to the number of CPUs
+  on the machine.
+- `--cores N` caps the total `threads` of the tasks running at once. It defaults
+  to the `--jobs` value.
+- `--memory N` caps the total declared memory of the tasks running at once, in
+  GiB. It has no default. Without it, Ginkgo does not limit memory.
+- `--gpus N` caps the total GPUs of the tasks running at once. It defaults to 0.
+
+```bash
+# Run at most 4 tasks at once, within an 8-core, 32 GiB budget
+ginkgo run flow.py --jobs 4 --cores 8 --memory 32
+```
+
+When several tasks are ready, Ginkgo starts as many of them as the budgets fit.
 
 ## Declaring Resource Requirements
 
-Pass resource arguments to `@task`. Resources declare what a task *needs*,
-never where it runs. The scheduler packs them against the `--jobs`, `--cores`,
-`--memory`, and `--gpus` budgets passed to `ginkgo run`.
+Pass resource arguments to `@task` to say how much a task needs:
 
 ```python
 @task(threads=4, memory="8Gi")
@@ -20,38 +38,41 @@ def train_model(dataset: folder) -> file:
     ...
 ```
 
-- `threads=N` declares the CPU footprint. Tasks that read `threads` as a
-  function parameter receive it automatically; shell tasks also see
-  `GINKGO_THREADS` in their subprocess environment. Set `export_thread_env=True`
-  to additionally export `OMP_NUM_THREADS` and related BLAS/OpenMP variables.
-- `memory="8Gi"` declares the memory footprint. Format is Kubernetes-style
-  (`512Mi`, `4Gi`, `16Gi`). Remote executors map this to pod resource requests.
-  For scheduling against `--memory`, the value is rounded up to whole GiB with
-  a minimum of 1 GiB, so `512Mi` reserves 1 GiB and `1.5Gi` reserves 2 GiB.
-- `gpu=N` declares a GPU requirement. It is satisfied from the local `--gpus`
-  budget when it fits, dispatched to the remote executor when one is
-  configured (`--executor`), and a build error otherwise. `gpu_type` selects
-  the accelerator for remote execution, overriding the executor-level default.
-- `remote=True` explicitly dispatches a python task to the run's default
-  executor (whichever `--executor` names); running without `--executor` is a
-  build error rather than a silent local fallback.
-- `executor="name"` pins a python task to one executor declared under
-  `[remote.executors]`, whatever the run default is — an unknown name is a
-  build error. See [remote execution](remote-execution.md).
+- `threads=N`: CPU threads. A task with a `threads` parameter receives the
+  value, and a shell task sees it as `GINKGO_THREADS`. `export_thread_env=True`
+  also sets `OMP_NUM_THREADS` and the related BLAS and OpenMP variables.
+- `memory="8Gi"`: memory, as a number and a unit such as `512Mi` or `16Gi`. The
+  `--memory` budget rounds it up to a whole GiB, so `512Mi` counts as 1 GiB.
+- `gpu=N`: GPUs. `gpu_type` names the kind of GPU a remote
+  [executor](concepts.md#glossary) should provide.
 
-The local `--gpus` budget is scheduler bookkeeping: it stops ginkgo
-oversubscribing GPUs across concurrent tasks, but it does not pin devices —
-every local task still sees all GPUs (no `CUDA_VISIBLE_DEVICES` isolation).
+The `--gpus` budget does not assign devices. Ginkgo does not set
+`CUDA_VISIBLE_DEVICES`, so every local task sees every GPU.
 
-Resource settings are not part of a task's cache key: changing `threads`,
-`memory` or `gpu`, or the run's budgets, reruns nothing. The one exception is a
-task that takes `threads` as a parameter, which receives it as an input.
+Resource settings, and the run's budgets, are not part of the cache key, so
+changing them reruns nothing. The exception is a task with a `threads`
+parameter, which receives `threads` as an input.
+
+## Where A Task Runs
+
+Resource declarations say how much a task needs. In one case they also decide
+where it runs. A `gpu=1` task runs on your machine when `--gpus` can cover it.
+If it can't, Ginkgo sends the task to the run's remote executor. If the run has
+no executor, the run fails before any task starts.
+
+You can also send a task to an executor directly, with `remote=True` or
+`executor="name"`. See [Remote Execution](remote-execution.md).
+
+A task on a remote executor uses one of the run's `--jobs` slots. Its `threads`,
+`memory` and `gpu` do not count against your machine's budgets, because the
+executor provides them. Custom resources still count, as the next section
+explains.
 
 ## Custom Resource Dimensions
 
-Threads, memory, and GPUs cover hardware. Some tasks are constrained by
-something else entirely — a third-party API's rate limit, a shared database's
-connection pool — and `custom` lets the scheduler pack against those too:
+Some tasks are limited by something other than hardware. For example, a
+third-party API's rate limit, or a shared database's connection pool. Declare
+those with `resources=`, and Ginkgo budgets them too:
 
 ```python
 @task(resources={"api_calls": 2})
@@ -59,8 +80,8 @@ def fetch_records(query: str) -> file:
     ...
 ```
 
-Each dimension is budgeted separately from `[resources.budgets]` in the
-runtime config, and/or repeated `--resource name=value` flags:
+Set the budget for each name in `[resources.budgets]` in the runtime config, or
+with a `--resource name=value` flag. Repeat the flag for each name:
 
 ```toml
 [resources.budgets]
@@ -71,168 +92,37 @@ api_calls = 10
 ginkgo run flow.py --resource api_calls=10 --resource db_connections=4
 ```
 
-The CLI flag wins over the config value per dimension. A dimension that
-tasks request but that has no budget name in either source is
-**unconstrained** — the same opt-in behaviour as `--memory`. Custom names
-cannot shadow `threads`, `memory`, `gpu`, or `gpu_type`; use the dedicated
-argument for those instead.
+These rules apply:
 
-Unlike the built-in dimensions, custom demands are **not** zeroed out for
-remote-placed tasks — they count wherever the task runs. An API quota or a
-database connection pool doesn't stop applying because the task went to
-Kubernetes, so a saturated custom budget can hold back remote dispatch as
-well as local.
-
-## Measured Usage
-
-Declared resources are a guess; ginkgo also records what a task actually
-used, so right-sizing a declaration doesn't require guesswork. Every task
-run measures peak memory (RSS) and CPU time — `resource.getrusage` for
-Python tasks, periodic `ps` sampling of the subprocess tree for shell,
-notebook, script, and subworkflow tasks — and persists both alongside the
-declared `threads`/`memory` in the run manifest. Measurement happens on
-failure too: usage recorded right before an OOM kill is exactly what you
-need to size the retry.
-
-A Python task runs in a worker process that is already resident before the
-task starts: the interpreter, ginkgo, and the workflow module with everything
-it imports, which is often 100 MB or more. That memory is the worker's, not the
-task's, so a Python task's `peak_rss_bytes` is its peak *above* the worker's
-resident memory as the body started, and the worker's figure is recorded
-beside it as `baseline_rss_bytes`. The measurement stops as the body returns,
-before the worker encodes the result, so a task that allocates nothing measures
-close to zero even as the first task of a fresh worker. CPU time is likewise
-measured over the body alone, after the workflow module is imported. A
-subprocess task's figure is its whole process tree, which is all the task's
-own.
-
-A subprocess tree is sampled every quarter second, the first sample a quarter
-second after the command starts. A shell or script task that finishes sooner
-has no memory figure at all, and one that runs a little longer is measured from
-a sample or two, which can miss a short spike. Read a quick task's missing or
-small figure as "too short to sample", not as "used nothing".
-
-`ginkgo report` surfaces it as a **Peak memory** column in the task ledger
-(`measured / declared`, e.g. `3.2 GiB / 16Gi`, with the declaration as
-written). A cache hit measured nothing in its run, so the report shows the peak
-of the earlier run that produced the result, named after it
-(`3.2 GiB (run 9e1f3e6c)`). `ginkgo runs show --json` includes the raw
-`resource_usage` record per task. See [Reports](reports.md).
-
-### Across Runs
-
-One run tells you what a task used that time. The question worth asking is
-what it needs *in general*, which is a question about many runs:
-
-```console
-$ ginkgo history align_reads --resources
-
-Peak RSS over 12 executions (28 runs, 16 cached)
-  p50 3.1 GiB   p95 4.8 GiB   max 5.2 GiB
-  declared 16 GiB  ·  p95 is 30% of declared
-CPU time
-  p50 4m 12s   p95 5m 30s   total 52m
-  declared 4 threads
-```
-
-The distribution covers every execution on record; `--limit` bounds only the
-per-run table printed underneath it. `--by-label` splits a fanned-out task into
-one summary per branch, widest peak first — one branch of a fan-out over
-chromosomes is not like another, and the widest is the one that has to size the
-declaration. `--json` returns the aggregate alongside the rows.
-
-Three things in that output are there to stop the numbers overstating
-themselves:
-
-- **The sample count.** Only real executions measure anything, so a task with
-  28 runs and 16 cache hits has 12 samples. `n` travels with the percentiles so
-  a small sample is visible rather than implied.
-- **Failed attempts are excluded, and counted.** A task killed at its 16 GiB
-  ceiling used *more than* 16 GiB — that peak is a lower bound, not a
-  measurement, and averaging it in would drag the distribution towards the
-  value that already failed. Those samples are reported separately, with the
-  floor they establish (`3 failed attempts excluded (peak ≥ 16 GiB)`).
-- **Percentiles are nearest-rank.** Every figure printed is a value some run
-  actually reached. Interpolating between two samples would report a peak no
-  run ever hit, from a sampler whose resolution is a periodic `ps` of the
-  process tree — a short spike can be missed entirely.
-
-The declared figure is the declaration as written, in GiB: `memory="512Mi"`
-reads `declared 0.5 GiB`, and the percentage is of that, not of the whole GiB
-the scheduler rounds it up to when budgeting.
-
-Where a retry escalated under `memory_retry_multiplier`, the declaration and
-the budget the attempt ran against are recorded separately, and the summary
-says so (`declared 16 GiB · ran against 32 GiB after escalation`). Comparing a
-30 GiB peak against the 16 GiB declaration would call an attempt an overrun
-when it fitted the budget it was actually given.
-
-The same numbers are columns on the `tasks` table — `peak_rss_bytes`,
-`cpu_seconds`, `declared_threads`, `declared_memory_gb`, `effective_memory_gb`
-— so `ginkgo query` can ask its own questions of them without unpacking JSON.
-They are null for anything unmeasured: a cache hit, or a task that never
-started.
-
-## Site Overrides
-
-The same workflow file can run on a laptop, an HPC node, and the cloud with
-per-site sizing. A `[resources.overrides]` table in the runtime config merges
-over the decorator declarations, keyed by task name:
-
-```toml
-[resources.overrides.align_reads]
-threads = 16
-memory = "64Gi"
-
-[resources.overrides."variant_*"]      # fnmatch glob
-memory = "32Gi"
-```
-
-A selector matches a task's short name (`align_reads`) or fully qualified
-name (`workflow.modules.align.align_reads`, or `<workflow>.align_reads` for a task
-in a single-file workflow), and may be an `fnmatch` glob
-over either. Exact matches beat globs; among globs, the first selector in
-config order wins. Keys an override omits keep their declared values. An
-override's `custom` table replaces the declared `custom` dict wholesale
-rather than merging key by key.
-Overridden `threads` flow everywhere the declaration would: the scheduler,
-the dry-run plan, the injected `threads` parameter, and `GINKGO_THREADS`.
-Note that for tasks declaring a `threads` parameter the injected value is a
-task input, so a site override changes those tasks' cache keys — the same
-way editing the declaration would.
-
-## Retrying With More Memory
-
-For tools whose memory needs are input-dependent, declare a baseline and let
-retries escalate instead of sizing every run for the worst case:
-
-```python
-@task(memory="16Gi", retries=2, memory_retry_multiplier=2)
-def sort_bam(bam: file) -> file:   # attempts run at 16, 32, then 64 GiB
-    ...
-```
-
-Escalation applies exponentially per retry attempt. Locally it is capped at
-the run's `--memory` budget so a retry always remains dispatchable (a task
-notice reports the escalated figure); remote-placed tasks escalate uncapped
-because the executor satisfies their request.
+- **The flag wins.** A `--resource` flag overrides the config value for the same
+  name.
+- **No budget means no limit.** A name that tasks use but neither source sets
+  is not limited, just as memory is not limited without `--memory`.
+- **Built-in names are reserved.** A custom name can't be a built-in name such
+  as `threads`, `memory`, `gpu` or `gpu_type`. Use the dedicated argument for
+  those.
+- **Remote tasks still count.** A custom resource counts wherever the task
+  runs, so a full budget can hold back remote tasks too.
 
 ## Priority
 
+Give a task a priority to start it before other ready tasks when the budgets
+can't fit them all:
+
 ```python
-# Highest-priority tasks run first when several are ready at once.
 @task(priority=10)
 def critical_path_step(...): ...
 ```
 
-`priority` orders tasks that become ready at the same time. It is a strict
-tiebreaker: it never lets a higher-priority task block a larger set of
-lower-priority tasks from running.
+`priority` defaults to 0, and a higher number starts first. It only breaks ties.
+Ginkgo first picks the set of ready tasks that starts the most tasks and uses the
+most cores. Priority then chooses between sets that tie. A high-priority task
+never stops a larger set of lower-priority tasks from starting.
 
 ## Retry Policies
 
 ```python
-# Retry up to 3 times, only on IOError, with exponential backoff.
+# Retry up to 3 times, only on IOError, waiting longer each time.
 @task(retries=3, retry_on=IOError, retry_backoff=1.0)
 def network_fetch(...): ...
 
@@ -241,27 +131,54 @@ def network_fetch(...): ...
 def memory_intensive_step(...): ...
 ```
 
-`retries` sets how many times a failed task is re-attempted. Narrow what counts
-as retryable with `retry_on` (exception types, for Python tasks) or
-`retry_on_exit_codes` (for shell tasks).
+`retries` sets how many times Ginkgo tries a failed task again. It defaults to
+0. With no other setting, every failure is retried. To retry only some failures,
+set `retry_on` (exception types, for Python tasks) or `retry_on_exit_codes` (for
+shell tasks). Each retry starts the task again from scratch.
 
-Retries with a non-zero `retry_backoff` pause the task in a `waiting_retry`
-state for a computed delay before the scheduler picks it up again. The delay
-grows by `retry_backoff_multiplier` on each attempt and is capped at
-`retry_backoff_max`.
+`retry_backoff` sets how long Ginkgo waits before a retry, in seconds. It
+defaults to 0, which means no wait. With `retry_backoff=1.0`, Ginkgo waits 1
+second before the first retry. It multiplies the wait by
+`retry_backoff_multiplier` (default 2.0) for each later retry, up to
+`retry_backoff_max` seconds (default 60).
+
+## Retrying With More Memory
+
+Some tools need more memory for some inputs than others. Declare a baseline, and
+let each retry ask for more, instead of sizing every run for the worst case:
+
+```python
+@task(memory="16Gi", retries=2, memory_retry_multiplier=2)
+def sort_bam(bam: file) -> file:   # attempts run at 16, 32, then 64 GiB
+    ...
+```
+
+Each retry multiplies the memory by `memory_retry_multiplier` again. On your own
+machine, the memory never goes above the `--memory` budget, so the retry can
+still start. A notice on the task reports the new figure. Remote tasks have no
+cap, because the executor provides the memory.
+
+## When A Task Fails
+
+By default, one failed task stops the run, once its retries run out. Tasks that
+are already running finish, and no new task starts. No task is left without an
+outcome:
+
+- A task that never started is recorded `skipped` in `ginkgo runs show`. It is
+  either blocked by the failure, or was not started because the run stopped.
+- A task that fails while the run is stopping is not retried, even with retries
+  left. Nor is a task already waiting to retry. Both are recorded `failed`, with
+  a notice such as
+  `retry 1/2 not attempted: the run is stopping after an earlier failure`.
 
 ## When a Failure Should Not Stop the Run
 
-Retries cannot help with a malformed input: it fails identically every time.
-By default the first failure a task's retries cannot absorb stops the run —
-in-flight tasks finish, nothing new is dispatched. Tasks that never started
-are reported `skipped` in `ginkgo runs show`: blocked by the failure when they
-depend on it, otherwise not started because the run stopped. An in-flight task
-that then fails is not retried, even with retries left, and neither is a task
-already waiting for its retry; both are reported `failed`, and a notice such as
-`retry 1/2 not attempted: the run is stopping after an earlier failure` says
-so. In a wide fan-out that
-throws away the work of every healthy branch.
+In a run over thousands of samples, stopping at the first failure throws away
+the results of every other sample. Retries can't help with a malformed input,
+because it fails the same way every time.
+
+Use `on_failure="ignore"` on a task to let the rest of the run carry on when it
+fails:
 
 ```python
 # One bad sample must not cost the other 4,999.
@@ -269,33 +186,35 @@ throws away the work of every healthy branch.
 def load_sample(sample: str) -> file: ...
 ```
 
-`on_failure="ignore"` applies after retries are exhausted. The failed task's
-siblings keep running, and so does everything that does not depend on it.
-`ginkgo run --keep-going` says the same thing about every task in the run,
-without editing the workflow.
+`on_failure="ignore"` applies after the retries run out. The failed task's
+siblings keep running, and so does every task that does not depend on it.
+`ginkgo run --keep-going` does the same for every task in the run, without
+editing the workflow.
 
-Two things this does *not* do:
+This also covers a failure Ginkgo detects itself, such as a wrong return
+type.
 
-- **It does not make the run pass.** The task is recorded `failed`, the run is
-  recorded `failed`, and `ginkgo run` exits **3** rather than 0 — a status of
-  its own, so a script can tell "stopped at the first failure" (1) from "ran
-  everything it could, and some of it failed" (3).
-- **It does not run the tasks downstream.** A task missing an input cannot run,
-  so every task below the failure is reported `skipped`, naming the failure it
-  is waiting on. An aggregator over a fan-out is downstream of every branch, so
-  one ignored branch failure skips it — including when the aggregator is what
-  the flow returns, in which case the run produces no result and says so —
-  which, since a flow's return value usually sits downstream of everything, is
-  how most such runs end today. The successful branches are still cached, and
-  the pages they rendered are still listed and their outputs still there, so
-  fixing the input and re-running does only the work that is left.
+### What Ignoring A Failure Does Not Do
+
+- **It does not make the run pass.** The task is recorded `failed`, and so is
+  the run. `ginkgo run` exits with code 3, not 0. Code 1 means the run stopped
+  at the first failure. Code 3 means the run ran everything it could, and some
+  tasks failed.
+- **It does not run the tasks downstream.** A task that needs the failed task's
+  output can't run, so it is recorded `skipped`, naming the failure. An
+  aggregator over a [fan-out](concepts.md#glossary) depends on every branch, so one
+  ignored failure skips it. If the flow returns the aggregator, the run has no
+  result, and it says so.
+
+The successful branches are still cached, and their outputs are still there.
+After you fix the input, a rerun does only the work that is left.
 
 ### Aggregating The Branches That Succeeded
 
 To aggregate over a fan-out whose branches may fail, make the failure part of
 the branch's result instead of the run's. In a Python task, catch the exception
-inside the task body and return `None`; annotate the return as optional and have
-the aggregator drop the `None` entries. The branch then succeeds, so the
+inside the task body and return `None`. Annotate the return as optional, and
+have the aggregator drop the `None` entries. The branch then succeeds, so the
 aggregator is not skipped:
 
 ```python
@@ -313,23 +232,84 @@ def combine(loaded: list[str | None]) -> str:
     ...
 ```
 
-The trade-off is that the run no longer records those branches as failed, so
-log or return enough detail to find them later. This works only for Python
-tasks: a shell task's failure is its exit status, which Ginkgo cannot turn into
-a `None` result.
+The run then records those branches as succeeded, so log or return enough detail
+to find them later. This works only for Python tasks. A shell task's failure is
+its exit status, which Ginkgo can't turn into a `None` result.
 
-Anything ginkgo itself rejects about a task attempt — a return value that
-breaks the task's declared contract, say — is ignored on the same terms as an
-error the task body raised. `--keep-going` is a statement about the whole run,
-so use it when you want the run carried past every kind of per-task failure,
-and `on_failure="ignore"` on the one task whose failure you expect.
+## Site Overrides
+
+The same workflow file can run on a laptop, an HPC cluster and the cloud, with
+different sizes at each site. A `[resources.overrides]` table in the runtime
+config changes the decorator's values, keyed by task name:
+
+```toml
+[resources.overrides.align_reads]
+threads = 16
+memory = "64Gi"
+
+[resources.overrides."variant_*"]      # a pattern
+memory = "32Gi"
+```
+
+- A selector matches a task's short name (`align_reads`) or its full name
+  (`workflow.modules.align.align_reads`). In a pattern, `*` matches any text.
+- An exact name wins over a pattern. Among patterns, the first in the file wins.
+- Keys the override leaves out keep the decorator's value.
+- An override's `custom` table replaces the decorator's `resources=` dict as a
+  whole.
+
+An overridden `threads` applies everywhere the decorator's value would. So for
+a task with a `threads` parameter, it changes the cache key.
+
+## Measured Usage
+
+Declared resources are a guess. To size them from real numbers, Ginkgo
+records each task's peak memory (RSS) and CPU time, even when the task fails.
+
+- A Python task's figure covers only the task body, not the memory its worker
+  process held before it started.
+- A shell, script, notebook or subworkflow task's figure covers the whole
+  process tree its command starts.
+- A shell or script task is checked every quarter second. A very short task can
+  have no figure, or one that misses a spike. That means "too short to
+  measure", not "used nothing".
+
+`ginkgo report` shows peak memory against declared, as in `3.2 GiB / 16Gi`.
+For a cache hit, it shows the peak from the run that produced the result. See
+[Reports](reports.md). `ginkgo runs show --json` has the full
+`resource_usage` record.
+
+### Across Runs
+
+One run tells you what a task used that time. To size the declaration, you need
+what it uses across many runs:
+
+```console
+$ ginkgo history align_reads --resources
+
+Peak RSS over 12 executions (28 runs, 16 cached)
+  p50 3.1 GiB   p95 4.8 GiB   max 5.2 GiB
+  declared 16 GiB  ·  p95 is 30% of declared
+CPU time
+  p50 4m 12s   p95 5m 30s   total 52m
+  declared 4 threads
+```
+
+Cache hits measure nothing, so only real executions count. `--by-label` gives
+one summary per fan-out branch, largest peak first. `--json` returns the
+summary with the rows.
+
+Failed attempts are counted separately and left out of the figures, because a
+task killed at its memory limit has no real peak. When a retry asked for more
+memory, the summary also shows the budget each attempt ran with.
+
+The same numbers are columns on the `tasks` table, for
+[`ginkgo query`](querying-provenance.md).
 
 ## See Also
 
-- [Tasks and Flows](tasks-and-flows.md) &mdash; the task authoring model.
+- [Tasks and Flows](tasks-and-flows.md) &mdash; how to write tasks.
 - [Remote Execution](remote-execution.md) &mdash; running tasks on Kubernetes or
   GCP Batch.
-- [CLI](cli.md) &mdash; the `--jobs`, `--cores`, `--memory`, `--gpus`, and
-  `--resource` run budgets.
-- [Reports](reports.md) &mdash; the Peak RSS column in
-  `ginkgo report`.
+- [CLI](cli.md) &mdash; every `ginkgo run` flag.
+- [Reports](reports.md) &mdash; the peak memory column in `ginkgo report`.

@@ -1,35 +1,53 @@
 # Environments
 
-Ginkgo separates orchestration from foreign execution. The scheduler stays
-local, while shell, script, and notebook tasks run in declared environments.
+A shell, script or notebook task can run in its own software environment. Its
+tools and library versions then do not clash with another task's, or with your
+own machine's. You declare the environment on the task with `env=`, and Ginkgo
+sets it up for you.
 
-Three environments are in play, and it pays to keep them apart:
+A task runs in one of these environments:
 
-- **The environment the `ginkgo` CLI runs from.** It runs the scheduler and
-  every `kind="python"` task body. You provision it — see
-  [Python Tasks Run In The CLI's Own Environment](#python-tasks-run-in-the-clis-own-environment).
-- **Pixi environments**, named or pointed at by `env=`. You write the manifest;
-  Ginkgo installs it. Pixi environments come from the `ginkgo-pixi` plugin
-  (see [Plugins](../getting-started/installation.md#plugins)); without it, a
-  bare `env="name"` fails before the run starts, naming the plugin.
-- **Container images**, named by a `docker://` or `oci://` URI. You name the
-  image; Ginkgo pulls it.
+- **A Pixi environment.** Pixi is a package manager. It builds an isolated
+  environment from a `pixi.toml` file. You write the file, and Ginkgo installs
+  the environment.
+- **A container image**, named by a `docker://` or `oci://` URI. You name the
+  image, and Ginkgo pulls it.
+- **The environment the `ginkgo` CLI runs from.** This is where a task runs when
+  it has no `env=`. Python tasks always run here.
 
-## Ginkgo Materialises Declared Environments
+## Python Tasks Run In The CLI's Own Environment
 
-You do not install a declared environment before the first run. Ginkgo does it,
-on first use, once per environment per run:
+`env=` works on shell, script and notebook tasks only. A Python task with
+`env=` is rejected before any work starts, and `ginkgo doctor` reports it as
+`invalid_env_kind`.
 
-- A Pixi environment is installed with `pixi install --manifest-path <manifest>`
-  the first time a task needs it. A failure stops the run with the Pixi output
-  attached.
-- A container image is pulled with `<runtime> pull <image>` under the default
-  `pull_policy = "if-not-present"` — skipped when the image is already present
-  locally. `pull_policy` *controls* the pull; it does not describe one you
-  performed yourself.
+A Python task runs under the same Python interpreter as the `ginkgo` CLI.
+**So every import in a Python task comes from the CLI's environment, not from
+your project's `pixi.toml`.** If `import pandas` fails, install pandas where
+Ginkgo is installed:
 
-The first run therefore pays a solve, download, and link cost that later runs do
-not. When that cost exceeds a second, the run says so:
+- **As a uv tool** (the
+  [curl installer](../getting-started/installation.md#quick-install-curl)):
+  rerun `uv tool install --force` with `--with pandas`, and keep every plugin
+  you had in the `--with` list. [Plugins](../getting-started/installation.md#plugins)
+  shows the command.
+- **From a Pixi environment:** add the package to its `pixi.toml` and run
+  `pixi install`.
+- **With `pip install -e .`:** run `pip install pandas` in that environment.
+
+`head -1 "$(command -v ginkgo)"` shows which interpreter that is. When a task
+needs a package version that conflicts with the CLI's, or a tool that isn't a
+Python package, make it a script or shell task with `env=`.
+
+## Ginkgo Sets Up Environments For You
+
+You do not install an environment before the first run. The first time a task
+needs one, Ginkgo runs `pixi install` for a Pixi environment, or pulls a
+container image if it isn't already on your machine. If a Pixi install fails,
+the run stops and shows the Pixi output.
+
+So the first run takes longer. When setup takes more than a second, the run
+says so:
 
 ```text
 ⏱ Completed in 8.8s - 1 task executed, 0 cached
@@ -37,47 +55,24 @@ not. When that cost exceeds a second, the run says so:
 environments, later runs reuse them
 ```
 
-The same workflow on the second run:
+Later runs reuse the environment.
 
-```text
-⏱ Completed in 0.7s - 1 task executed, 0 cached
-```
-
-That figure is the `pixi install` alone. Pixi links packages from its shared
-cache, so installing an environment whose packages are already cached takes
-about a second. The first task to start in a newly installed environment can
-still be slow: on macOS the system checks each new native library the first
-time it is loaded, which can add tens of seconds to a notebook that imports
-pandas and marimo. That time belongs to the task, so it shows up in the task's
-duration rather than in the preparation line, and later runs do not pay it.
-
-Because Ginkgo shells out to do this, the tools must be on your `PATH`: `pixi`
-for Pixi environments, and `docker` or `podman` for container environments. See
+`pixi`, or `docker` or `podman`, must be on your `PATH`. See
 [Runtime Prerequisites](../getting-started/installation.md#runtime-prerequisites).
-Container environments also need the runtime's daemon running (on macOS and
-Windows, the Podman machine). `ginkgo doctor` and `ginkgo run --dry-run` check
-it and warn about a stopped or inaccessible daemon, but still pass: whether the
-run needs it depends on whether a container task has to run. `ginkgo run` does
-not check it up front, so a run whose container tasks are all cached still
-succeeds; one that has to run a container task fails when it reaches it. A
-fresh `ginkgo init` project runs without a container runtime: its shell task,
-`package_brief`, runs locally, and naming an image with
-`env="docker://ubuntu:24.04"` is all it takes to move it into one. The start
-hint ginkgo prints for a stopped daemon is the platform's own: Docker Desktop
-on macOS and Windows, `systemctl` on Linux.
 
 ## Pixi Environments
 
-Pixi is the default way to define reproducible task environments.
+Pixi environments come from the `ginkgo-pixi`
+[plugin](concepts.md#glossary), which the curl installer includes. See
+[Plugins](../getting-started/installation.md#plugins).
 
-In the canonical project layout, task-specific manifests typically live under:
+In a project made by `ginkgo init`, each environment has its own directory:
 
 ```text
 workflow/envs/<env_name>/pixi.toml
 ```
 
-A shell, script, or notebook task references that environment by name through
-`env=`:
+A shell, script or notebook task names the environment with `env=`:
 
 ```python
 @task(kind="shell", env="bioinfo_tools")
@@ -85,62 +80,47 @@ def fastq_stats(sample_id: str, fastq: file) -> file:
     ...
 ```
 
-Ginkgo resolves the environment, installs it if it is not installed yet, executes
-the shell payload inside it, and folds the environment lock identity into the
-cache key. A notebook task runs `python -m marimo` inside its environment, so
-that environment must provide `marimo`.
+A notebook task's environment must provide `marimo`. The environment is part
+of each task's cache key. See [Caching and Provenance](caching-and-provenance.md).
 
 ### How A Named Environment Is Resolved
 
-`env="<name>"` is looked up (as `<name>/pixi.toml`, or `<name>/pyproject.toml`
-carrying a `[tool.pixi]` table) in these directories, in order, and the first
-match wins:
+For `env="<name>"`, Ginkgo looks for a directory `<name>` that holds a
+`pixi.toml`, or a `pyproject.toml` with a `[tool.pixi]` table. It uses the
+first match from:
 
-1. **The workflow's own package.** Ginkgo discovers the project's canonical
-   workflow entry — a `flow.py` at the project root, or in exactly one of its
-   immediate subdirectories, however the command was invoked — and searches
-   `<that directory>/envs/`. This is what makes `workflow/envs/<env_name>/` (the
-   layout `ginkgo init` scaffolds) work, since `workflow/` is that directory.
-2. **The project root.** `<project_root>/envs/`, where `project_root` is the
-   directory the command was run from.
+1. `envs/` beside the project's main `flow.py` (`workflow/envs/` in a project
+   made by `ginkgo init`).
+2. `envs/` in the project root.
 
-Step 1 is skipped, and resolution falls back to the workflow file actually
-being run — not the project root — when no single canonical `flow.py` can be
-found: none exists, or more than one does (for example a leftover prototype
-entry file alongside the real one). Either way, an environment declared beside
-whichever `flow.py` you are actually running is always found; only a project
-with *no* discoverable `flow.py` at all falls back to the project root alone.
-
-An explicit path (`env="envs/genomics/pixi.toml"`, containing a `/`) bypasses
-this search entirely and is resolved directly against the project root.
-
-If the environment cannot be found anywhere, the error lists every directory
-that was searched, and what each one holds.
+A value that contains a `/`, such as `env="envs/genomics/pixi.toml"`, is a path
+to the manifest, resolved against the project root. If Ginkgo cannot find the
+environment, the error lists every directory it searched.
 
 ### Where An Environment Is Installed
 
-Pixi installs an environment next to its manifest, in a `.pixi/` directory:
-`workflow/envs/<env_name>/.pixi/envs/default/`. The `.gitignore` that
-`ginkgo init` writes already ignores `.pixi/`. `ginkgo env ls` lists each
-environment's install directory, and `ginkgo env clear <env_name>` removes it.
-The next run that needs the environment installs it again.
+Pixi installs an environment in a `.pixi/` directory beside its manifest, which
+the `.gitignore` from `ginkgo init` already ignores. An environment can take
+about 435 MB for Python with pandas and marimo, but Pixi shares files between
+environments.
 
-An environment is large. Python with pandas and marimo comes to about 435 MB as
-`du` counts it. Most of that is not extra disk use: Pixi links files from its
-package cache (`pixi info` names the cache directory) with hard links, or with
-copy-on-write clones on APFS and btrfs. So a second environment, or a reinstall,
-with the same packages costs little more space. `du` counts every link in full
-either way.
+To list and remove installed Pixi environments, without touching the workflow
+cache:
 
-Pixi's own `detached-environments` setting installs environments outside the
-project tree. Ginkgo does not support it: `ginkgo env ls` and `ginkgo env clear`
-look for `.pixi/` beside the manifest, so they would report a detached
-environment as not installed and leave it on disk.
+```bash
+ginkgo env ls
+ginkgo env clear <env-name>
+ginkgo env clear --all --dry-run
+```
+
+The next run that needs a cleared environment installs it again. For container
+images, use `docker images` and `docker image rm`, or the `podman` equivalents.
+Ginkgo does not support Pixi's `detached-environments` setting.
 
 ## Conda Environment Files
 
-If you already maintain a Conda `environment.yml`, you can point a task straight
-at it instead of writing a `pixi.toml`:
+If you already have a Conda `environment.yml`, point a task straight at it
+instead of writing a `pixi.toml`:
 
 ```python
 @task(kind="shell", env="envs/genomics/environment.yml")
@@ -148,19 +128,18 @@ def call_variants(sample_id: str, bam: file) -> file:
     ...
 ```
 
-Ginkgo recognises a file named `environment.yml` or `environment.yaml` and
-imports it into a generated Pixi workspace (via `pixi init --import`) stored in
-a neighbouring `.ginkgo-pixi/` directory. The generated workspace is reused on
-later runs and regenerated automatically when the source file changes.
+The file must be named `environment.yml` or `environment.yaml`, and the `env`
+value must contain a `/`, as in `./environment.yml`. Ginkgo converts it to a
+Pixi environment in a `.ginkgo-pixi/` directory beside it, and regenerates
+that when the Conda file changes. Don't edit `.ginkgo-pixi/`.
 
-A Conda environment must be referenced by path rather than by bare name, so the
-`env` value contains a `/` — for example `envs/genomics/environment.yml` or
-`./environment.yml`.
+Ginkgo reads no other environment files: no `requirements.txt`, plain `venv`,
+or `conda activate`.
 
 ## Container Environments
 
-Shell tasks can also target a container image through a URI-style environment
-string.
+A shell, script or notebook task can run inside a container image. Name the
+image with a `docker://` or `oci://` URI:
 
 ```python
 @task(kind="shell", env="docker://ubuntu:24.04")
@@ -168,29 +147,26 @@ def count_reads(sample_id: str, fastq: file) -> file:
     ...
 ```
 
-Ginkgo pulls the image itself the first time a task needs it, so nothing has to
-be pulled by hand. Container-backed execution is currently intended for shell
-tasks only; Python tasks run in the environment the CLI itself runs from, covered
-in [Python Tasks Run In The CLI's Own Environment](#python-tasks-run-in-the-clis-own-environment).
+`docker://` and `oci://` mean the same thing here. This `oci://` is unrelated
+to the `oci://` URIs for Oracle Cloud object storage.
 
-### What the container can see
+Container tasks need the Docker or Podman daemon running: on macOS and
+Windows, Docker Desktop or the Podman machine. If it isn't, the task fails with
+a hint on how to start it, and `ginkgo doctor` warns.
 
-A container sees only what is mounted into it. Ginkgo mounts the project root,
-and then whatever the task *declares*: every `file` and `folder` argument
-read-only, and every declared output read-write. Each is mounted at the same
-absolute path it has on the host, so the paths in your command need no
-rewriting, and a symlink still resolves because Ginkgo mounts the real path at
-the path you wrote.
+### What The Container Can See
 
-This is why annotating paths matters. `fastq: file` is visible inside the
-container; the same path pulled out of config and interpolated into the command
-string is not, because nothing declared it. Annotating is already required for
-cache correctness, and the same annotation earns the mount.
+**Annotate every path your command uses**, as a `file`, a `folder` or an
+output. A container sees only the project root and the paths the task
+declares, each at the same absolute path as on your machine. A path read from
+config and pasted into the command string is not visible.
 
-A `file` argument mounts the directory it sits in, not just the file, so a tool
-that reads a sibling — `ref.fa.fai` beside `ref.fa`, `.bai` beside `.bam` — finds
-it. That directory is read-only, so a tool that wants to *create* its index will
-fail and tell you. Declare the index as an output and it becomes writable:
+- **Inputs are read-only.** A `file` input also brings its directory, so a
+  tool finds a neighbouring file such as `ref.fa.fai` or a `.bai`.
+- **Only declared outputs are kept.** Anything written elsewhere is lost when
+  the container exits.
+
+So to create an index beside an input, declare the index as an output:
 
 ```python
 @task(kind="shell", env="docker://quay.io/biocontainers/samtools:1.20--h50ea8bc_0")
@@ -199,150 +175,47 @@ def index_reference(reference: file) -> file:
     return shell(cmd=f"samtools faidx {shlex.quote(reference)}", output=index)
 ```
 
-Declaring it is also what keeps it. Anything a container writes to a path that
-is not mounted goes into the container's own filesystem, which is discarded when
-the container exits — so an undeclared index appears to be written, then quietly
-isn't there.
+**Write outputs to a directory of their own, not straight into your home
+directory.** Ginkgo never mounts your home directory itself, the filesystem
+root, or a top-level system directory such as `/etc`. A directory inside one,
+such as `~/projects/run1`, is fine.
 
-Two directories are never mounted, however a task names them: a system directory
-and your home directory. An output written straight into `$HOME` would hand the
-image `~/.ssh` and `~/.aws` along with it, so give it a directory of its own.
+### What The Container Inherits
 
-### What the container inherits
+Your shell variables are not passed in. The container gets `GINKGO_THREADS`,
+and with `export_thread_env=True`, `OMP_NUM_THREADS` and the related
+thread-count variables.
 
-Ginkgo forwards its own computed variables and nothing else: `GINKGO_THREADS`
-always, and `OMP_NUM_THREADS` and friends when the task declares
-`export_thread_env=True`. The rest of your shell environment stays outside,
-which is the point of running in a container at all.
-
-The container runs as you, not as root, so its outputs stay writable by later
-Python tasks and by the next run. Under Docker that means an explicit
-`uid:gid`; under rootless Podman it means passing nothing, because Podman
-already maps the container's own root to your user. You should not have to think
-about which — that is what `user = "auto"` is for.
+The container runs as your user, not as root, so the files it writes belong to
+you.
 
 ### Configuration
 
-Anything the declarations cannot express goes in `ginkgo.toml`:
+Set anything the task declarations cannot express in `ginkgo.toml`:
 
 ```toml
 [container]
 runtime = "docker"                          # or "podman"
 pull_policy = "if-not-present"              # "always" re-pulls; "never" pulls nothing
-user = "auto"                               # host uid:gid; "root" or "1000:1000"
+user = "auto"                               # your uid:gid; or "root", or "1000:1000"
 shell = "bash"                              # "sh" for Alpine images without bash
 auto_mount = true
 extra_mounts = ["/scratch:rw", "/opt/refs:ro"]
 ```
 
-Unknown keys and values are rejected when a container task is validated:
-`runtime` must be `"docker"` or `"podman"`, and `pull_policy` one of
-`"if-not-present"`, `"always"` or `"never"`. Before pulling an image, ginkgo
-checks that the daemon answers `docker info` (or `podman info`) and stops with
-how to start it when it does not, rather than waiting on a pull that cannot
-finish. A fully cached run never pulls, so it does not need the daemon.
+Ginkgo rejects an unknown key or value.
 
-Use `extra_mounts` for paths no task declares — a tool's own cache directory, a
-licence file. Entries take the form `"/path"`, `"/path:rw"`, or
-`"/host:/container:rw"`, and default to read-only. An entry you write is treated
-as a decision: if a task declares an output inside a path you marked `ro`, the
-run stops and says so rather than quietly granting write access.
-
-`auto_mount = false` turns off the mounts derived from task declarations. Your
-`extra_mounts` still apply.
-
-Set `user = "root"` for an image that installs software at runtime and needs to
-write outside its mounts. Note that its outputs will then be root-owned.
-
-## Python Tasks Run In The CLI's Own Environment
-
-`env=` is only available on the driver kinds — `shell`, `script`, and
-`notebook`. A `kind="python"` task carrying one is rejected before any work
-starts:
-
-```text
-✖ workflow.flow.summarise uses env 'analysis_tools' but is declared with
-kind='python'. Foreign environments only support driver tasks — use
-@task('shell'), @task('notebook'), or @task('script').
-```
-
-`ginkgo doctor` reports the same thing as `invalid_env_kind` without running
-anything.
-
-The consequence is the part worth internalising: **every import in a Python task
-body resolves against the interpreter the `ginkgo` CLI runs from, not against
-your project's `pixi.toml`.** A task that does `import pandas` fails with
-`ModuleNotFoundError` unless pandas is installed alongside the CLI, however
-thoroughly the project's environments list it.
-
-To find that interpreter, read the console script's shebang:
-
-```bash
-head -1 "$(command -v ginkgo)"
-```
-
-```text
-#!/Users/you/Software/ginkgo/.pixi/envs/default/bin/python3.14
-```
-
-How you add a package to it depends on how you installed Ginkgo:
-
-- Installed as a uv tool (the [curl installer](../getting-started/installation.md#quick-install-curl)):
-  reinstall with the extras listed, since `uv tool` keeps the tool's environment
-  isolated by design —
-  `uv tool install --force --with pandas --with "ginkgo-pixi @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-pixi" "git+https://github.com/sanjaynagi/ginkgo.git@main"`.
-  `--force` replaces the tool's `--with` set, so keep ginkgo-pixi in it.
-- Running from a Pixi workspace: add the package to that workspace's manifest
-  and `pixi install`.
-- A plain `pip install -e .` environment: `pip install pandas` into the same
-  environment.
-
-Either way, that environment is a dependency of your workflow that Ginkgo does
-not manage for you. When a step needs dependencies of its own — a version that
-conflicts with the CLI's, or a tool that is not a Python package at all — move it
-to `kind="script"` or `kind="shell"` with `env=`. That is the supported route to
-isolated dependencies, and Ginkgo installs the environment for you.
-
-Lifting the restriction so that `kind="python"` can take `env=` is tracked in
-[issue #87](https://github.com/sanjaynagi/ginkgo/issues/87).
-
-## Environment Commands
-
-The `ginkgo-pixi` plugin adds environment inspection and cleanup commands:
-
-```bash
-ginkgo env ls
-ginkgo env clear <env-name>
-ginkgo env clear --all --dry-run
-```
-
-Use these when you need to inspect or reset local environment state without
-clearing the workflow cache itself.
-
-**These commands cover Pixi environments only.** They work in terms of a project
-directory holding a `pixi.toml` and a neighbouring `.pixi/` install directory, so
-`ls` lists what it finds under the discovery roots and `clear` removes an install
-directory from disk. A container image has neither, so a workflow declaring both
-kinds sees only the Pixi half — which the listing says for itself:
-
-```text
-🌿 ginkgo env ls
-
-┌────────────────┬───────────┬────────────────────────┬────────────────────────┐
-│ Env            │ Installed │ Manifest               │ Install Dir            │
-├────────────────┼───────────┼────────────────────────┼────────────────────────┤
-│ analysis_tools │ yes       │ /private/tmp/rnaseq/w… │ /private/tmp/rnaseq/w… │
-└────────────────┴───────────┴────────────────────────┴────────────────────────┘
-Container environments are managed by the container runtime and are not listed
-here.
-```
-
-To inspect or reclaim images, use the runtime directly — `docker images`,
-`docker image rm`, or the `podman` equivalents.
+- `extra_mounts` adds paths no task declares, such as a licence file. An entry
+  is `"/path"`, `"/path:rw"` or `"/host:/container:rw"`, read-only by default.
+  The home-directory rule above applies here too.
+- `auto_mount = false` turns off the mounts that come from task declarations.
+  Your `extra_mounts` still apply.
+- `user = "root"` suits an image that installs software as it runs. Its outputs
+  are then owned by root.
 
 ## See Also
 
-- [Caching and Provenance](caching-and-provenance.md) &mdash; environment lock
-  identity is part of every environment-backed task's cache key.
-- [Tasks and Flows](tasks-and-flows.md) &mdash; how shell, script, and notebook
-  tasks are authored.
+- [Caching and Provenance](caching-and-provenance.md) &mdash; how the
+  environment affects a task's cache key.
+- [Tasks and Flows](tasks-and-flows.md) &mdash; how to write shell, script and
+  notebook tasks.

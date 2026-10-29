@@ -1,63 +1,113 @@
 # Installation
 
-Ginkgo targets Python 3.11+. Use the curl installer to get just the `ginkgo`
-CLI, or Pixi for a full local development setup.
+Ginkgo needs Python 3.11 or later.
+
+To write and run workflows, use the curl installer. It is the route for most
+readers. To work on Ginkgo itself, clone the repository and use Pixi, as shown
+in the last section of this page.
 
 ## Quick Install (curl)
 
-Install the `ginkgo` CLI in one line. This requires [uv](https://docs.astral.sh/uv/getting-started/installation/):
+Install the `ginkgo` command in one line. This needs
+[uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh | sh
 ```
 
-This installs `ginkgo` from `main` into an isolated environment via
-`uv tool install`, with the `ginkgo-pixi` plugin. Re-run the same command to
-upgrade. It installs just the CLI:
-the example workflows under `examples/` and the Pixi workspace below come from
-a clone of the repository (`git clone https://github.com/sanjaynagi/ginkgo.git`).
+This installs `ginkgo` and its Pixi plugin from the `main` branch, into an
+isolated environment that uv manages. Run the same command again to upgrade.
+
+The installer gives you only the `ginkgo` command. The example workflows are
+not included. To get them, clone the repository:
+
+```bash
+git clone https://github.com/sanjaynagi/ginkgo.git
+```
+
+## Verify The CLI
+
+Check that the `ginkgo` command works:
+
+```bash
+ginkgo --help
+```
 
 ## Plugins
 
-The installer gives you core plus `ginkgo-pixi`, which runs tasks' bare
-`env="name"` Pixi environments. Other optional integrations ship as separate
-plugins in this repository:
+Extra features come as [plugins](../guide/concepts.md#glossary), which you
+install alongside the `ginkgo` package. The curl installer includes
+`ginkgo-pixi`.
 
-- `ginkgo-aws`: the `s3://` object store and the mountpoint-s3 FUSE driver
-- `ginkgo-gcp`: the `gs://` object store, the gcsfuse FUSE driver and the GCP
-  Batch executor
-- `ginkgo-oci`: the `oci://` object store and the rclone FUSE driver
-- `ginkgo-pixi`: Pixi environments for tasks' `env="name"`, and `ginkgo env`
-- `ginkgo-k8s`: the Kubernetes executor
-- `ginkgo-notebook`: `@task("notebook")`, which runs marimo notebooks (installs
-  `marimo`)
-- `ginkgo-report`: the `ginkgo report` command, for HTML run reports
-- `ginkgo-slack`: Slack run notifications
+| Plugin | Adds |
+|---|---|
+| `ginkgo-pixi` | Pixi environments (`env="name"`) and the `ginkgo env` command |
+| `ginkgo-notebook` | `@task("notebook")`, for marimo notebooks. Projects from `ginkgo init` list it in their `pixi.toml` |
+| `ginkgo-report` | the `ginkgo report` command, for HTML run reports |
+| `ginkgo-slack` | run notifications to Slack |
+| `ginkgo-k8s` | the Kubernetes [executor](../guide/concepts.md#glossary) |
+| `ginkgo-gcp` | `gs://` storage and the GCP Batch executor |
+| `ginkgo-aws` | `s3://` storage |
+| `ginkgo-oci` | `oci://` storage (Oracle Cloud Object Storage) |
 
-To install ginkgo with every first-party plugin:
+The `oci://` container images in a task's `env=` need no plugin.
+
+To install Ginkgo with every first-party plugin:
 
 ```bash
 uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
 ```
 
-Or add a single plugin alongside core:
+To add a single plugin, list it with `--with`. Keep `ginkgo-pixi` in the list,
+because `--force` replaces the plugins the tool had before:
 
 ```bash
 uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
+  --with "ginkgo-pixi @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-pixi" \
   --with "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s"
 ```
 
-`ginkgo plugins` lists what is installed. A `remote_file()` or
-`remote_folder()` URI needs the plugin for its scheme; without it, ginkgo names
-the plugin to install.
+`ginkgo plugins` lists what is installed. If a task needs a missing plugin,
+Ginkgo names it. [Remote Execution](../guide/remote-execution.md#installing-an-executor)
+explains how to set up an executor.
 
-See [Remote Execution](../guide/remote-execution.md#installing-an-executor) for
-configuring the executors.
+## Runtime Prerequisites
 
-## Recommended For Development: Pixi
+Ginkgo builds the environments your tasks declare. To do that, it runs `pixi`,
+`docker` or `podman` on your computer. Each program must be on your `PATH` when
+you run a workflow that uses it:
 
-This repository already includes a Pixi workspace. Install the environment and
-use Pixi to run tests, the CLI, and the docs build.
+- `pixi`, for tasks that declare a Pixi or Conda environment. Install it from
+  [pixi.sh](https://pixi.sh/). Ginkgo runs `pixi install` for you on first use.
+- `docker` or `podman`, for tasks that declare a `docker://` or `oci://` image.
+  Ginkgo pulls the image for you on first use.
+
+You need neither if your workflow declares no environments. See
+[Environments](../guide/environments.md).
+
+Python tasks run in the same Python environment as the `ginkgo` command, so
+install any package they import there. See
+[Python Tasks Run In The CLI's Own Environment](../guide/environments.md#python-tasks-run-in-the-clis-own-environment).
+
+## Editable Python Install
+
+To use a plain Python environment instead, clone the repository and install
+from the clone:
+
+```bash
+git clone https://github.com/sanjaynagi/ginkgo.git
+cd ginkgo
+pip install -e .
+pip install -e plugins/ginkgo-k8s plugins/ginkgo-gcp   # optional executors
+```
+
+This installs the `ginkgo` command.
+
+## Install For Ginkgo Development (Pixi)
+
+The repository's `pyproject.toml` sets up Pixi for working on Ginkgo itself.
+From a clone, install the environment and use Pixi to run the tests and build
+the docs:
 
 ```bash
 pixi install
@@ -65,57 +115,11 @@ pixi run test
 pixi run docs-build
 ```
 
-The default environment installs every first-party plugin editable, so
-`pixi run test` covers core and the plugins. The `core` environment has no
-plugins: `pixi run -e core test-core` runs core's tests there.
+The default environment installs every first-party plugin in editable mode, so
+`pixi run test` tests the core and the plugins. The `core` environment has no
+plugins. Run `pixi run -e core test-core` to test the core alone.
 
-## Runtime Prerequisites
-
-Ginkgo materialises declared task environments itself, by shelling out, so the
-tool behind each kind of environment must be on your `PATH` when you run a
-workflow that uses it:
-
-- `pixi`, for tasks declaring a Pixi or Conda environment. Install it from
-  [pixi.sh](https://pixi.sh/). Ginkgo runs `pixi install` for you on first use.
-- `docker` or `podman`, for tasks declaring a `docker://` or `oci://` image.
-  Ginkgo runs `<runtime> pull` for you on first use.
-
-Neither is needed if your workflow declares no environments. See
-[Environments](../guide/environments.md) for what Ginkgo installs, when, and what
-that costs on a first run.
-
-Python task bodies are the exception: they run in the environment the `ginkgo`
-CLI itself runs from, so their imports must be installed there. See
-[Python Tasks Run In The CLI's Own Environment](../guide/environments.md#python-tasks-run-in-the-clis-own-environment).
-
-## Editable Python Install
-
-If you prefer a plain Python environment:
-
-```bash
-pip install -e .
-pip install -e plugins/ginkgo-k8s plugins/ginkgo-gcp   # optional executors
-```
-
-That installs the `ginkgo` console script defined in the project metadata.
-
-## Optional Notebook Support
-
-Notebook tasks run marimo notebooks and come from the `ginkgo-notebook` plugin,
-which depends on `marimo`. The curl installer does not include it; install it
-alongside core as shown under [Plugins](#plugins), or use `ginkgo[all]`.
-Projects scaffolded by `ginkgo init` declare it in their `pixi.toml`. If you
-are not using notebooks, you do not need it.
-
-## Verify The CLI
-
-After installation, confirm that the CLI is available:
-
-```bash
-ginkgo --help
-```
-
-If you are using Pixi instead of installing the console script directly:
+To check the CLI in this setup, run:
 
 ```bash
 pixi run python -m ginkgo.cli --help
