@@ -1,0 +1,95 @@
+/* Ginkgo's docs theme: the forest home page's palette and type, on Starlight.
+
+   Display  Outfit, light and rounded like the ginkgo wordmark
+   Body     Hanken Grotesk
+   Mono     IBM Plex Mono
+   Dark mode is the forest at dusk; light mode is the clearing. */
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500&family=Hanken+Grotesk:ital,wght@0,400..700;1,400..600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+	--ginkgo-display: 'Outfit', system-ui, sans-serif;
+	--sl-font: 'Hanken Grotesk', system-ui, sans-serif;
+	--sl-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+	--ginkgo-gold: #f2c230;
+
+	/* Dark: the forest at dusk. */
+	--sl-color-accent-low: #0f4544;
+	--sl-color-accent: #14a3a6;
+	--sl-color-accent-high: #a6e6e3;
+	--sl-color-white: #f2f8f5;
+	--sl-color-gray-1: #dfeae6;
+	--sl-color-gray-2: #bcd3cc;
+	--sl-color-gray-3: #87a69e;
+	--sl-color-gray-4: #4f716a;
+	--sl-color-gray-5: #24433f;
+	--sl-color-gray-6: #12302e;
+	--sl-color-black: #0b2422;
+}
+
+:root[data-theme='light'] {
+	/* Light: the clearing. */
+	--sl-color-accent-low: #cdeeee;
+	--sl-color-accent: #0b6e70;
+	--sl-color-accent-high: #063c3d;
+	--sl-color-white: #13201d;
+	--sl-color-gray-1: #26332f;
+	--sl-color-gray-2: #3d4b47;
+	--sl-color-gray-3: #63716c;
+	--sl-color-gray-4: #94a39d;
+	--sl-color-gray-5: #cbd8d1;
+	--sl-color-gray-6: #e6ede7;
+	--sl-color-gray-7: #f1f5f0;
+	--sl-color-black: #f8faf6;
+}
+
+/* Headings in Outfit, light at the top and firmer further down. */
+h1#_top,
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) {
+	font-family: var(--ginkgo-display);
+	letter-spacing: -0.015em;
+}
+h1#_top {
+	font-weight: 300;
+	letter-spacing: -0.03em;
+}
+.sl-markdown-content h2 { font-weight: 400; }
+.sl-markdown-content :is(h3, h4, h5, h6) { font-weight: 500; }
+
+/* Sidebar group headings in the display face, without all caps. */
+.sidebar-content .group-label .large {
+	font-family: var(--ginkgo-display);
+	font-weight: 500;
+	text-transform: none;
+}
+
+/* Cards: a gold top edge, as on the home page's principles. */
+.sl-markdown-content .card {
+	border-top: 2px solid var(--sl-color-accent);
+}
+
+/* The header carries the home page's wordmark: the leaf, then "ginkgo". */
+.site-title {
+	font-family: var(--ginkgo-display);
+	font-weight: 300;
+	font-size: 1.6rem;
+	letter-spacing: 0.01em;
+	text-transform: lowercase;
+	color: var(--sl-color-white);
+}
+.site-title img { height: 1.7rem; }
+
+/* Code in a heading reads as part of the heading, not as a box. */
+.sl-markdown-content :is(h1, h2, h3, h4) code {
+	background: none;
+	border: none;
+	padding: 0;
+	font-size: 0.86em;
+	color: var(--sl-color-accent-high);
+}
+
+/* Cards and their icons in the leaf's teal, not Starlight's rainbow. */
+.sl-markdown-content .card {
+	--sl-card-border: var(--sl-color-accent);
+	--sl-card-bg: var(--sl-color-accent-low);
+}

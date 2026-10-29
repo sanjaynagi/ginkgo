@@ -34,6 +34,9 @@ worklog.md
 ginkgo-design-doc.md
 example-workflow.py
 docs/_build/
+docs/site/node_modules/
+docs/site/dist/
+docs/site/.astro/
 
 # OS/editor noise
 .DS_Store

@@ -3,7 +3,7 @@
 # Render from the repository root (needs vhs, bat, pixi and treewas-rs):
 #   vhs docs/demo/walkthrough.tape
 
-Output docs/site/_static/walkthrough.mp4
+Output docs/site/public/_static/walkthrough.mp4
 
 Set Shell bash
 Set FontSize 17
