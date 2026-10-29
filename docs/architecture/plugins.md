@@ -186,7 +186,7 @@ tasks, Slack notifications and HTML reports are not in core. They live in separa
 | `plugins/ginkgo-report` | `ginkgo_report` | `report = "ginkgo_report:PLUGIN"` | `CliCommand` `report` | `jinja2` |
 | `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |
 
-Each pins the exact core version (`ginkgo==0.1.0`). They are not on PyPI: core's
+Each pins the exact core version (`ginkgo==0.4.0`). They are not on PyPI: core's
 `all` extra installs every one through git direct references at the same ref as
 core.
 

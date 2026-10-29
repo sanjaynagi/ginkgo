@@ -1,11 +1,11 @@
 [project]
 name = "ginkgo-notebook"
-version = "0.1.0"
+version = "0.4.0"
 description = "marimo notebooks as ginkgo tasks"
 requires-python = ">= 3.11"
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.1.0",
+    "ginkgo==0.4.0",
     "marimo>=0.23",
 ]
 
