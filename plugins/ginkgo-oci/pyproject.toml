@@ -1,11 +1,11 @@
 [project]
 name = "ginkgo-oci"
-version = "0.1.0"
+version = "0.4.0"
 description = "Oracle Cloud integrations for ginkgo: the oci:// object store and rclone driver"
 requires-python = ">= 3.11"
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.1.0",
+    "ginkgo==0.4.0",
     "ocifs>=1.3.2",
 ]
 

@@ -1,11 +1,11 @@
 [project]
 name = "ginkgo-k8s"
-version = "0.1.0"
+version = "0.4.0"
 description = "Kubernetes executor for ginkgo: run tasks as batch/v1 Jobs"
 requires-python = ">= 3.11"
 license = "Apache-2.0"
 dependencies = [
-    "ginkgo==0.1.0",
+    "ginkgo==0.4.0",
     "kubernetes>=28.1",
 ]
 
