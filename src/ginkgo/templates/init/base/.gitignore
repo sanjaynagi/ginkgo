@@ -1,6 +1,5 @@
-# pixi.lock is deliberately absent from this file. pixi.toml tracks ginkgo's
-# `main` branch, so the lock is the only record of which ginkgo commit this
-# project actually runs — and of every other resolved dependency. Commit it.
+# pixi.lock is deliberately absent from this file. It is the only record of
+# every resolved dependency this project runs. Commit it.
 
 # Pixi's materialised environments, rebuilt from pixi.lock by `pixi install`.
 .pixi/

@@ -18,7 +18,7 @@ import pytest
 from rich.console import Console
 
 import ginkgo
-from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL, _iter_template_files
+from ginkgo.cli.commands.init import GINKGO_VERSION, _iter_template_files
 from ginkgo.cli.renderers.common import (
     _MultiStateBar,
     _core_unit_label,
@@ -755,10 +755,9 @@ class TestCliInit:
         }
         assert imports <= declared
         assert manifest["tasks"]["run"] == "ginkgo run"
-        # #284: the manifest tracks a branch; the committed pixi.lock pins the commit.
-        requirement = manifest["pypi-dependencies"]["ginkgo-workflow"]
-        assert (requirement["git"], requirement["branch"]) == (GINKGO_REPO_URL, GINKGO_BRANCH)
-        assert "rev" not in requirement and "tag" not in requirement
+        # #434: ginkgo and its plugins come from the PyPI release that ran init.
+        for name in ("ginkgo-workflow", "ginkgo-pixi", "ginkgo-notebook"):
+            assert manifest["pypi-dependencies"][name] == f"=={GINKGO_VERSION}"
         patterns = {
             line.strip()
             for line in text(".gitignore").splitlines()
@@ -768,7 +767,7 @@ class TestCliInit:
         assert not any("lock" in pattern for pattern in patterns)
 
     def test_templates_only_use_ginkgo_names_this_source_exports(self) -> None:
-        """A scaffolded project installs ginkgo from `main`, so its templates must run on it."""
+        """A scaffolded project installs the ginkgo that ran init, so its templates must run on it."""
         required = _template_ginkgo_symbols()
         assert required, "no ginkgo symbols found in the templates — the scan is broken"
         missing = sorted(name for name in required if not hasattr(ginkgo, name))

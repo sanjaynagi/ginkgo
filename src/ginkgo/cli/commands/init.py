@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import resources
+from importlib.metadata import version
 from importlib.resources.abc import Traversable
 import shutil
 import sys
@@ -22,18 +23,13 @@ _TEMPLATE_PROJECT_NAME = "ginkgo-init-template"
 #: like-named package directory.
 PACKAGE_NAME = "workflow"
 
-#: Repository the scaffolded project installs ginkgo from.
-GINKGO_REPO_URL = "https://github.com/sanjaynagi/ginkgo.git"
-
-#: Branch of that repository the scaffolded project tracks.
+#: Ginkgo release the scaffolded project installs from PyPI.
 #:
-#: The manifest names a branch rather than a commit because pixi resolves the
-#: branch to a concrete commit when it installs, and writes that commit into
-#: the project's ``pixi.lock``. Reproducibility lives in that lock, which the
-#: scaffolded ``.gitignore`` deliberately does not ignore, so the project
-#: commits it. A commit named here instead would be a second, hand-maintained
-#: record of the same fact, and the one that goes stale (#284).
-GINKGO_BRANCH = "main"
+#: It is the version running ``ginkgo init``, so the templates the project starts
+#: from are the ones that release ships. The plugins pin this exact ginkgo
+#: version, so the manifest pins all three to it. ``pixi.lock`` still records
+#: every other resolved dependency, so the scaffold commits it.
+GINKGO_VERSION = version("ginkgo-workflow")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -47,8 +43,7 @@ class TemplateContext:
     notebooks_relpath: str
     scripts_relpath: str
     tests_relpath: str
-    ginkgo_repo_url: str
-    ginkgo_branch: str
+    ginkgo_version: str
 
 
 def _template_root(*, group: str):
@@ -67,8 +62,7 @@ def _render_template_content(*, content: str, context: TemplateContext) -> str:
         "{{ notebooks_relpath }}": context.notebooks_relpath,
         "{{ scripts_relpath }}": context.scripts_relpath,
         "{{ tests_relpath }}": context.tests_relpath,
-        "{{ ginkgo_repo_url }}": context.ginkgo_repo_url,
-        "{{ ginkgo_branch }}": context.ginkgo_branch,
+        "{{ ginkgo_version }}": context.ginkgo_version,
     }
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
@@ -130,8 +124,7 @@ def _template_context(*, root: Path) -> TemplateContext:
     """Return the scaffold render context for one project root."""
     package_dir = Path(PACKAGE_NAME)
     return TemplateContext(
-        ginkgo_repo_url=GINKGO_REPO_URL,
-        ginkgo_branch=GINKGO_BRANCH,
+        ginkgo_version=GINKGO_VERSION,
         project_name=root.name,
         workflow_relpath=str(package_dir / "flow.py"),
         modules_relpath=str(package_dir / "modules"),
