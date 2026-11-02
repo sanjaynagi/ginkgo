@@ -18,19 +18,20 @@ pixi run run     # ginkgo run
 
 ## Commit `pixi.lock`
 
-`pixi.toml` tracks ginkgo's `main` branch rather than naming a commit. `pixi
-install` resolves that branch to exactly one commit and writes it into
-`pixi.lock`, so the lock — not the manifest — is what records which ginkgo this
-project runs, alongside every other resolved dependency.
+`pixi.toml` pins ginkgo and its plugins to the release that created this
+project. `pixi install` resolves everything else and writes the result into
+`pixi.lock`, so the lock records the exact environment this project runs.
 
 That makes `pixi.lock` a source file here. Commit it, and commit it again
-whenever `pixi update` changes it. The scaffolded `.gitignore` ignores the
-generated directories (`.pixi/`, `.ginkgo/`, `results/`, `logs/`) and
-deliberately does not ignore the lock. A clone without the lock re-resolves
-`main` and may get a different ginkgo than the one your results came from.
+whenever `pixi install` or `pixi update` changes it. The scaffolded `.gitignore`
+ignores the generated directories (`.pixi/`, `.ginkgo/`, `results/`, `logs/`)
+and deliberately does not ignore the lock. A clone without the lock re-resolves
+the other dependencies and may get different versions from the ones your
+results came from.
 
-Use `pixi update ginkgo-workflow` to move to the current `main`, or swap `branch` for
-`rev`/`tag` in `pixi.toml` to hold this project on one ginkgo permanently.
+To upgrade ginkgo, change the version on all three ginkgo entries in
+`pixi.toml` together (the plugins pin the exact ginkgo version they ship with),
+then run `pixi install`.
 
 Python tasks cannot declare `env=` — they execute in the same interpreter as the
 CLI — so any library a Python or notebook task imports belongs in the
