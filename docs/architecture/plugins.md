@@ -187,7 +187,7 @@ tasks, Slack notifications and HTML reports are not in core. They live in separa
 | `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |
 
 Each is published to PyPI alongside core (`ginkgo-workflow`), at the same
-version, and pins the exact core version (`ginkgo-workflow==0.4.0`). Core's
+version, and pins that exact core version. Core's
 `all` extra installs every one, and an extra per plugin
 (`ginkgo-workflow[k8s]`) installs one.
 
