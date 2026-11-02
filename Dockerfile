@@ -8,7 +8,7 @@
 # stdout. Run with the command `ginkgo run <workflow>` instead, it is a driver
 # that dispatches tasks to Kubernetes (see deploy/oke/).
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Prevent Python from writing .pyc files and enable unbuffered output
 # so pod logs appear immediately.

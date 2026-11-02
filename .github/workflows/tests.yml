@@ -8,6 +8,13 @@ on:
 
 jobs:
   tests:
+    # One job per supported Python: default resolves the newest, and the
+    # pyNNN environments pin the older ones (see pyproject.toml).
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [default, py312, py313]
+    name: tests (${{ matrix.environment }})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +29,10 @@ jobs:
         with:
           cache: true
           locked: true
+          environments: ${{ matrix.environment }}
 
       - name: Run test suite
-        run: pixi run test
+        run: pixi run -e ${{ matrix.environment }} test
 
   core-without-plugins:
     # Core's own suite in an environment with no plugin installed: proves core

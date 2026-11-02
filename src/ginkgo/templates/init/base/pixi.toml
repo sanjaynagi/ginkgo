@@ -8,7 +8,7 @@ platforms = ["osx-arm64", "linux-64"]
 # tasks cannot declare `env=` — only shell, script, and notebook tasks can —
 # so add your analysis libraries to this manifest, not to a task env.
 [dependencies]
-python = ">=3.11"
+python = ">=3.12"
 numpy = ">=2.0"
 pandas = ">=2.0"
 marimo = ">=0.23"

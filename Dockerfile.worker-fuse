@@ -15,7 +15,7 @@
 # not stream. Executor config selects which image runs a given pod via
 # the `fuse_image` field.
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -195,8 +195,12 @@ class TestRemoteJobCancellation:
     """SIGTERM cancels remote jobs promptly, not when some job next finishes."""
 
     def test_sigterm_cancels_an_in_flight_remote_job(self, tmp_path: Path) -> None:
+        # A file, not ``-c``: before Python 3.13, ``inspect`` cannot read the
+        # source of a function defined in ``-c`` code, so the task cannot hash.
+        script = tmp_path / "cancel.py"
+        script.write_text(textwrap.dedent(_REMOTE_CANCEL_SCRIPT))
         result = subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(_REMOTE_CANCEL_SCRIPT)],
+            [sys.executable, str(script)],
             check=False,
             text=True,
             capture_output=True,
