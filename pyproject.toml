@@ -113,6 +113,7 @@ precommit = "pre-commit run --all-files"
 docs-build = "npm --prefix docs/site ci && npm --prefix docs/site run build"
 docs-serve = "npm --prefix docs/site run dev"
 docs-clean = "rm -rf docs/site/dist docs/site/.astro"
+set-version = "python scripts/version.py set"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
