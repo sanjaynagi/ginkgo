@@ -972,7 +972,7 @@ packages:
   - ginkgo-pixi==0.4.0 ; extra == 'all'
   - ginkgo-report==0.4.0 ; extra == 'all'
   - ginkgo-slack==0.4.0 ; extra == 'all'
-  requires_python: '>=3.11'
+  requires_python: '>=3.12'
 - pypi: https://files.pythonhosted.org/packages/06/8e/8458c4285fbc5de76414f243e4e0fcab795d71a8b75324e14959aee699da/blake3-1.0.8-cp314-cp314-macosx_11_0_arm64.whl
   name: blake3
   version: 1.0.8

@@ -227,11 +227,11 @@ Before you start:
 
 ## Worker Docker Image
 
-A worker image needs Python 3.11 or later, Ginkgo, and the plugin for each
+A worker image needs Python 3.12 or later, Ginkgo, and the plugin for each
 object store the worker reads. The repository's `Dockerfile` builds one:
 
 ```dockerfile
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

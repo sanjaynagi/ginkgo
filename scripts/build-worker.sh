@@ -19,7 +19,7 @@
 #                        (default: ${GINKGO_REGISTRY}/worker:v2)
 #   GINKGO_REPO_NAME   Target image repo name (default: <project>-worker)
 #
-# Requires: docker (with buildx), python3 (3.11+), registry auth.
+# Requires: docker (with buildx), python3 (3.12+), registry auth.
 
 set -euo pipefail
 

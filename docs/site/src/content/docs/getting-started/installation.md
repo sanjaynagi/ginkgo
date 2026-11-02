@@ -2,7 +2,7 @@
 title: "Installation"
 ---
 
-Ginkgo needs Python 3.11 or later.
+Ginkgo needs Python 3.12 or later.
 
 To write and run workflows, use the curl installer. It is the route for most
 readers. To work on Ginkgo itself, clone the repository and use Pixi, as shown
