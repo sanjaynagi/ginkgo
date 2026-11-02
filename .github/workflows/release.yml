@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a v* tag builds ginkgo-workflow and every first-party plugin and
 # publishes them to PyPI. They are released together at the same version, so
-# the tag must match every package's version. Each package publishes from an
+# the tag must match every package's version: set them all with
+# `pixi run set-version X` before tagging. Each package publishes from an
 # environment of its own, pypi-<package>, because PyPI lets only one new
 # project register a given repository, workflow and environment as its
 # trusted publisher.
