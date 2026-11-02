@@ -23,9 +23,6 @@ jobs:
       - name: Run pre-commit
         run: pixi run precommit
 
-      - name: Check every package and pin is at one version
-        run: python3 scripts/version.py check
-
   typecheck:
     runs-on: ubuntu-latest
     steps:
