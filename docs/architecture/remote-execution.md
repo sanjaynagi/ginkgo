@@ -90,7 +90,9 @@ The worker entry point (`remote/worker.py`) runs as
    driver-local paths (log files, transport directory), so task
    output goes to the container's stdout/stderr and appears in the pod logs
 5. Uploads outputs and large result values, then prints a JSON result line to
-   stdout for the handle to parse
+   stdout for the handle to parse. A result holding task expressions is
+   pickled whole with its `file`/`folder` leaves uploaded beside it, and the
+   driver expands it as it would a local task's
 
 The same worker image serves both K8s and GCP Batch executors. It installs
 core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a

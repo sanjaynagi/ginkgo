@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from ginkgo.runtime.module_loader import load_module
 from ginkgo.runtime.environment.secrets import redact_text
-from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
+from ginkgo.runtime.artifacts.value_codec import decode_value, encode_dynamic_value, encode_value
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
@@ -298,7 +298,10 @@ def run_task(
         # reference paths inside a mount (e.g. an input path returned
         # through), and encoding reads file content.
         if _is_dynamic_result(result):
-            response = {"ok": True, "result": result, "result_encoding": "direct"}
+            encoded_result = encode_dynamic_value(
+                result, base_dir=base_dir, artifact_store=artifact_store
+            )
+            response = {"ok": True, "result": encoded_result, "result_encoding": "dynamic"}
         else:
             encoded_result = encode_value(result, base_dir=base_dir, artifact_store=artifact_store)
             response = {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
@@ -378,8 +381,8 @@ def _args_have_fuse_inputs(value: Any) -> bool:
 def _is_dynamic_result(value: Any) -> bool:
     """Return whether *value* is a directive or holds task expressions anywhere.
 
-    Such a result goes back to the driver as one object rather than encoded
-    leaf by leaf, so an expression it holds twice (``[merge(ps=calls),
+    Such a result goes back to the driver pickled as one object rather than
+    encoded leaf by leaf, so an expression it holds twice (``[merge(ps=calls),
     calls]``) still arrives as one expression and registers as one task.
     """
     from ginkgo.core.directive import ExecutionDirective
