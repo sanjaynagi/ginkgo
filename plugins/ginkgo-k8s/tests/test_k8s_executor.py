@@ -486,7 +486,11 @@ class TestAPodThatCannotStart:
         return now
 
     def _handle(self, *pods: k8s.V1Pod, active: int = 1) -> KubernetesJobHandle:
-        """A handle to a Job with *active* pods, whose pod reads as each of *pods* in turn."""
+        """A handle to a Job with *active* pods, whose pod reads as each of *pods* in turn.
+
+        After the last, the pod keeps reading as the last, so a listing the
+        test did not count reads a real pod rather than raising.
+        """
         handle = KubernetesJobHandle(
             job_name="ginkgo-test-001",
             namespace="ginkgo",
@@ -497,9 +501,14 @@ class TestAPodThatCannotStart:
         )
         status = handle._batch_api.read_namespaced_job.return_value.status
         status.succeeded, status.active, status.conditions = None, active, []
-        handle._core_api.list_namespaced_pod.side_effect = [
-            k8s.V1PodList(items=[pod]) for pod in pods
-        ]
+        listed = iter(pods)
+        current = [pods[0]]
+
+        def list_pods(**_: object) -> k8s.V1PodList:
+            current[0] = next(listed, current[0])
+            return k8s.V1PodList(items=[current[0]])
+
+        handle._core_api.list_namespaced_pod.side_effect = list_pods
         handle._core_api.read_namespaced_pod_log.side_effect = Exception("no logs")
         return handle
 
@@ -577,6 +586,15 @@ class TestAPodThatCannotStart:
 
         assert result.state == RemoteJobState.FAILED
         assert result.payload["error"] == error
+
+    def test_an_image_pull_failure_waits_for_its_own_timeout(self, clock: list[float]) -> None:
+        stuck = _pod(waiting={"task": "ErrImagePull"})
+        handle = self._handle(stuck)
+        handle.unschedulable_timeout = 10_000.0
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 61
+        assert handle.state() == RemoteJobState.FAILED
 
     def test_an_active_unschedulable_pod_waits_past_the_timeout(self, clock: list[float]) -> None:
         # A fan-out larger than the cluster, or GPU nodes scaling up, leaves
