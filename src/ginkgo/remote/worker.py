@@ -112,13 +112,9 @@ def run_worker_payload(payload: dict) -> dict:
             _stage_output_params(result, entries=output_param_entries, remote_store=remote_store)
 
         # Publish produced file/folder outputs back to the shared artifact
-        # store so the client can hydrate them. Skipped for dynamic results
-        # and failures — both contain no encoded file/folder leaves.
-        if (
-            remote_store is not None
-            and result.get("ok")
-            and result.get("result_encoding") == "encoded"
-        ):
+        # store so the client can hydrate them. Skipped for failures, which
+        # contain no encoded file/folder leaves.
+        if remote_store is not None and result.get("ok"):
             _stage_remote_outputs(
                 result, remote_store=remote_store, output_param_entries=output_param_entries
             )

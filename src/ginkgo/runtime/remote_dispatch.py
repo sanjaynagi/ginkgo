@@ -220,7 +220,6 @@ class RemoteDispatchManager:
             self._artifact_store is not None
             and isinstance(payload, dict)
             and payload.get("ok")
-            and payload.get("result_encoding") == "encoded"
             and "result" in payload
         ):
             from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote

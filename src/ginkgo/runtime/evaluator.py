@@ -105,7 +105,7 @@ from ginkgo.runtime.task_validation import (
     contains_dynamic_expression,
     declared_output_paths,
 )
-from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
+from ginkgo.runtime.artifacts.value_codec import decode_dynamic_value, decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -1841,18 +1841,15 @@ class ConcurrentEvaluator:
         }
 
     def _decode_worker_result(self, *, node: NodeRun, payload: dict[str, Any]) -> Any:
-        """Decode a process-pool worker response."""
+        """Decode a process-pool or remote worker response."""
         if not payload["ok"]:
             raise _reconstruct_worker_error(payload["error"])
 
-        encoding = payload.get("result_encoding")
-
-        if encoding == "direct":
-            # Process-pool path: Python object passed directly (no serialization).
-            return payload["result"]
-
         assert node.transport_path is not None
-        return decode_value(
+        decode = (
+            decode_dynamic_value if payload.get("result_encoding") == "dynamic" else decode_value
+        )
+        return decode(
             payload["result"],
             base_dir=node.transport_path,
             artifact_store=self._value_store(node=node),

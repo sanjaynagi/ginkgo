@@ -211,6 +211,43 @@ def decode_value(
     return payload
 
 
+def encode_dynamic_value(
+    value: Any, *, base_dir: Path, artifact_store: ArtifactStore | None = None
+) -> Any:
+    """Encode a value holding task expressions or a directive.
+
+    The value is pickled whole, so an expression it holds twice decodes as one
+    object and registers as one task. Its ``file`` and ``folder`` leaves are
+    encoded beside the pickle, as :func:`encode_value` encodes them, so a
+    remote worker's files reach the driver as an encoded result's do.
+
+    Parameters
+    ----------
+    value : Any
+        The value to encode.
+    base_dir : Path
+        Directory for ephemeral artifact storage.
+    artifact_store : ArtifactStore | None
+        Store for a large pickle, as for :func:`encode_value`.
+    """
+    buffer = io.BytesIO()
+    pickler = _PathLeafPickler(buffer)
+    pickler.dump(value)
+    return encode_value(
+        (buffer.getvalue(), pickler.paths), base_dir=base_dir, artifact_store=artifact_store
+    )
+
+
+def decode_dynamic_value(
+    payload: Any, *, base_dir: Path, artifact_store: ArtifactStore | None = None
+) -> Any:
+    """Restore a value from a payload of :func:`encode_dynamic_value`."""
+    data, paths = decode_value(payload, base_dir=base_dir, artifact_store=artifact_store)
+    unpickler = pickle.Unpickler(io.BytesIO(data))
+    unpickler.persistent_load = paths.__getitem__
+    return unpickler.load()
+
+
 def check_encoded(payload: Any) -> None:
     """Raise if :func:`decode_value` could not read *payload*, without reading bytes.
 
@@ -599,6 +636,20 @@ class _WorkflowPickler(pickle.Pickler):
         if self._for_identity:
             reference = CACHE_IDENTITY_MODULE
         return import_workflow_attribute, (reference, qualname)
+
+
+class _PathLeafPickler(_WorkflowPickler):
+    """Pickle that records each ``file`` and ``folder`` by its index in :attr:`paths`."""
+
+    def __init__(self, buffer: io.BytesIO) -> None:
+        super().__init__(buffer, for_identity=False)
+        self.paths: list[file | folder] = []
+
+    def persistent_id(self, obj: Any) -> int | None:
+        if not isinstance(obj, (file, folder)):
+            return None
+        self.paths.append(obj)
+        return len(self.paths) - 1
 
 
 def _decode_bytes(*, codec_name: str, data: bytes) -> Any:
