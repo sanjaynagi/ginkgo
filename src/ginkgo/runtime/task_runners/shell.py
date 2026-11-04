@@ -99,6 +99,14 @@ class ShellTaskError(GinkgoError, RuntimeError):
 
         super().__init__(details)
 
+    @classmethod
+    def reported(cls, *, message: str, exit_code: int) -> ShellTaskError:
+        """Rebuild the error a remote worker reported, from its message and exit code."""
+        exc = cls.__new__(cls)
+        RuntimeError.__init__(exc, message)
+        exc.exit_code = exit_code
+        return exc
+
 
 # ----- Helpers --------------------------------------------------------------
 

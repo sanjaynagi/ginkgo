@@ -110,8 +110,8 @@ The current evaluator is concurrent and futures-based:
   `executor="local"` tasks stay on the driver; every other task whose kind is
   `remote_capable` goes to the run's default executor (`--executor`) when there
   is one, and the rest run locally; `executor="name"` on a kind that is not
-  remote-capable, or a local task whose `gpu` requirement exceeds `--gpus`, is
-  a build error
+  remote-capable, a remote task that declares `env=`, or a local task whose
+  `gpu` requirement exceeds `--gpus`, is a build error
 - failures follow the run's failure policy (below); in-flight tasks are always
   allowed to complete
 

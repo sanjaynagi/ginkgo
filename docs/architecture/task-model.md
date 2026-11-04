@@ -19,8 +19,9 @@
 - `executor="name"` to pin a task to a specific configured executor, or
   `executor="local"` to keep it on the driver. Otherwise a remote-capable task
   follows the run's default executor (`--executor`), and runs locally without
-  one. A locally placed task whose `gpu` requirement exceeds the local `--gpus`
-  budget is a build error (see [remote execution](remote-execution.md)).
+  one. A remote task that declares `env=`, and a locally placed task whose
+  `gpu` requirement exceeds the local `--gpus` budget, are build errors (see
+  [remote execution](remote-execution.md)).
 
 Python tasks execute in a spawned subprocess worker pool (`ProcessPoolExecutor`,
 spawn context). A `ThreadPoolExecutor` fallback is used when the OS disallows
@@ -160,7 +161,10 @@ Implemented script behavior includes:
 - source file hashing folded into cache identity so script edits invalidate cache
 
 Script tasks, like notebook tasks, run on the driver-side execution path and
-preserve full scheduler semantics.
+preserve full scheduler semantics. A remote script or shell task instead runs
+its body and its directive in the worker (see
+[remote execution](remote-execution.md#remote-worker)); a script body is then
+evaluated twice, on the driver for the cache key's source hash and in the pod.
 
 ## What a Script or Notebook Argument May Be
 

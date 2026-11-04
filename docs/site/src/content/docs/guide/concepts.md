@@ -134,8 +134,8 @@ Python tasks run in separate worker processes on the same computer. Shell,
 script and notebook tasks run on the same computer too, in a Pixi environment
 or container if they declare one.
 
-`ginkgo run --executor <name>` sends Python tasks to an [executor](#glossary)
-on another system instead.
+`ginkgo run --executor <name>` sends Python, shell and script tasks to an
+[executor](#glossary) on another system instead.
 [Remote Execution](/ginkgo/guide/remote-execution/) covers executors.
 
 ## Glossary

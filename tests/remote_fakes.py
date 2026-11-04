@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import io
 import json
 import shutil
 import tempfile
@@ -142,6 +143,7 @@ class NeverSubmits(RemoteExecutor):
 class _ImmediateHandle:
     job_id: str
     _result: RemoteJobResult
+    logs: str = ""
 
     def state(self) -> RemoteJobState:
         return self._result.state
@@ -153,7 +155,7 @@ class _ImmediateHandle:
         pass
 
     def logs_tail(self, *, lines: int = 100) -> str:
-        return ""
+        return self.logs
 
 
 class RoundTripExecutor(RemoteExecutor):
@@ -175,6 +177,21 @@ class RoundTripExecutor(RemoteExecutor):
         return _ImmediateHandle(
             job_id="test-job", _result=RemoteJobResult(state=state, payload=result)
         )
+
+
+class LoggingRoundTripExecutor(RoundTripExecutor):
+    """A :class:`RoundTripExecutor` whose jobs' logs are what the pod printed.
+
+    As a cluster's log API returns a pod's output, so the driver copies it
+    into the task's log files; the test's own streams see none of it.
+    """
+
+    def submit(self, *, attempt: dict) -> RemoteJobHandle:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            handle = super().submit(attempt=attempt)
+        handle.logs = output.getvalue()
+        return handle
 
 
 @contextlib.contextmanager
@@ -208,13 +225,18 @@ class RemoteRoundTrip:
     pod_scratch: Path
 
 
-def evaluate_remotely(expr: Any, *, event_bus: Any = None) -> Any:
-    """Evaluate *expr* with every remote task run by a :class:`RoundTripExecutor`.
+def evaluate_remotely(
+    expr: Any, *, event_bus: Any = None, executor: RemoteExecutor | None = None
+) -> Any:
+    """Evaluate *expr* with every remote task run by *executor*.
 
-    The run directory gives tasks log files, as ``ginkgo run`` does.
+    The executor defaults to a :class:`RoundTripExecutor`. The run directory
+    gives tasks log files, as ``ginkgo run`` does.
     """
     kwargs: dict[str, Any] = {
-        "executor_registry": ExecutorRegistry.for_executor(RoundTripExecutor(), name="remote"),
+        "executor_registry": ExecutorRegistry.for_executor(
+            executor or RoundTripExecutor(), name="remote"
+        ),
         "run_dir": RunDir.create(run_id=uuid.uuid4().hex, root=Path.cwd() / "runs"),
     }
     if event_bus is not None:

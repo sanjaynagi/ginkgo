@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from threading import Event, Thread, current_thread, main_thread
 import traceback
+from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +48,7 @@ def error_response(exc: BaseException) -> dict[str, Any]:
             "module": type(exc).__module__,
             "message": str(exc),
             "args": [str(a) for a in exc.args],
+            "exit_code": getattr(exc, "exit_code", None),
         },
     }
 
@@ -293,6 +295,21 @@ def run_task(
                 result = fn(**decoded_args)
             finally:
                 measured = _body_usage(usage_start=usage_start, peak_rss=peak_rss)
+            ran_directive = _runs_its_directive_here(task_def=task_binding, result=result)
+            if ran_directive:
+                command_usage: dict[str, Any] = {}
+                try:
+                    result = _run_directive(
+                        task_def=task_binding,
+                        directive=result,
+                        args=decoded_args,
+                        payload=payload,
+                        usage=command_usage,
+                    )
+                finally:
+                    # The command's own usage, not the body's that built it,
+                    # and none for a command too quick to sample, as locally.
+                    measured = command_usage or None
 
         # Encode while any fuse mounts are still live: the result may
         # reference paths inside a mount (e.g. an input path returned
@@ -305,6 +322,10 @@ def run_task(
         else:
             encoded_result = encode_value(result, base_dir=base_dir, artifact_store=artifact_store)
             response = {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
+        # The driver completes the task with the runner's result, as it would
+        # a local runner's, rather than treating it as the body's.
+        if ran_directive:
+            response["ran_directive"] = True
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
         # With no task log file (a remote worker, or a run without a run
         # directory) the traceback goes to the process's own stderr.
@@ -376,6 +397,99 @@ def _args_have_fuse_inputs(value: Any) -> bool:
     if isinstance(value, (list, tuple)):
         return any(_args_have_fuse_inputs(item) for item in value)
     return False
+
+
+def _runs_its_directive_here(*, task_def: Any, result: Any) -> bool:
+    """Return whether *result* is a driver kind's directive, to run in this worker.
+
+    A driver kind's body reaches a worker only when its task runs remotely,
+    so its command runs here, against this worker's paths, rather than going
+    back to a driver that cannot see them.
+    """
+    from ginkgo.core.directive import ExecutionDirective
+    from ginkgo.runtime.task_kinds import task_kind
+
+    if not isinstance(result, ExecutionDirective):
+        return False
+    kind = task_kind(task_def)
+    return (
+        kind.execution_mode == "driver"
+        and kind.directive is not None
+        and isinstance(result, kind.directive)
+    )
+
+
+@dataclass(kw_only=True)
+class _WorkerInvocation:
+    """One attempt of a task, as a runner in a remote worker sees it.
+
+    The worker has no task log files: the command's output goes to the
+    process's own streams, which its executor collects.
+    """
+
+    node_id: int
+    task_def: Any
+    attempt: int
+    display_label: str | None
+    resolved_args: dict[str, Any]
+    execution_args: dict[str, Any]
+    threads: int
+    secret_values: tuple[str, ...]
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
+    runner_extras: dict[str, Any] | None = None
+
+
+def _run_directive(
+    *,
+    task_def: Any,
+    directive: Any,
+    args: dict[str, Any],
+    payload: dict[str, Any],
+    usage: dict[str, Any],
+) -> Any:
+    """Run *directive* on its kind's runner, as the driver runs a local one.
+
+    Returns the runner's result, and records the command's measured usage in
+    *usage*.
+    """
+    from ginkgo.plugins.api import RunnerContext
+    from ginkgo.runtime.task_kinds import task_kind
+    from ginkgo.runtime.task_runners.shell import ShellRunner
+    from ginkgo.runtime.task_validation import TaskValidator
+    from ginkgo.workspace_layout import WorkspaceLayout
+
+    def emitter(*, node: Any, stream: str) -> Any:
+        return lambda chunk: getattr(sys, stream).write(chunk)
+
+    validator = TaskValidator()
+    context = RunnerContext(
+        validator=validator,
+        shell_runner=ShellRunner(
+            backend=None,
+            validator=validator,
+            log_emitter_factory=emitter,
+            usage_recorder=lambda *, node, measured: usage.update(measured),
+        ),
+        run_dir=None,
+        annotate=lambda *, node, fields: None,
+        notice=lambda *, node, message: print(f"warning: {message}", file=sys.stderr),
+        run_id=lambda: payload.get("run_id") or "",
+        db_path=WorkspaceLayout.for_cwd().db,
+    )
+    invocation = _WorkerInvocation(
+        node_id=payload["node_id"],
+        task_def=task_def,
+        attempt=payload["attempt"],
+        display_label=payload.get("display_label"),
+        resolved_args=args,
+        execution_args=args,
+        threads=payload["threads"],
+        secret_values=tuple(payload.get("secret_values", ())),
+    )
+    runner = task_kind(task_def).runner
+    assert runner is not None
+    return runner(context).run(node=invocation, directive=directive)
 
 
 def _is_dynamic_result(value: Any) -> bool:

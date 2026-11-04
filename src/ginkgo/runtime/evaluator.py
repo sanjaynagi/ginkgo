@@ -95,6 +95,7 @@ from ginkgo.runtime.display_labels import first_label_param_name, render_label_v
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
+    ShellTaskError,
     SignalMonitor,
     classify_failure,
     remove_declared_output,
@@ -149,6 +150,12 @@ def _reconstruct_worker_error(error_payload: dict[str, Any]) -> BaseException:
     # Rebuilt as itself so the scheduler knows not to retry it.
     if (module_name, type_name) == (RemoteIdentityError.__module__, RemoteIdentityError.__name__):
         return RemoteIdentityError(*args)
+
+    # Rebuilt with its exit code, which retry_on_exit_codes matches.
+    if (module_name, type_name) == (ShellTaskError.__module__, ShellTaskError.__name__):
+        return ShellTaskError.reported(
+            message=error_payload["message"], exit_code=error_payload["exit_code"]
+        )
 
     return RuntimeError(error_payload["message"])
 
@@ -1076,7 +1083,11 @@ class ConcurrentEvaluator:
                 return
 
     def _on_worker_done(self, *, node: NodeRun, completed_value: Any) -> None:
-        """Handle the result returned from a Python worker, local or remote."""
+        """Handle a worker's response, local or remote.
+
+        It holds the task body's result, or for a remote driver-kind task the
+        result of the directive its runner ran in the pod.
+        """
         try:
             if isinstance(completed_value, dict) and isinstance(
                 completed_value.get("measured_resources"), dict
@@ -1085,11 +1096,15 @@ class ConcurrentEvaluator:
                     node=node, measured=completed_value["measured_resources"]
                 )
             self._fold_remote_input_access(node=node, payload=completed_value)
+            ran_directive = completed_value.get("ran_directive", False)
             completed_value = self._decode_worker_result(node=node, payload=completed_value)
         finally:
             # The decoded result no longer refers to the transport directory.
             self._cleanup_transport(node)
-        self._handle_task_body_result(node=node, completed_value=completed_value)
+        if ran_directive:
+            self._on_runner_done(node=node, completed_value=completed_value)
+        else:
+            self._handle_task_body_result(node=node, completed_value=completed_value)
 
     def _on_identities_resolved(self, *, node: NodeRun, completed_value: Any) -> None:
         """Look a node up once its remote inputs' identities are known; stage on a miss."""
@@ -1698,7 +1713,9 @@ class ConcurrentEvaluator:
         )
         if node.attempt > 1:
             self._mark_attempt_in_logs(node=node)
-        if task_kind(node.task_def).execution_mode == "driver":
+        # A remote driver-kind task travels like a python one: its body, and
+        # the directive it returns, run in the pod against the pod's paths.
+        if task_kind(node.task_def).execution_mode == "driver" and node.executor_name is None:
             future = self._executors.shell.submit(self._run_driver_task, node=node)
             self._track(future, node=node, on_done=self._handle_task_body_result)
             return
@@ -1820,10 +1837,12 @@ class ConcurrentEvaluator:
             "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
             "secret_values": list(node.secret_values),
             "run_id": self._run_id,
+            "node_id": node.node_id,
             "task_id": task_id_for_node(node.node_id),
             "task_name": node.task_def.name,
             "attempt": node.attempt,
             "display_label": node.display_label,
+            "threads": node.threads,
             "env": node.task_def.env,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),

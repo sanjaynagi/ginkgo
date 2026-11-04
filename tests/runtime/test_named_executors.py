@@ -93,8 +93,18 @@ def local_fails(x: int) -> int:
     raise ValueError("local failure")
 
 
-@task(kind="shell", executor="gpu-k8s")
-def shelled() -> str:
+@task(kind="subworkflow")
+def plain_subworkflow() -> str:
+    raise AssertionError("never runs")
+
+
+@task(kind="subworkflow", executor="gpu-k8s")
+def pinned_subworkflow() -> str:
+    raise AssertionError("never runs")
+
+
+@task(kind="shell", env="docker://alpine:3.20", executor="gpu-k8s")
+def pinned_container_shell() -> str:
     raise AssertionError("never runs")
 
 
@@ -211,8 +221,9 @@ class TestExecutorRouting:
         assert self._evaluator(default=None).placement.resolve(task_def=follows_default) is None
         evaluator = self._evaluator(default="cheap-batch")
         assert evaluator.placement.resolve(task_def=follows_default) == "cheap-batch"
+        assert evaluator.placement.resolve(task_def=plain_shell) == "cheap-batch"
         # A kind that cannot go remote stays on the driver rather than failing.
-        assert evaluator.placement.resolve(task_def=plain_shell) is None
+        assert evaluator.placement.resolve(task_def=plain_subworkflow) is None
 
     def test_executor_local_opts_out_of_the_run_default(self) -> None:
         assert self._evaluator(default="cheap-batch").placement.resolve(task_def=opts_out) is None
@@ -223,9 +234,14 @@ class TestExecutorRouting:
             evaluator.build_graph(stray(x=1))
             evaluator.validate_graph()
 
-    def test_non_python_kind_with_executor_is_rejected(self) -> None:
+    def test_a_kind_that_cannot_go_remote_with_executor_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="cannot be dispatched remotely"):
-            self._evaluator(default=None).placement.resolve(task_def=shelled)
+            self._evaluator(default=None).placement.resolve(task_def=pinned_subworkflow)
+
+    def test_a_pinned_task_with_an_env_is_rejected(self) -> None:
+        # As doctor resolves it: pinned, with no run default.
+        with pytest.raises(ValueError, match="cannot run a task in its own env"):
+            self._evaluator(default=None).placement.resolve(task_def=pinned_container_shell)
 
 
 class TestTaskDeclaration:
@@ -364,18 +380,15 @@ class TestExecutionBackendContract:
         assert list(recording_executors) == ["gpu-k8s"]
         assert len(recording_executors["gpu-k8s"].submitted) == 1
 
-    def test_only_remote_capable_tasks_follow_the_run_default(
-        self, recording_executors, tmp_path
-    ) -> None:
+    def test_tasks_not_opted_out_follow_the_run_default(self, recording_executors) -> None:
         seen, bus = _started_backends()
         registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
         ConcurrentEvaluator(jobs=1, event_bus=bus, executor_registry=registry).evaluate(
-            [follows_default(x=1), opts_out(x=2), plain_shell(dest=str(tmp_path / "hi.txt"))]
+            [follows_default(x=1), opts_out(x=2)]
         )
-        assert sorted(seen) == ["gpu-k8s", "local", "local"]
+        assert sorted(seen) == ["gpu-k8s", "local"]
         submitted = recording_executors["gpu-k8s"].submitted
         assert [payload["task_name"] for payload in submitted] == [follows_default.name]
-        assert (tmp_path / "hi.txt").read_text() == "hi\n"
 
 
 class _QueuedFuture(Future):
