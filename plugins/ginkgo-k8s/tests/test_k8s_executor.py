@@ -451,6 +451,10 @@ def _pod(*, scheduled: bool = True, waiting: dict[str, str] | None = None) -> k8
     )
     return k8s.V1Pod(
         metadata=k8s.V1ObjectMeta(name="ginkgo-test-001-xyz"),
+        spec=k8s.V1PodSpec(
+            init_containers=[k8s.V1Container(name="stage-in"), k8s.V1Container(name="task")],
+            containers=[k8s.V1Container(name="stage-out")],
+        ),
         status=k8s.V1PodStatus(
             phase="Pending",
             conditions=[scheduled_condition],
@@ -532,6 +536,35 @@ class TestAPodThatCannotStart:
         clock[0] += 59
         assert handle.state() == RemoteJobState.RUNNING
         handle._batch_api.delete_namespaced_job.assert_not_called()
+
+    def test_a_job_that_fails_once_its_image_pulls_reports_its_own_error(
+        self, clock: list[float]
+    ) -> None:
+        handle = self._handle(_pod(waiting={"task": "ErrImagePull"}), _pod())
+        assert handle.state() == RemoteJobState.RUNNING
+
+        # The pull recovers, and the command then fails on its own.
+        error = {
+            "type": "ShellTaskError",
+            "module": "ginkgo.runtime.task_runners.shell",
+            "message": "Shell command failed with exit code 3",
+            "args": ["Shell command failed with exit code 3"],
+            "exit_code": 3,
+        }
+        result_line = json.dumps({"ok": False, "error": error}).encode()
+        logs = {"stage-in": b"", "task": b"", "stage-out": result_line}
+
+        def read(*, container: str, **_: object) -> MagicMock:
+            return MagicMock(read=MagicMock(return_value=logs[container]))
+
+        handle._core_api.read_namespaced_pod_log.side_effect = read
+        status = handle._batch_api.read_namespaced_job.return_value.status
+        status.active, status.conditions = 0, [k8s.V1JobCondition(type="Failed", status="True")]
+
+        result = handle.result()
+
+        assert result.state == RemoteJobState.FAILED
+        assert result.payload["error"] == error
 
     def test_an_active_unschedulable_pod_waits_past_the_timeout(self, clock: list[float]) -> None:
         # A fan-out larger than the cluster, or GPU nodes scaling up, leaves

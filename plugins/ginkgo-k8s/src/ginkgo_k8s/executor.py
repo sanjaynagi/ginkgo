@@ -364,6 +364,7 @@ class KubernetesJobHandle:
     _unschedulable_reason: str | None = field(default=None, init=False, repr=False)
     _pull_failing_since: float | None = field(default=None, init=False, repr=False)
     _pull_failure: str | None = field(default=None, init=False, repr=False)
+    _failure: str | None = field(default=None, init=False, repr=False)
     _job_observed: bool = field(default=False, init=False, repr=False)
     _terminal_state: Any = field(default=None, init=False, repr=False)
     _terminal_logs: str | None = field(default=None, init=False, repr=False)
@@ -419,6 +420,7 @@ class KubernetesJobHandle:
         # its node or quota forever. ``status.active`` counts Pending pods
         # too, so it is checked whatever the Job reports.
         if self._check_image_pull_timeout():
+            self._failure = f"Kubernetes pod could not start: {self._pull_failure}"
             state = self._mark_terminal(RemoteJobState.FAILED)
             with suppress(Exception):
                 self.cancel()
@@ -434,6 +436,8 @@ class KubernetesJobHandle:
         # or node-affinity failure) is failed explicitly so ginkgo does
         # not wait forever.
         if self._check_unschedulable_timeout():
+            reason = self._unschedulable_reason or "pod unschedulable"
+            self._failure = f"Kubernetes pod unschedulable: {reason}"
             return self._mark_terminal(RemoteJobState.FAILED)
         return RemoteJobState.PENDING
 
@@ -518,20 +522,15 @@ class KubernetesJobHandle:
             logs = self._terminal_logs
         else:
             logs = self.logs_tail(lines=1000)
-        message = None
-        if current == RemoteJobState.FAILED and self._unschedulable_since is not None:
-            reason = self._unschedulable_reason or "pod unschedulable"
-            message = f"Kubernetes pod unschedulable: {reason}"
-        elif current == RemoteJobState.FAILED and self._pull_failure is not None:
-            message = f"Kubernetes pod could not start: {self._pull_failure}"
-        if message is not None:
+        # Only a job ginkgo failed itself, as stuck, has no result to report.
+        if self._failure is not None:
             payload = {
                 "ok": False,
                 "error": {
                     "type": "RuntimeError",
                     "module": "builtins",
-                    "message": message,
-                    "args": [message],
+                    "message": self._failure,
+                    "args": [self._failure],
                 },
             }
         else:
