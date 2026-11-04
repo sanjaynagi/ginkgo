@@ -90,13 +90,11 @@ class TaskDef:
         evaluator. ``threads`` is made available to the task body when the
         function signature declares a ``threads`` parameter, and shell tasks
         receive ``GINKGO_THREADS=<n>`` in the subprocess environment.
-    remote : bool
-        When ``True``, dispatch this task to the run's default executor —
-        the one named by ``--executor``. Requires that flag to be set.
     executor : str | None
         Name of a configured executor (``[remote.executors.<name>]``) this
-        task always routes to, regardless of the run's default. Implies
-        remote dispatch.
+        task always routes to, regardless of the run's default, or
+        ``"local"`` to keep it on the driver. ``None`` follows the run's
+        ``--executor``.
     export_thread_env : bool
         When ``True``, shell tasks additionally receive ``OMP_NUM_THREADS``,
         ``MKL_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, and
@@ -117,7 +115,6 @@ class TaskDef:
     priority: int = 0
     kind: str = "python"
     resources: Resources = field(default_factory=Resources)
-    remote: bool = False
     executor: str | None = None
     export_thread_env: bool = False
     remote_input_access: str | None = None
@@ -155,8 +152,6 @@ class TaskDef:
             # Normalised so a stray-space name matches its config table rather
             # than failing later as "not configured".
             object.__setattr__(self, "executor", self.executor.strip())
-            if self.remote:
-                raise ValueError("executor= already routes the task remotely; drop remote=True")
         if not isinstance(self.priority, int) or isinstance(self.priority, bool):
             raise TypeError(f"priority must be an integer, got {type(self.priority).__name__}")
         if abs(self.priority) > 1000:
@@ -1134,7 +1129,6 @@ def task(
     gpu_type: str | None = None,
     memory_retry_multiplier: float = 1.0,
     resources: dict[str, int] | None = None,
-    remote: bool = False,
     executor: str | None = None,
     export_thread_env: bool = False,
     remote_input_access: str | None = None,
@@ -1191,9 +1185,8 @@ def task(
         notation (e.g. ``"4Gi"``, ``"512Mi"``).
     gpu : int
         Number of GPUs the task requires. Locally this reserves against the
-        ``--gpus`` budget; a requirement the local budget cannot satisfy is
-        dispatched to the remote executor when one is configured, and is a
-        build error otherwise. Remote executors map the count to the
+        ``--gpus`` budget, and a task placed locally that needs more is a
+        build error. Remote executors map the count to the
         appropriate accelerator resource (e.g. ``nvidia.com/gpu`` on
         Kubernetes).
     gpu_type : str | None
@@ -1210,15 +1203,12 @@ def task(
         repeated ``--resource name=value`` flags. Dimensions without a
         configured budget are unconstrained. Counted wherever the task runs,
         including remote executors.
-    remote : bool
-        When ``True``, dispatch this task to the run's default executor —
-        whichever one ``--executor`` names. Keeps the workflow portable
-        across sites; use ``executor=`` to pin a specific one.
     executor : str | None
         Name of a configured executor (``[remote.executors.<name>]``) to
-        route this task to, e.g. ``executor="gpu-k8s"``. Implies remote
-        dispatch and overrides the run default, so a mixed workflow can send
-        training to a GPU cluster and everything else elsewhere. Unknown
+        route this task to, e.g. ``executor="gpu-k8s"``. Overrides the run
+        default (``--executor``), so a mixed workflow can send training to a
+        GPU cluster and everything else elsewhere. ``executor="local"``
+        keeps the task on the driver whatever ``--executor`` says. Unknown
         names fail at build time.
     export_thread_env : bool
         Export common BLAS/OpenMP thread environment variables
@@ -1279,7 +1269,6 @@ def task(
                 memory_retry_multiplier=memory_retry_multiplier,
                 custom=dict(resources or {}),
             ),
-            remote=remote,
             executor=executor,
             export_thread_env=export_thread_env,
             remote_input_access=remote_input_access,

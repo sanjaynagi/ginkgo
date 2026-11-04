@@ -611,7 +611,7 @@ class TestExecutorFuseDetection:
 class _MockTaskDef:
     """Minimal TaskDef stand-in for RemoteStager routing tests."""
 
-    remote: bool = True
+    executor: str | None = "remote"
     gpu: int = 0
     kind: str = "python"
     remote_input_access: str | None = None
@@ -721,7 +721,7 @@ def _route(task_def: _MockTaskDef, ref: RemoteFileRef) -> Any:
         node_id=0,
         task_def=task_def,
         resolved_args={"data": ref},
-        executor_name="remote" if task_def.remote else None,
+        executor_name=task_def.executor,
     )
     with ThreadPoolExecutor(max_workers=1) as pool:
         return stager.stage_task_inputs(node=node, pool=pool).result().args["data"]
@@ -762,14 +762,14 @@ class TestRemoteStagerFuseRouting:
     ) -> None:
         _local_streaming(monkeypatch, available=False)
 
-        staged = _route(_MockTaskDef(remote=False), remote_file("s3://b/k.txt", access="fuse"))
+        staged = _route(_MockTaskDef(executor=None), remote_file("s3://b/k.txt", access="fuse"))
 
         assert isinstance(staged, file)
 
     def test_local_task_streams_when_driver_available(self, monkeypatch) -> None:
         _local_streaming(monkeypatch, available=True)
 
-        staged = _route(_MockTaskDef(remote=False), remote_file("s3://b/k.txt", access="fuse"))
+        staged = _route(_MockTaskDef(executor=None), remote_file("s3://b/k.txt", access="fuse"))
 
         assert is_fuse_input(staged)
 
@@ -779,7 +779,7 @@ class TestRemoteStagerFuseRouting:
         # Even with a healthy driver, driver-kind tasks (shell/notebook/script)
         # have no local mount lifecycle and must stage.
         _local_streaming(monkeypatch, available=True)
-        task_def = _MockTaskDef(remote=False, kind="shell")
+        task_def = _MockTaskDef(executor=None, kind="shell")
 
         staged = _route(task_def, remote_file("s3://b/k.txt", access="fuse"))
 

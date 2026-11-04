@@ -241,8 +241,8 @@ class TaskGraph:
             validator.validate_task_importable(task_def=node.task_def)
             validator.validate_static_inputs(node=node, produced_paths=produced_paths)
             # Placement is static per task definition; resolving it here
-            # surfaces misconfiguration (remote=True or an unsatisfiable GPU
-            # requirement without a usable executor) before anything runs.
+            # surfaces misconfiguration (an executor= the kind cannot use, or
+            # an unsatisfiable local GPU requirement) before anything runs.
             placement.resolve(task_def=node.task_def)
 
     # Registration ------------------------------------------------------------

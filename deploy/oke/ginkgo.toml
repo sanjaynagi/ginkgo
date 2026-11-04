@@ -1,6 +1,6 @@
 # ginkgo.toml for a workflow whose tasks run on OKE. Values in <> are yours.
-# Tasks run there when they name the executor, `@task(executor="oke")`, or
-# when the run sets it as the default: `ginkgo run --executor oke ...`.
+# With `ginkgo run --executor oke ...`, every Python task runs there. Without
+# it, only tasks that name the executor, `@task(executor="oke")`, do.
 
 # How the driver signs its OCI requests: as its pod's Kubernetes service
 # account, so no API key is mounted. Workers get the same from `env` below.

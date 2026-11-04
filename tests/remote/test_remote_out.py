@@ -37,7 +37,7 @@ pytestmark = pytest.mark.usefixtures("remote_round_trip")
 # ---------------------------------------------------------------------------
 
 
-@task(remote=True)
+@task()
 def remote_write_output(payload: str, out_path: Out[file]) -> file:
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,7 +45,7 @@ def remote_write_output(payload: str, out_path: Out[file]) -> file:
     return file(out_path)
 
 
-@task(remote=True)
+@task()
 def remote_write_output_untracked_return(payload: str, out_path: Out[file]) -> int:
     """Writes its ``Out[file]`` but returns something else entirely.
 
@@ -60,7 +60,7 @@ def remote_write_output_untracked_return(payload: str, out_path: Out[file]) -> i
     return len(payload)
 
 
-@task(remote=True)
+@task()
 def remote_write_output_dir(payload: str, out_dir: Out[folder]) -> folder:
     path = Path(out_dir)
     path.mkdir(parents=True, exist_ok=True)
@@ -68,7 +68,7 @@ def remote_write_output_dir(payload: str, out_dir: Out[folder]) -> folder:
     return folder(out_dir)
 
 
-@task(remote=True)
+@task()
 def remote_write_output_list(payloads: list[str], out_paths: Out[list[file]]) -> list[file]:
     for text, out_path in zip(payloads, out_paths):
         path = Path(out_path)
@@ -77,7 +77,7 @@ def remote_write_output_list(payloads: list[str], out_paths: Out[list[file]]) ->
     return [file(p) for p in out_paths]
 
 
-@task(remote=True)
+@task()
 def remote_maybe_write(payload: str | None, out_path: Out[file | None]) -> file | None:
     if out_path is None:
         return None
@@ -87,14 +87,14 @@ def remote_maybe_write(payload: str | None, out_path: Out[file | None]) -> file 
     return file(out_path)
 
 
-@task(remote=True)
+@task()
 def remote_write_output_inferred(payload: str, out_path: Out[file]):
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload, encoding="utf-8")
 
 
-@task(remote=True)
+@task()
 def remote_forgetful(marker: file, out_path: Out[file]) -> file:
     """Declares an output but never writes it."""
     return marker
@@ -105,36 +105,36 @@ def read_file_content(*, path: file) -> str:
     return Path(str(path)).read_text(encoding="utf-8").strip()
 
 
-@task(remote=True)
+@task()
 def remote_chatty(value: int) -> int:
     print("hello from the pod")
     print("a warning", file=sys.stderr)
     return value + 1
 
 
-@task(remote=True)
+@task()
 def remote_double(frame: pd.DataFrame) -> pd.DataFrame:
     return frame * 2
 
 
-@task(remote=True)
+@task()
 def remote_read(path: file) -> str:
     return Path(str(path)).read_text(encoding="utf-8")
 
 
-@task(remote=True)
+@task()
 def remote_read_both(direct: file, staged: file) -> str:
     return Path(str(direct)).read_text(encoding="utf-8") + Path(str(staged)).read_text(
         encoding="utf-8"
     )
 
 
-@task(remote=True, retries=2)
+@task(retries=2)
 def remote_read_with_retries(path: file) -> str:
     return Path(str(path)).read_text(encoding="utf-8")
 
 
-@task(remote=True)
+@task()
 def remote_fails() -> int:
     raise ValueError("boom in the pod")
 

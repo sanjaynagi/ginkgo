@@ -106,10 +106,12 @@ The current evaluator is concurrent and futures-based:
   optional `--memory`
 - shell tasks run via subprocesses
 - Python tasks run in a `ProcessPoolExecutor`
-- placement is requirement-driven: `executor="name"` tasks go to that named
-  executor; `remote=True` tasks, and tasks whose `gpu` requirement exceeds the
-  local `--gpus` budget, go to the run's default executor (`--executor`); any
-  route without a usable executor is a build error
+- placement: `executor="name"` tasks go to that named executor and
+  `executor="local"` tasks stay on the driver; every other task whose kind is
+  `remote_capable` goes to the run's default executor (`--executor`) when there
+  is one, and the rest run locally; `executor="name"` on a kind that is not
+  remote-capable, or a local task whose `gpu` requirement exceeds `--gpus`, is
+  a build error
 - failures follow the run's failure policy (below); in-flight tasks are always
   allowed to complete
 

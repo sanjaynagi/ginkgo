@@ -15,9 +15,10 @@ namespace, a cheap batch queue — each named in the runtime config:
     project = "my-project"
     image = "..."
 
-Tasks route to one by name (``@task(executor="gpu-k8s")``); ``remote=True``
-and GPU overflow route to the run's *default* executor, selected with
-``--executor``. The registry owns the name → backend mapping so the
+``--executor`` selects the run's *default* executor, which every
+remote-capable task goes to; a task routes to another by name
+(``@task(executor="gpu-k8s")``) or stays on the driver with
+``executor="local"``. The registry owns the name → backend mapping so the
 evaluator never parses config and never constructs backends itself, and
 so unknown names fail at build time with the configured names listed.
 
@@ -149,9 +150,8 @@ class ExecutorRegistry:
         ``ginkgo doctor``, ``inspect workflow``, and ``secrets list`` build the
         graph but choose no executor, so the registry carries every configured
         name with no default. A task pinned with ``executor=`` then validates
-        exactly as it would under ``ginkgo run``, while ``remote=True`` still
-        reports the missing default — which is genuinely unknown here, since
-        it comes from the ``--executor`` flag of a run that has not happened.
+        exactly as it would under ``ginkgo run``; every other task validates
+        as it would under a local run.
         """
         from ginkgo.config import load_runtime_config
 
@@ -178,7 +178,7 @@ class ExecutorRegistry:
 
     @property
     def has_default(self) -> bool:
-        """Whether the run has a default executor for ``remote=True`` tasks."""
+        """Whether the run has a default executor for remote-capable tasks."""
         return self.default_name is not None
 
     def resolve(self, name: str, *, task_name: str) -> str:

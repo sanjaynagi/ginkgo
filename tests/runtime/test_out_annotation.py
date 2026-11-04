@@ -91,7 +91,7 @@ def maybe_write(payload: str | None, out_path: Out[file | None]) -> file | None:
     return file(out_path)
 
 
-@task(remote=True)
+@task()
 def remote_with_output(bam: Out[file]) -> file:
     raise AssertionError("never runs")
 

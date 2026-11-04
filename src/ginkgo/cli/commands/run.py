@@ -62,7 +62,7 @@ from ginkgo.core.task import TaskDef
 from ginkgo.params import ParamContext
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
-from ginkgo.runtime.executor_registry import ExecutorRegistry
+from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.module_loader import display_path, load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import (
@@ -575,7 +575,7 @@ def run_workflow(
                 node.task_def.executor
                 for node in evaluator.task_nodes.values()
                 if node.task_def.executor is not None
-                and node.task_def.executor != executor_registry.default_name
+                and node.task_def.executor not in (LOCAL, executor_registry.default_name)
             }
         )
     )

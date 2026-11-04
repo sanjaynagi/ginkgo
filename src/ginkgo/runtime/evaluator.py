@@ -1705,9 +1705,8 @@ class ConcurrentEvaluator:
 
         node.transport_path = Path(tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-"))
         payload = self._build_worker_payload(node=node)
-        # Remote dispatch: the node was placed on an executor either
-        # explicitly (executor= / remote=True) or because its GPU requirement
-        # exceeds the local budget.
+        # Remote dispatch: the node was placed on an executor, by executor=
+        # or by the run's --executor default.
         if node.executor_name is not None:
             future = self._remote_dispatch.dispatch(
                 node=node,

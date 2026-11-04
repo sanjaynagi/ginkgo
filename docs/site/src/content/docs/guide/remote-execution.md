@@ -2,8 +2,8 @@
 title: "Remote Execution"
 ---
 
-Ginkgo can send single tasks to cloud machines while the rest of the workflow
-runs on your own machine. Use this when a task needs a GPU, a lot of memory, or
+Ginkgo can send a workflow's tasks to cloud machines while the run itself
+stays on your own machine. Use this when tasks need GPUs, a lot of memory, or
 anything else your machine does not have.
 
 ## How It Works
@@ -13,26 +13,32 @@ tasks as jobs to an **[executor](/ginkgo/guide/concepts/#glossary)**, such as a 
 cluster or GCP Batch, that you name in `ginkgo.toml`. A **worker** runs one
 task on the executor, inside a Docker image you provide.
 
-Tasks run on your machine by default. A task goes to an executor when:
-
-- it sets `remote=True`. It goes to the run's default executor, named by
-  `ginkgo run --executor <name>`.
-- it sets `executor="name"`. It goes to that executor, whatever the default.
-- it sets `gpu=N` and the local `--gpus` budget can't cover it. It goes to the
-  default executor.
-
-```python
-@task(remote=True, memory="32Gi")
-def large_computation(input_path: file) -> str:
-    ...
-```
+Tasks run on your machine by default. `ginkgo run --executor <name>` sends
+every Python task to that executor instead:
 
 ```bash
 ginkgo run --executor gpu-k8s flow.py
 ```
 
-If a task has no executor to go to, the run fails before any task starts.
-Ginkgo never falls back to your machine. Cached tasks are never sent, and each
+A task can choose for itself:
+
+- `executor="name"` sends it to that executor, whatever `--executor` says.
+- `executor="local"` keeps it on your machine, whatever `--executor` says.
+
+```python
+@task(memory="32Gi")
+def large_computation(input_path: file) -> str:
+    ...
+
+@task(executor="local")
+def summarise(result: str) -> str:
+    ...
+```
+
+Shell, script, notebook and subworkflow tasks run on your machine for now, even
+under `--executor`. Naming an executor on one of them with `executor=` fails
+the run before any task starts. So does a task that runs on your machine but
+needs more GPUs than `--gpus` allows. Cached tasks are never sent, and each
 retry submits a new job. A task's `threads`, `memory` and `gpu` become its
 job's resource request. See
 [Resources And Scheduling](/ginkgo/guide/resources/#where-a-task-runs).
@@ -93,10 +99,10 @@ You choose the names. There is no built-in executor for each type, so
 `--executor k8s` needs a table named `k8s`. An unknown name fails before any
 task runs.
 
-`remote=True` keeps a workflow portable: the same file can run on Kubernetes
-at one site and GCP Batch at another. `--executor local`, the default, gives
-the run no default executor, so a `remote=True` task fails the run. Ginkgo
-contacts an executor only when it sends a task to it.
+`--executor` keeps a workflow portable: the same file can run on Kubernetes at
+one site and GCP Batch at another. `--executor local`, the default, runs every
+task on your machine except those that name an executor. Ginkgo contacts an
+executor only when it sends a task to it.
 
 ## The Artifact Store
 
@@ -339,7 +345,7 @@ Set the mode on an input, or as a default for a task:
 ```python
 from ginkgo import file, remote_file, task
 
-@task(remote=True, remote_input_access="fuse", streaming_compatible=True)
+@task(remote_input_access="fuse", streaming_compatible=True)
 def count_reads(bam: file) -> int:
     import pysam
     with pysam.AlignmentFile(str(bam), "rb") as f:

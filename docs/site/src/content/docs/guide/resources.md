@@ -57,13 +57,13 @@ parameter, which receives `threads` as an input.
 
 ## Where A Task Runs
 
-Resource declarations say how much a task needs. In one case they also decide
-where it runs. A `gpu=1` task runs on your machine when `--gpus` can cover it.
-If it can't, Ginkgo sends the task to the run's remote executor. If the run has
-no executor, the run fails before any task starts.
+Resource declarations say how much a task needs, not where it runs.
+`ginkgo run --executor <name>` sends every Python task to that executor, and a
+task can name its own with `executor="name"` or stay on your machine with
+`executor="local"`. See [Remote Execution](/ginkgo/guide/remote-execution/).
 
-You can also send a task to an executor directly, with `remote=True` or
-`executor="name"`. See [Remote Execution](/ginkgo/guide/remote-execution/).
+A `gpu=1` task that runs on your machine needs `--gpus` to cover it. If it
+can't, the run fails before any task starts.
 
 A task on a remote executor uses one of the run's `--jobs` slots. Its `threads`,
 `memory` and `gpu` do not count against your machine's budgets, because the
