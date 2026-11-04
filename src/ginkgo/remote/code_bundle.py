@@ -15,6 +15,7 @@ Filtering respects three layers (most-specific wins):
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import logging
 import tarfile
@@ -145,11 +146,16 @@ def create_code_bundle(
         delete=False,
     )
     tarball_path = Path(tmp.name)
-    tmp.close()
 
     included = 0
     excluded_count = 0
-    with tarfile.open(tarball_path, "w:gz") as tar:
+    # No file name or timestamp in the gzip header, so unchanged files give
+    # the same digest, and a bundle already published is not uploaded again.
+    with (
+        tmp,
+        gzip.GzipFile(filename="", fileobj=tmp, mode="wb", mtime=0) as gz,
+        tarfile.open(fileobj=gz, mode="w") as tar,
+    ):
         for item in sorted(package_path.rglob("*")):
             arcname = str(item.relative_to(package_path.parent))
             info = tar.gettarinfo(str(item), arcname=arcname)
