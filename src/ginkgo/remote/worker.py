@@ -63,10 +63,9 @@ def _print_result(result: dict) -> None:
 def run_worker_payload(payload: dict) -> dict:
     """Execute one worker payload dict and return its result dict.
 
-    The pure body of :func:`main`, split out so tests (and in-process fake
-    executors) can drive a remote task end to end — code bundle install,
-    input hydration, the task body, and output publishing — without the
-    ``GINKGO_WORKER_PAYLOAD`` environment variable or process exit calls.
+    The body of :func:`main`, which reads the payload and prints the result:
+    code bundle install, input hydration, the task body, and output
+    publishing.
     """
     from ginkgo.runtime.worker import error_response
 
