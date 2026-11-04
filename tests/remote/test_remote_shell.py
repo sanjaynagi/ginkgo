@@ -27,6 +27,7 @@ pytestmark = pytest.mark.usefixtures("remote_round_trip")
 # Anchored to this file, as a workflow's scripts are: a pod has its own
 # working directory, so a relative path would not resolve there.
 UPPER_SCRIPT = Path(__file__).parent / "fixtures" / "upper.py"
+WRITES_NOTHING_SCRIPT = Path(__file__).parent / "fixtures" / "writes_nothing.py"
 
 
 @task(kind="shell")
@@ -48,6 +49,16 @@ def fails_once(marker: str, dest: Out[file]):
 @task(kind="shell", retries=1, retry_on_exit_codes=(7,))
 def fails_with_three(dest: Out[file]):
     return shell(cmd="exit 3")
+
+
+@task(kind="shell")
+def forgets_its_output(dest: Out[file]):
+    return shell(cmd="true")
+
+
+@task(kind="script")
+def script_forgets_its_output(dest: Out[file]):
+    return script(WRITES_NOTHING_SCRIPT)
 
 
 @task(kind="shell")
@@ -125,6 +136,22 @@ def test_another_exit_code_fails_the_remote_task_without_a_retry(tmp_path: Path)
     [failed] = collector.failed()
     assert failed.exit_code == 3
     assert failed.failure["kind"] == "command_error"
+
+
+@pytest.mark.parametrize(
+    "make", [forgets_its_output, script_forgets_its_output], ids=["shell", "script"]
+)
+def test_an_unwritten_output_is_named_by_its_driver_path(
+    tmp_path: Path, remote_round_trip: RemoteRoundTrip, make
+) -> None:
+    dest = tmp_path / "out" / "never.txt"
+
+    with pytest.raises(FileNotFoundError, match="did not create") as raised:
+        evaluate_remotely(make(dest=str(dest)))
+
+    # As a local task's error names it, not by the pod's scratch path.
+    assert repr(str(dest)) in str(raised.value)
+    assert str(remote_round_trip.pod_scratch) not in str(raised.value)
 
 
 def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> None:

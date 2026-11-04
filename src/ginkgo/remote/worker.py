@@ -132,7 +132,7 @@ def run_worker_payload(payload: dict) -> dict:
                 mounted_access.close()
             except Exception:  # noqa: BLE001
                 pass
-        return error_response(exc)
+        result = error_response(exc)
     finally:
         if mounted_access is not None:
             try:
@@ -142,6 +142,8 @@ def run_worker_payload(payload: dict) -> dict:
         if output_param_entries:
             _remove_output_param_scratch(entries=output_param_entries)
 
+    if output_param_entries and not result.get("ok"):
+        _name_output_params_by_driver_path(result, entries=output_param_entries)
     return result
 
 
@@ -234,6 +236,21 @@ def _stage_output_params(
     result["output_param_results"] = stage_output_param_results(
         entries=entries, remote_store=remote_store, scratch_dir=_scratch_root() / "ginkgo-outputs"
     )
+
+
+def _name_output_params_by_driver_path(result: dict, *, entries: list[dict[str, str]]) -> None:
+    """Name each ``Out[...]`` path in a failure's error by its declared driver path.
+
+    The task ran against scratch paths, which mean nothing on the driver. A
+    failure that names one, such as a runner's check that its command created
+    the output, names the declared path instead, as a local task's would.
+    """
+    scratch_dir = _scratch_root() / "ginkgo-outputs"
+    error = result["error"]
+    for entry in entries:
+        scratch, original = str(scratch_dir / entry["relative"]), entry["original"]
+        error["message"] = error["message"].replace(scratch, original)
+        error["args"] = [arg.replace(scratch, original) for arg in error["args"]]
 
 
 def _hydrate_remote_inputs(payload: dict, *, remote_store: RemoteArtifactStore) -> None:
