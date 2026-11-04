@@ -61,8 +61,10 @@ through the same code path as local worker completions.
 `remote/executor_support.py` holds the helpers an executor plugin uses to speak
 the worker protocol: `job_steps` (the containers a job runs, in order),
 `encode_payload` (the `GINKGO_WORKER_PAYLOAD` value), `generate_job_name`,
-`payload_requires_fuse`, and `parse_worker_output` (the worker's JSON result
-line, read from job logs).
+`payload_requires_fuse`, and `parse_worker_output` (the worker's result line,
+read from job logs). The worker prints that line with `format_worker_result`:
+its JSON after `RESULT_PREFIX`, so that nothing a task's command prints into
+the same logs, JSON or not, is taken for it.
 
 ## Executor Implementations
 
@@ -124,7 +126,7 @@ The worker entry point (`remote/worker.py`) runs as
    A task with a container `env=` runs its command in that image instead, as
    the next section describes. A directive naming a `log=` file fails in the
    worker before its command runs, since nothing would bring the file back
-5. Uploads outputs and large result values, then prints a JSON result line to
+5. Uploads outputs and large result values, then prints its result line to
    stdout for the handle to parse. A result holding task expressions is
    pickled whole with its `file`/`folder` leaves uploaded beside it, and the
    driver expands it as it would a local task's

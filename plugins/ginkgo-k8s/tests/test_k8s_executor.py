@@ -17,6 +17,7 @@ from ginkgo_k8s.executor import (
     parse_worker_output,
     _RefreshingApi,
 )
+from ginkgo.remote.executor_support import format_worker_result
 from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobState
 
 
@@ -44,7 +45,9 @@ class TestHelpers:
         assert len(name) <= 63
 
     def test_parse_worker_output_valid(self) -> None:
-        logs = "Starting task...\nsome debug output\n" + json.dumps({"ok": True, "result": 42})
+        logs = "Starting task...\nsome debug output\n" + format_worker_result(
+            {"ok": True, "result": 42}
+        )
         result = parse_worker_output(logs)
         assert result == {"ok": True, "result": 42}
 
@@ -52,6 +55,13 @@ class TestHelpers:
         logs = "no json here\njust text"
         result = parse_worker_output(logs)
         assert result["ok"] is False
+
+    @pytest.mark.parametrize("printed", ['{"reads": 1200}', "42"])
+    def test_json_a_command_printed_is_not_the_result(self, printed: str) -> None:
+        # A command's output streams into the job's logs, and a job killed
+        # after it prints no result.
+        result = parse_worker_output(f"staged\n{printed}\n", source_label="pod logs")
+        assert result["error"]["message"] == "No worker output found in pod logs"
 
     def test_parse_worker_output_empty(self) -> None:
         result = parse_worker_output("")
@@ -245,7 +255,7 @@ class TestKubernetesJobHandle:
         logs = {
             "stage-in": b"staged",
             "task": b"",
-            "stage-out": b'from the command\n{"ok": true}\n',
+            "stage-out": f"from the command\n{format_worker_result({'ok': True})}\n".encode(),
         }
 
         def read(*, container: str, **_: object) -> MagicMock:
@@ -255,7 +265,9 @@ class TestKubernetesJobHandle:
 
         handle._core_api.read_namespaced_pod_log.side_effect = read
 
-        assert handle.logs_tail() == 'staged\nfrom the command\n{"ok": true}\n'
+        assert handle.logs_tail() == (
+            f"staged\nfrom the command\n{format_worker_result({'ok': True})}\n"
+        )
         assert parse_worker_output(handle.logs_tail()) == {"ok": True}
 
     def test_logs_tail_empty_when_no_pods(self) -> None:
@@ -551,7 +563,7 @@ class TestAPodThatCannotStart:
             "args": ["Shell command failed with exit code 3"],
             "exit_code": 3,
         }
-        result_line = json.dumps({"ok": False, "error": error}).encode()
+        result_line = format_worker_result({"ok": False, "error": error}).encode()
         logs = {"stage-in": b"", "task": b"", "stage-out": result_line}
 
         def read(*, container: str, **_: object) -> MagicMock:

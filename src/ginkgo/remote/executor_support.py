@@ -1,7 +1,7 @@
 """Helpers every remote executor plugin needs to speak the worker protocol.
 
 An executor ships an attempt payload to ``python -m ginkgo.remote.worker`` and
-reads back the JSON line the worker prints last. These helpers lay out the
+reads back the result line the worker prints last. These helpers lay out the
 job's containers, encode the payload, name the job, detect whether it needs
 FUSE, and parse the result, so each executor plugin implements only its own
 submission and polling.
@@ -23,6 +23,13 @@ SHARED_SCRATCH = "/ginkgo-scratch"
 
 The worker steps use it as their scratch root, so the code, inputs and outputs
 a task's command names are at the same paths in the task's own image.
+"""
+
+RESULT_PREFIX = "ginkgo-worker-result: "
+"""Starts the line a worker reports its result on, before the result's JSON.
+
+A task's command prints into the same logs, so a line it prints, JSON or not,
+is never taken for the result.
 """
 
 TASK_STEP = "task"
@@ -140,20 +147,25 @@ def payload_requires_fuse(attempt: dict[str, Any]) -> bool:
     return walk(attempt.get("args"))
 
 
+def format_worker_result(result: dict[str, Any]) -> str:
+    """Return the log line a worker reports *result* on, for :func:`parse_worker_output`."""
+    return f"{RESULT_PREFIX}{json.dumps(result, default=str)}"
+
+
 def parse_worker_output(logs: str, *, source_label: str = "job logs") -> dict[str, Any]:
     """Parse the worker result from container log output.
 
-    The remote worker prints a single JSON line to stdout as its last
-    output. Search backwards from the end to find it. ``source_label``
-    is interpolated into the fallback error payload so callers can
-    surface a more specific origin (e.g. ``"pod logs"``).
+    The remote worker prints its result as its last output, on a line of
+    :func:`format_worker_result`'s. Search backwards from the end to find it.
+    ``source_label`` is interpolated into the fallback error payload so
+    callers can surface a more specific origin (e.g. ``"pod logs"``).
     """
     for line in reversed(logs.splitlines()):
         line = line.strip()
-        if not line:
+        if not line.startswith(RESULT_PREFIX):
             continue
         try:
-            return json.loads(line)
+            return json.loads(line.removeprefix(RESULT_PREFIX))
         except json.JSONDecodeError:
             continue
     message = f"No worker output found in {source_label}"

@@ -341,8 +341,8 @@ class GCPBatchJobHandle:
                 if isinstance(entry.payload, str):
                     log_lines.append(entry.payload)
                 elif isinstance(entry.payload, dict):
-                    # Cloud Logging stores structured output as jsonPayload;
-                    # serialize back to JSON so parse_worker_output can find it.
+                    # Cloud Logging stores a JSON line, such as one a task's
+                    # command printed, as jsonPayload; serialize it back.
                     log_lines.append(json.dumps(entry.payload))
                 else:
                     log_lines.append(str(entry.payload))

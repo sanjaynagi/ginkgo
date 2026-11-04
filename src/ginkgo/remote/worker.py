@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ginkgo.core.shell import shell_argv
-from ginkgo.remote.executor_support import COMMAND_DIR
+from ginkgo.remote.executor_support import COMMAND_DIR, format_worker_result
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
     build_shell_subprocess_env,
@@ -83,12 +83,12 @@ def main() -> None:
 
 
 def _print_result(result: dict) -> None:
-    """Print *result* as the JSON line the executor parses from the job's logs.
+    """Print *result* as the line the executor parses from the job's logs.
 
     It starts a line of its own: the task's output, printed before it, may
     not end in a newline, and the executor reads only whole lines.
     """
-    print(f"\n{json.dumps(result, default=str)}")
+    print(f"\n{format_worker_result(result)}")
 
 
 def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | None:
