@@ -101,6 +101,11 @@ cluster resolves a tag when it pulls, and the cache key names the image as you
 wrote it, as it does on your machine. Pin a digest, `image@sha256:...`, to
 run the same image every time. Such a task's inputs are always downloaded,
 never streamed, and its command's memory and CPU use aren't measured.
+If the task's container is killed, by running out of memory say, the outputs
+its command wrote are lost. On Kubernetes the task then fails with the
+container's exit code, 137 for running out of memory, which
+`retry_on_exit_codes` matches. On GCP Batch it fails saying its command
+recorded no exit code.
 
 A remote task can't name a `log=` file in `shell(...)` or `script(...)`
 either, because the file would stay in the worker. The command's output

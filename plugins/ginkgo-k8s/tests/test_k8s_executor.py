@@ -593,6 +593,32 @@ class TestAPodThatCannotStart:
         )
 
 
+def test_a_task_container_killed_before_stage_out_reports_its_exit_code() -> None:
+    # An OOM kills the task's whole container, so its pod fails before
+    # stage-out can report anything.
+    pod = _pod()
+    pod.status.init_container_statuses[1].state = k8s.V1ContainerState(
+        terminated=k8s.V1ContainerStateTerminated(reason="OOMKilled", exit_code=137)
+    )
+    handle = KubernetesJobHandle(
+        job_name="ginkgo-test-001",
+        namespace="ginkgo",
+        _batch_api=MagicMock(),
+        _core_api=MagicMock(),
+    )
+    status = handle._batch_api.read_namespaced_job.return_value.status
+    status.succeeded, status.active = None, 0
+    status.conditions = [k8s.V1JobCondition(type="Failed", status="True")]
+    handle._core_api.list_namespaced_pod.return_value = k8s.V1PodList(items=[pod])
+    handle._core_api.read_namespaced_pod_log.return_value.read.return_value = b"staged\n"
+
+    error = handle.result().payload["error"]
+
+    # Rebuilt on the driver as a failed command, which retry_on_exit_codes matches.
+    assert (error["type"], error["exit_code"]) == ("ShellTaskError", 137)
+    assert "OOMKilled" in error["message"]
+
+
 def test_an_unknown_setting_is_refused() -> None:
     from ginkgo_k8s.executor import build_kubernetes_executor
 

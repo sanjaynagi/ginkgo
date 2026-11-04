@@ -89,7 +89,8 @@ policy; a GPU task with no accelerator type (task-level or executor-level) is
 rejected at submit rather than silently scheduled without a GPU. A job's steps
 are runnables in one task, which Batch runs in order on one VM and which share a
 host directory; the task's own image is `ignore_exit_status`, so stage-out
-always runs. Job logs are retrieved from Cloud Logging.
+runs even when that image's container fails. Job logs are retrieved from Cloud
+Logging.
 
 ## Remote Worker
 
@@ -149,8 +150,16 @@ command's paths are the same in each:
    that directory. The executor passes `sh command.sh` to the image's own
    `ENTRYPOINT`, as `docker run` does for a local container task, and replaces
    only the worker steps' entrypoints. It needs no Python, and
-   gets neither the payload nor the executor's environment. The script always
+   gets neither the payload nor the executor's environment. The script
    exits 0, recording the command's status instead, so the next step runs.
+   The container fails only when it is killed (an OOM kills the whole
+   container) or cannot run the script (no `sh`, an `ENTRYPOINT` that does
+   not run its arguments), and then the command's outputs are lost. On
+   Kubernetes that fails the pod before stage-out, so `KubernetesJobHandle`
+   reports the `task` container's exit code and reason as a `ShellTaskError`,
+   which `retry_on_exit_codes` matches (137 for an OOM kill). On Batch,
+   stage-out runs and fails the task for the missing exit code, since Batch
+   does not report a runnable's exit status to the next one.
 3. **Stage-out** (worker image, `GINKGO_WORKER_PHASE=stage-out`) loads the
    payload and runs the body and runner again with `_StageOut`, which leaves
    the declared outputs in place and, for the command, replays the recorded

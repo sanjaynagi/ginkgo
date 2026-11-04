@@ -25,6 +25,9 @@ The worker steps use it as their scratch root, so the code, inputs and outputs
 a task's command names are at the same paths in the task's own image.
 """
 
+TASK_STEP = "task"
+"""The name of the step that runs a task's command in the task's own image."""
+
 COMMAND_DIR = "ginkgo-command"
 """The directory, under the scratch root, holding a task's command for its image.
 
@@ -70,7 +73,11 @@ def job_steps(attempt: dict[str, Any]) -> list[JobStep]:
     worker stages the outputs out and reports the result. Each runs once the
     one before it has exited. Stage-in exits 0 even when the task fails, and
     the task's step records its command's exit status rather than exiting
-    with it, so stage-out always runs to report the result.
+    with it, so stage-out runs to report the result. The task's step fails
+    only when it is killed, by an OOM say, or cannot run the command. Its
+    command's outputs are then lost, and the executor reports the failure:
+    an executor that stops the job there, as Kubernetes does, reports the
+    step's exit code as the command's.
     """
     image = attempt.get("image")
     if image is None:
@@ -83,7 +90,9 @@ def job_steps(attempt: dict[str, Any]) -> list[JobStep]:
     return [
         worker_step("stage-in"),
         JobStep(
-            name="task", image=image, command=("sh", f"{SHARED_SCRATCH}/{COMMAND_DIR}/command.sh")
+            name=TASK_STEP,
+            image=image,
+            command=("sh", f"{SHARED_SCRATCH}/{COMMAND_DIR}/command.sh"),
         ),
         worker_step("stage-out"),
     ]

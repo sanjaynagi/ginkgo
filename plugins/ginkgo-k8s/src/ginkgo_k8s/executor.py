@@ -15,6 +15,7 @@ from typing import Any
 
 from ginkgo.remote.executor_support import (
     SHARED_SCRATCH,
+    TASK_STEP,
     encode_payload,
     generate_job_name,
     job_steps,
@@ -364,7 +365,7 @@ class KubernetesJobHandle:
     _unschedulable_reason: str | None = field(default=None, init=False, repr=False)
     _pull_failing_since: float | None = field(default=None, init=False, repr=False)
     _pull_failure: str | None = field(default=None, init=False, repr=False)
-    _failure: str | None = field(default=None, init=False, repr=False)
+    _failure: Exception | None = field(default=None, init=False, repr=False)
     _job_observed: bool = field(default=False, init=False, repr=False)
     _terminal_state: Any = field(default=None, init=False, repr=False)
     _terminal_logs: str | None = field(default=None, init=False, repr=False)
@@ -420,7 +421,7 @@ class KubernetesJobHandle:
         # its node or quota forever. ``status.active`` counts Pending pods
         # too, so it is checked whatever the Job reports.
         if self._check_image_pull_timeout():
-            self._failure = f"Kubernetes pod could not start: {self._pull_failure}"
+            self._failure = RuntimeError(f"Kubernetes pod could not start: {self._pull_failure}")
             state = self._mark_terminal(RemoteJobState.FAILED)
             with suppress(Exception):
                 self.cancel()
@@ -437,7 +438,7 @@ class KubernetesJobHandle:
         # not wait forever.
         if self._check_unschedulable_timeout():
             reason = self._unschedulable_reason or "pod unschedulable"
-            self._failure = f"Kubernetes pod unschedulable: {reason}"
+            self._failure = RuntimeError(f"Kubernetes pod unschedulable: {reason}")
             return self._mark_terminal(RemoteJobState.FAILED)
         return RemoteJobState.PENDING
 
@@ -452,6 +453,13 @@ class KubernetesJobHandle:
                 self._terminal_logs = self.logs_tail(lines=1000)
             except Exception:
                 self._terminal_logs = ""
+            if state == RemoteJobState.FAILED and self._failure is None:
+                with suppress(Exception):
+                    pods = self._core_api.list_namespaced_pod(
+                        namespace=self.namespace,
+                        label_selector=f"job-name={self.job_name}",
+                    )
+                    self._failure = _task_container_failure(_latest_pod(pods.items))
         return state
 
     _POD_CHECK_INTERVAL = 15.0
@@ -522,17 +530,12 @@ class KubernetesJobHandle:
             logs = self._terminal_logs
         else:
             logs = self.logs_tail(lines=1000)
-        # Only a job ginkgo failed itself, as stuck, has no result to report.
+        # A job ginkgo failed itself, as stuck, or whose task container
+        # failed before stage-out, has no result of its own to report.
         if self._failure is not None:
-            payload = {
-                "ok": False,
-                "error": {
-                    "type": "RuntimeError",
-                    "module": "builtins",
-                    "message": self._failure,
-                    "args": [self._failure],
-                },
-            }
+            from ginkgo.runtime.worker import error_response
+
+            payload = error_response(self._failure)
         else:
             payload = parse_worker_output(logs, source_label="pod logs")
 
@@ -628,6 +631,30 @@ def _image_pull_failure(pod: Any) -> str | None:
                 f"container {status.name!r} cannot pull image {status.image!r}: "
                 f"{waiting.reason}: {waiting.message}"
             )
+    return None
+
+
+def _task_container_failure(pod: Any) -> Exception | None:
+    """Return how a container task's own container in *pod* failed, if it did.
+
+    Its command records its exit status rather than exiting with it, so the
+    container fails only when it is killed, by an OOM say, or cannot run the
+    command. Either fails the pod before stage-out can report the result, so
+    the container's exit code is reported as a failed command's, which
+    ``retry_on_exit_codes`` matches: 137 for an OOM kill, as on your machine.
+    """
+    from ginkgo.runtime.task_runners.shell import ShellTaskError
+
+    for status in pod.status.init_container_statuses or []:
+        terminated = status.state.terminated if status.state is not None else None
+        if status.name == TASK_STEP and terminated is not None and terminated.exit_code != 0:
+            reason = f" ({terminated.reason})" if terminated.reason else ""
+            message = (
+                f"Kubernetes container {TASK_STEP!r} failed with exit code "
+                f"{terminated.exit_code}{reason} before stage-out could report the "
+                "result. Any outputs its command wrote were lost with the pod."
+            )
+            return ShellTaskError.reported(message=message, exit_code=terminated.exit_code)
     return None
 
 
