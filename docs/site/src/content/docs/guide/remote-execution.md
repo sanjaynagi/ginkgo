@@ -250,7 +250,8 @@ error:
 | `ephemeral_storage` | Scratch disk for each pod | `"10Gi"` |
 | `backoff_limit` | Times Kubernetes retries a failed pod. Raise it on Autopilot or spot nodes | `0` |
 | `ttl_seconds_after_finished` | Seconds before Kubernetes deletes a finished Job | `3600` |
-| `unschedulable_timeout` | Seconds before a pod that can't be placed, or can't pull an image, fails and is deleted | `300.0` |
+| `unschedulable_timeout` | Seconds before a pod that can't be placed fails | `300.0` |
+| `image_pull_timeout` | Seconds before a pod with a container that can't pull its image fails and is deleted | `300.0` |
 | `env` | Environment variables for every worker container | none |
 | `pod_annotations` | Annotations on every worker pod | none |
 | `pod_labels` | Labels on every worker pod and Job | none |

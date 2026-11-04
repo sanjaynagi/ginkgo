@@ -469,17 +469,18 @@ class TestAPodThatCannotStart:
         monkeypatch.setattr("ginkgo_k8s.executor.time", SimpleNamespace(monotonic=lambda: now[0]))
         return now
 
-    def _handle(self, *pods: k8s.V1Pod) -> KubernetesJobHandle:
-        """A handle to an active Job whose pod reads as each of *pods* in turn."""
+    def _handle(self, *pods: k8s.V1Pod, active: int = 1) -> KubernetesJobHandle:
+        """A handle to a Job with *active* pods, whose pod reads as each of *pods* in turn."""
         handle = KubernetesJobHandle(
             job_name="ginkgo-test-001",
             namespace="ginkgo",
             unschedulable_timeout=60.0,
+            image_pull_timeout=60.0,
             _batch_api=MagicMock(),
             _core_api=MagicMock(),
         )
         status = handle._batch_api.read_namespaced_job.return_value.status
-        status.succeeded, status.active, status.conditions = None, 1, []
+        status.succeeded, status.active, status.conditions = None, active, []
         handle._core_api.list_namespaced_pod.side_effect = [
             k8s.V1PodList(items=[pod]) for pod in pods
         ]
@@ -501,10 +502,9 @@ class TestAPodThatCannotStart:
                 _pod(waiting={"stage-out": "InvalidImageName"}),
                 "container 'stage-out' cannot pull image 'stage-out:1'",
             ),
-            (_pod(scheduled=False), "unschedulable: Unschedulable: 0/3 nodes are available"),
         ],
     )
-    def test_it_fails_once_the_timeout_passes(
+    def test_an_image_pull_failure_fails_once_the_timeout_passes(
         self, clock: list[float], pod: k8s.V1Pod, reason: str
     ) -> None:
         handle = self._handle(pod, pod, pod)
@@ -532,6 +532,32 @@ class TestAPodThatCannotStart:
         clock[0] += 59
         assert handle.state() == RemoteJobState.RUNNING
         handle._batch_api.delete_namespaced_job.assert_not_called()
+
+    def test_an_active_unschedulable_pod_waits_past_the_timeout(self, clock: list[float]) -> None:
+        # A fan-out larger than the cluster, or GPU nodes scaling up, leaves
+        # active pods unschedulable for as long as it takes.
+        unschedulable = _pod(scheduled=False)
+        handle = self._handle(unschedulable, unschedulable)
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 3600
+        assert handle.state() == RemoteJobState.RUNNING
+        handle._batch_api.delete_namespaced_job.assert_not_called()
+
+    def test_a_pending_unschedulable_pod_fails_once_the_timeout_passes(
+        self, clock: list[float]
+    ) -> None:
+        unschedulable = _pod(scheduled=False)
+        handle = self._handle(unschedulable, unschedulable, active=0)
+
+        assert handle.state() == RemoteJobState.PENDING
+        clock[0] += 60
+        assert handle.state() == RemoteJobState.FAILED
+
+        error = handle.result().payload["error"]
+        assert error["message"] == (
+            "Kubernetes pod unschedulable: Unschedulable: 0/3 nodes are available"
+        )
 
 
 def test_an_unknown_setting_is_refused() -> None:

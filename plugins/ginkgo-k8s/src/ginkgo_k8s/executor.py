@@ -90,12 +90,14 @@ class KubernetesExecutor:
     ttl_seconds_after_finished : int
         Time before completed Jobs are cleaned up by the TTL controller.
     unschedulable_timeout : float
-        Seconds a pod may stay unable to start before the job is treated as
-        failed: unschedulable (quota, capacity, node affinity, e.g. GPU
-        stockouts), or with a container that cannot pull its image (a bad
-        tag, missing pull credentials). Either would otherwise leave the pod
-        Pending indefinitely. A registry error that clears within this time
-        is tolerated.
+        Seconds to wait for a Pending pod to schedule before treating the
+        job as failed. Catches quota, capacity, and node-affinity issues
+        (e.g. GPU stockouts) that would otherwise leave pods Pending
+        indefinitely.
+    image_pull_timeout : float
+        Seconds a container may wait on an image it cannot pull (a bad tag,
+        missing pull credentials) before the job is treated as failed and
+        deleted. A registry error that clears within this time is tolerated.
     ephemeral_storage : str
         Default ephemeral-storage request/limit for worker pods (e.g.
         ``"10Gi"``). Must be large enough to hold the code bundle plus
@@ -135,6 +137,7 @@ class KubernetesExecutor:
     tolerations: list[dict[str, Any]] | None = None
     ttl_seconds_after_finished: int = 3600
     unschedulable_timeout: float = 300.0
+    image_pull_timeout: float = 300.0
     ephemeral_storage: str = "10Gi"
     backoff_limit: int = 0
     fuse_image: str | None = None
@@ -333,6 +336,7 @@ class KubernetesExecutor:
             job_name=created.metadata.name,
             namespace=self.namespace,
             unschedulable_timeout=self.unschedulable_timeout,
+            image_pull_timeout=self.image_pull_timeout,
             _batch_api=batch_api,
             _core_api=core_api,
         )
@@ -353,10 +357,13 @@ class KubernetesJobHandle:
     job_name: str
     namespace: str
     unschedulable_timeout: float = 300.0
+    image_pull_timeout: float = 300.0
     _batch_api: Any = field(repr=False)
     _core_api: Any = field(repr=False)
-    _stuck_since: float | None = field(default=None, init=False, repr=False)
-    _stuck_reason: str | None = field(default=None, init=False, repr=False)
+    _unschedulable_since: float | None = field(default=None, init=False, repr=False)
+    _unschedulable_reason: str | None = field(default=None, init=False, repr=False)
+    _pull_failing_since: float | None = field(default=None, init=False, repr=False)
+    _pull_failure: str | None = field(default=None, init=False, repr=False)
     _job_observed: bool = field(default=False, init=False, repr=False)
     _terminal_state: Any = field(default=None, init=False, repr=False)
     _terminal_logs: str | None = field(default=None, init=False, repr=False)
@@ -407,17 +414,27 @@ class KubernetesJobHandle:
             if condition.type in {"Failed", "FailureTarget"} and condition.status == "True":
                 return self._mark_terminal(RemoteJobState.FAILED)
 
-        # A pod that cannot start is failed explicitly so ginkgo does not
-        # wait forever, and deleted, since it would hold its quota or node
-        # forever. ``status.active`` counts Pending pods too, so it is checked
-        # whatever the Job reports.
-        if self._check_stuck_timeout():
+        # A container that cannot pull its image is failed explicitly so
+        # ginkgo does not wait forever, and deleted, since its pod would hold
+        # its node or quota forever. ``status.active`` counts Pending pods
+        # too, so it is checked whatever the Job reports.
+        if self._check_image_pull_timeout():
             state = self._mark_terminal(RemoteJobState.FAILED)
             with suppress(Exception):
                 self.cancel()
             return state
+
         if status.active and status.active > 0:
+            self._unschedulable_since = None
+            self._unschedulable_reason = None
             return RemoteJobState.RUNNING
+
+        # Pending: check whether the pod is stuck unschedulable. A pod
+        # stuck Pending beyond ``unschedulable_timeout`` (quota, capacity,
+        # or node-affinity failure) is failed explicitly so ginkgo does
+        # not wait forever.
+        if self._check_unschedulable_timeout():
+            return self._mark_terminal(RemoteJobState.FAILED)
         return RemoteJobState.PENDING
 
     def _mark_terminal(self, state: RemoteJobState) -> RemoteJobState:
@@ -435,8 +452,8 @@ class KubernetesJobHandle:
 
     _POD_CHECK_INTERVAL = 15.0
 
-    def _check_stuck_timeout(self) -> bool:
-        """Return True once the pod has been unable to start for too long."""
+    def _pods(self) -> Any:
+        """Return the Job's pods, listed at most every ``_POD_CHECK_INTERVAL``."""
         now = time.monotonic()
         if now - self._last_pod_check >= self._POD_CHECK_INTERVAL or self._last_pod_list is None:
             self._last_pod_list = self._core_api.list_namespaced_pod(
@@ -444,17 +461,41 @@ class KubernetesJobHandle:
                 label_selector=f"job-name={self.job_name}",
             )
             self._last_pod_check = now
-        pods = self._last_pod_list
-        reason = _stuck_reason(_latest_pod(pods.items)) if pods.items else None
-        if reason is None:
-            self._stuck_since = None
-            self._stuck_reason = None
+        return self._last_pod_list
+
+    def _check_unschedulable_timeout(self) -> bool:
+        """Return True if the pod has been unschedulable for too long."""
+        pods = self._pods()
+        if not pods.items:
+            return False
+        pod = pods.items[0]
+        conditions = pod.status.conditions or []
+        scheduled_condition = next((c for c in conditions if c.type == "PodScheduled"), None)
+        if scheduled_condition is None or scheduled_condition.status == "True":
+            self._unschedulable_since = None
+            self._unschedulable_reason = None
             return False
 
-        if self._stuck_since is None:
-            self._stuck_since = now
-        self._stuck_reason = reason
-        return now - self._stuck_since >= self.unschedulable_timeout
+        now = time.monotonic()
+        if self._unschedulable_since is None:
+            self._unschedulable_since = now
+        self._unschedulable_reason = f"{scheduled_condition.reason}: {scheduled_condition.message}"
+        return now - self._unschedulable_since >= self.unschedulable_timeout
+
+    def _check_image_pull_timeout(self) -> bool:
+        """Return True once a container has been unable to pull its image for too long."""
+        pods = self._pods()
+        failure = _image_pull_failure(_latest_pod(pods.items)) if pods.items else None
+        if failure is None:
+            self._pull_failing_since = None
+            self._pull_failure = None
+            return False
+
+        now = time.monotonic()
+        if self._pull_failing_since is None:
+            self._pull_failing_since = now
+        self._pull_failure = failure
+        return now - self._pull_failing_since >= self.image_pull_timeout
 
     def result(self) -> RemoteJobResult:
         """Read the worker result from pod logs.
@@ -477,8 +518,13 @@ class KubernetesJobHandle:
             logs = self._terminal_logs
         else:
             logs = self.logs_tail(lines=1000)
-        if current == RemoteJobState.FAILED and self._stuck_reason is not None:
-            message = f"Kubernetes pod could not start: {self._stuck_reason}"
+        message = None
+        if current == RemoteJobState.FAILED and self._unschedulable_since is not None:
+            reason = self._unschedulable_reason or "pod unschedulable"
+            message = f"Kubernetes pod unschedulable: {reason}"
+        elif current == RemoteJobState.FAILED and self._pull_failure is not None:
+            message = f"Kubernetes pod could not start: {self._pull_failure}"
+        if message is not None:
             payload = {
                 "ok": False,
                 "error": {
@@ -570,15 +616,8 @@ _IMAGE_PULL_FAILURES = frozenset(
 """The reasons a container waits because it cannot pull its image."""
 
 
-def _stuck_reason(pod: Any) -> str | None:
-    """Return why *pod* cannot start, or ``None`` if nothing stops it.
-
-    It cannot start while it is unschedulable, or while any of its containers,
-    init or main, waits on an image it cannot pull.
-    """
-    for condition in pod.status.conditions or []:
-        if condition.type == "PodScheduled" and condition.status != "True":
-            return f"unschedulable: {condition.reason}: {condition.message}"
+def _image_pull_failure(pod: Any) -> str | None:
+    """Return why a container of *pod*, init or main, cannot pull its image, if one cannot."""
     statuses = [
         *(pod.status.init_container_statuses or []),
         *(pod.status.container_statuses or []),
