@@ -372,11 +372,12 @@ def test_identical_code_configs_share_one_upload(tmp_path, monkeypatch) -> None:
         )
     )
 
-    first = manager._ensure_code_bundle(executor_name="a")
-    assert manager._ensure_code_bundle(executor_name="b") == first  # same package, one bundle
-    assert manager._ensure_code_bundle(executor_name="c")["package"] == "other"
-    assert manager._ensure_code_bundle(executor_name="baked") is None
-    assert manager._ensure_code_bundle(executor_name="a") is first
+    first = manager._ensure_code_bundle(executor_name="a", env=None)
+    # Same package, one bundle.
+    assert manager._ensure_code_bundle(executor_name="b", env=None) == first
+    assert manager._ensure_code_bundle(executor_name="c", env=None)["package"] == "other"
+    assert manager._ensure_code_bundle(executor_name="baked", env=None) is None
+    assert manager._ensure_code_bundle(executor_name="a", env=None) is first
     assert len(uploads) == 2  # once per distinct package, not per executor
 
 

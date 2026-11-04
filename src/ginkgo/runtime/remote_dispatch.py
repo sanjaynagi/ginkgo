@@ -59,10 +59,10 @@ class RemoteDispatchManager:
     emit_event: Callable[[object], None]
     stats: RemoteDispatchStats = field(default_factory=RemoteDispatchStats)
     _handles: dict[int, RemoteJobHandle] = field(default_factory=dict, init=False, repr=False)
-    _code_bundle_meta: dict[str, dict[str, str] | None] = field(
+    _code_bundle_meta: dict[tuple[str, str | None], dict[str, str] | None] = field(
         default_factory=dict, init=False, repr=False
     )
-    _bundles: dict[tuple[str, tuple[str, ...]], dict[str, str]] = field(
+    _bundles: dict[tuple[str, tuple[str, ...], str | None], dict[str, str]] = field(
         default_factory=dict, init=False, repr=False
     )
     _artifact_store: Any = field(default=None, init=False, repr=False)
@@ -78,7 +78,7 @@ class RemoteDispatchManager:
         watcher: ThreadPoolExecutor,
     ) -> Future[dict[str, Any]]:
         """Submit one task to a named executor and return its watcher future."""
-        code_bundle = self._ensure_code_bundle(executor_name=executor_name)
+        code_bundle = self._ensure_code_bundle(executor_name=executor_name, env=node.task_def.env)
         self._ensure_artifact_store()
         for key in _DRIVER_LOCAL_KEYS:
             payload.pop(key, None)
@@ -251,24 +251,32 @@ class RemoteDispatchManager:
 
         return payload
 
-    def _ensure_code_bundle(self, *, executor_name: str) -> dict[str, str] | None:
-        """Create and publish an executor's code bundle on its first dispatch.
+    def _ensure_code_bundle(self, *, executor_name: str, env: str | None) -> dict[str, str] | None:
+        """Create and publish an executor's code bundle for a task in *env*.
 
         Reads the executor's ``code`` table (``[remote.executors.<name>.code]``
         or the legacy ``[remote.k8s.code]``) to decide whether to sync
         workflow code to that backend. Each executor's bundle is resolved
-        once per run; executors sharing the same code config share the
-        published bundle rather than re-tarring it.
-        """
-        if executor_name in self._code_bundle_meta:
-            return self._code_bundle_meta[executor_name]
+        once per run for each env; executors sharing the same code config
+        share the published bundle rather than re-tarring it.
 
-        meta = self._publish_code_bundle(config=self.registry.code_config(executor_name))
-        self._code_bundle_meta[executor_name] = meta
+        A bundle carries each env's lock as it was when the bundle was built,
+        and the driver writes a lock when it prepares the env for its first
+        task, before that task's dispatch. So a bundle built at an env's first
+        dispatch carries the lock the driver records for every task in it.
+        """
+        key = (executor_name, env)
+        if key in self._code_bundle_meta:
+            return self._code_bundle_meta[key]
+
+        meta = self._publish_code_bundle(config=self.registry.code_config(executor_name), env=env)
+        self._code_bundle_meta[key] = meta
         return meta
 
-    def _publish_code_bundle(self, *, config: dict[str, Any] | None) -> dict[str, str] | None:
-        """Publish one code-sync bundle, reusing an identical earlier one."""
+    def _publish_code_bundle(
+        self, *, config: dict[str, Any] | None, env: str | None
+    ) -> dict[str, str] | None:
+        """Publish one code-sync bundle for *env*, reusing an identical earlier one."""
         if config is None:
             return None
         mode = config.get("mode", "baked")
@@ -285,9 +293,10 @@ class RemoteDispatchManager:
         extra_excludes = config.get("exclude")
         if isinstance(extra_excludes, str):
             extra_excludes = [extra_excludes]
-        # Bundles depend only on what goes into the tarball, so executors
-        # sharing a package and exclude list share one upload.
-        bundle_key = (package, tuple(extra_excludes or ()))
+        # Bundles depend only on what goes into the tarball, and on which
+        # env's lock it must carry, so executors sharing a package and
+        # exclude list share one upload per env.
+        bundle_key = (package, tuple(extra_excludes or ()), env)
         cached = self._bundles.get(bundle_key)
         if cached is not None:
             return cached

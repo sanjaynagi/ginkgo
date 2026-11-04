@@ -161,6 +161,7 @@ class _ImmediateHandle:
         return self.logs
 
 
+@dataclass
 class RoundTripExecutor(RemoteExecutor):
     """Runs the worker's entry point in-process, as if it were a pod.
 
@@ -175,12 +176,22 @@ class RoundTripExecutor(RemoteExecutor):
     rest of its environment, and every absolute path on its filesystem. Its
     output is captured as Python writes it, so anything written straight to
     file descriptor 1 or 2 escapes the logs.
+
+    Parameters
+    ----------
+    workdir : Path | None
+        The image's working directory, holding what a baked image would.
+        ``None`` gives each pod an empty one.
     """
+
+    workdir: Path | None = None
 
     def submit(self, *, attempt: dict) -> RemoteJobHandle:
         from ginkgo.remote.executor_support import encode_payload
 
-        logs, exit_code = _run_worker(env={"GINKGO_WORKER_PAYLOAD": encode_payload(attempt)})
+        logs, exit_code = _run_worker(
+            env={"GINKGO_WORKER_PAYLOAD": encode_payload(attempt)}, workdir=self.workdir
+        )
         assert exit_code is not None, "the worker returned without exiting"
         return _finished_job(logs=logs, exit_code=exit_code)
 
@@ -226,7 +237,8 @@ class ContainerRoundTripExecutor(RoundTripExecutor):
             if step.image is None:
                 env = {**step.env, "GINKGO_SCRATCH_ROOT": scratch}
                 output, exit_code = _run_worker(
-                    env={**env, "GINKGO_WORKER_PAYLOAD": encode_payload(attempt)}
+                    env={**env, "GINKGO_WORKER_PAYLOAD": encode_payload(attempt)},
+                    workdir=self.workdir,
                 )
             else:
                 output, exit_code = _run_in_image(command=step.command, scratch=scratch)
@@ -236,8 +248,10 @@ class ContainerRoundTripExecutor(RoundTripExecutor):
         return _finished_job(logs=logs, exit_code=exit_code or 0)
 
 
-def _run_worker(*, env: dict[str, str]) -> tuple[str, int | None]:
+def _run_worker(*, env: dict[str, str], workdir: Path | None) -> tuple[str, int | None]:
     """Run the worker's entry point as a pod's container, with *env* set.
+
+    It works in *workdir*, the image's working directory, or an empty one.
 
     Returns what it printed, stdout and stderr together, and its exit code,
     or ``None`` if it returned without exiting.
@@ -247,7 +261,7 @@ def _run_worker(*, env: dict[str, str]) -> tuple[str, int | None]:
     output = io.StringIO()
     exit_code = None
     with (
-        _in_a_pod(env=env),
+        _in_a_pod(env=env, workdir=workdir),
         contextlib.redirect_stdout(output),
         contextlib.redirect_stderr(output),
     ):
@@ -300,7 +314,7 @@ def _finished_job(*, logs: str, exit_code: int) -> _ImmediateHandle:
 
 
 @contextlib.contextmanager
-def _in_a_pod(*, env: dict[str, str]) -> Iterator[None]:
+def _in_a_pod(*, env: dict[str, str], workdir: Path | None) -> Iterator[None]:
     """Give the worker a pod's surroundings: its variables, and its own directories.
 
     The driver's environment is restored afterwards, so it never holds the
@@ -308,7 +322,7 @@ def _in_a_pod(*, env: dict[str, str]) -> Iterator[None]:
     """
     driver_cwd = Path.cwd()
     with _driver_temp_hidden(), mock.patch.dict(os.environ, env):
-        os.chdir(tempfile.mkdtemp(prefix="pod-cwd-"))
+        os.chdir(workdir or tempfile.mkdtemp(prefix="pod-cwd-"))
         try:
             yield
         finally:

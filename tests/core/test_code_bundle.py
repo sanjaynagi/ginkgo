@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,17 @@ def test_a_bundle_publishes_once_and_extracts_the_source(tmp_path: Path, package
     assert download_and_extract(backend=store, bucket="b", key=key, dest_dir=dest_dir) == dest_dir
     assert (dest_dir / "my_workflow" / "tasks.py").read_text() == "def hello(): return 42\n"
     assert not (dest_dir / "code-bundle.tar.gz").exists()
+
+
+def test_unchanged_files_give_the_same_bundle(package: Path) -> None:
+    # Built a second apart, so a timestamp in the archive would differ too.
+    first, first_digest = create_code_bundle(package_path=package)
+    time.sleep(1)
+    second, second_digest = create_code_bundle(package_path=package)
+    first.unlink()
+    second.unlink()
+
+    assert first_digest == second_digest
 
 
 def test_missing_package_raises(tmp_path: Path) -> None:

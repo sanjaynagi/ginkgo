@@ -243,7 +243,9 @@ correctly.
 package-local root from `resolve_envs_workflow_root`, which anchors on the
 **discovered canonical package**, not on the directory of the file being run.
 So `ginkgo run experiments/alt_flow.py` still resolves `workflow/envs/`, and
-doctor validates the same environment set the run will use.
+doctor validates the same environment set the run will use. A remote worker
+doesn't discover one: the run sends it the package-local root relative to the
+project root (see [remote execution](remote-execution.md)).
 
 ## The interpreter and the project manifest
 
