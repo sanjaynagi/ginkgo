@@ -409,6 +409,8 @@ def _runs_its_directive_here(*, task_def: Any, result: Any) -> bool:
     from ginkgo.core.directive import ExecutionDirective
     from ginkgo.runtime.task_kinds import task_kind
 
+    # Not repeated by the kind's own check below: it keeps the kind lookup
+    # off every other result, and off a binding that is a bare function.
     if not isinstance(result, ExecutionDirective):
         return False
     kind = task_kind(task_def)
