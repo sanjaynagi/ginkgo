@@ -65,6 +65,11 @@ A task with a container `env=` (`docker://` or `oci://`) can't run remotely
 yet, because the worker has no container runtime. It fails the run before any
 task starts; give it `executor="local"` to keep it on your machine.
 
+A remote task can't name a `log=` file in `shell(...)` or `script(...)`
+either, because the file would stay in the worker. The command's output
+reaches the task's log anyway, so drop `log=`, or give the task
+`executor="local"`. The worker fails such a task before its command runs.
+
 Cached tasks are never sent, and each
 retry submits a new job. A task's `threads`, `memory` and `gpu` become its
 job's resource request. See

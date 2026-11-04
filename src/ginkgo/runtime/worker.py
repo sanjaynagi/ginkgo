@@ -417,6 +417,8 @@ def _runs_its_directive_here(*, task_def: Any, result: Any) -> bool:
     from ginkgo.core.directive import ExecutionDirective
     from ginkgo.runtime.task_kinds import task_kind
 
+    # Not repeated by the kind's own check below: it keeps the kind lookup
+    # off every other result, and off a binding that is a bare function.
     if not isinstance(result, ExecutionDirective):
         return False
     kind = task_kind(task_def)
@@ -463,10 +465,21 @@ def _run_directive(
     the runner's result, and records the command's measured usage in *usage*.
     """
     from ginkgo.plugins.api import RunnerContext
+    from ginkgo.runtime.executor_registry import LOCAL
     from ginkgo.runtime.task_kinds import task_kind
     from ginkgo.runtime.task_runners.shell import ShellRunner
     from ginkgo.runtime.task_validation import TaskValidator
     from ginkgo.workspace_layout import WorkspaceLayout
+
+    # A log file written here would stay in this worker, and the command's
+    # output reaches the task's log anyway.
+    log = getattr(directive, "log", None)
+    if log is not None:
+        raise ValueError(
+            f"{task_def.base_name} names log={log!r}, but a remote worker cannot bring "
+            f"a log file back to the driver. Drop log=, since the command's output "
+            f"reaches the task's log, or declare executor={LOCAL!r} to run it on the driver."
+        )
 
     def emitter(*, node: Any, stream: str) -> Any:
         return lambda chunk: getattr(sys, stream).write(chunk)

@@ -1,7 +1,7 @@
 """Functional tests for remote round trips: payload transport and ``Out[...]`` parameters.
 
 Exercises the full round trip through a fake ``RemoteExecutor`` that runs
-``ginkgo.remote.worker.run_worker_payload`` in-process against a distinct
+``ginkgo.remote.worker.main`` in-process against a distinct
 "pod" scratch directory and a local-directory-backed fake ``ObjectStore`` —
 close enough to a real backend to prove worker-local path rewriting, staging
 the written output back, and restoring it at the driver's declared path all
@@ -10,6 +10,7 @@ actually work, not just that they typecheck.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -17,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ginkgo import Out, file, folder, task
+from ginkgo import Out, file, folder, shell, task
 from ginkgo.core.remote import remote_file
 from ginkgo.remote.staging import RemoteIdentityError
 from ginkgo.core.hashing import hash_bytes
@@ -26,7 +27,12 @@ from ginkgo.runtime.remote_executor import (
     RemoteJobHandle,
 )
 from tests.conftest import EventCollector
-from tests.remote_fakes import RemoteRoundTrip, RoundTripExecutor, evaluate_remotely
+from tests.remote_fakes import (
+    RemoteRoundTrip,
+    RoundTripExecutor,
+    evaluate_remotely,
+    task_stdout_log,
+)
 
 
 pytestmark = pytest.mark.usefixtures("remote_round_trip")
@@ -139,30 +145,76 @@ def remote_fails() -> int:
     raise ValueError("boom in the pod")
 
 
+@task()
+def remote_prints_no_newline(value: int) -> int:
+    print("no newline", end="")
+    return value
+
+
+@task(kind="shell")
+def remote_shell_prints_no_newline(dest: Out[file]):
+    return shell(cmd=f"echo ok > {dest}; printf done")
+
+
+@task()
+def remote_lists_its_env(dest: Out[file]) -> None:
+    Path(dest).write_text("\n".join(os.environ), encoding="utf-8")
+
+
+@task(kind="shell")
+def remote_shell_lists_its_env(dest: Out[file]):
+    return shell(cmd=f"env > {dest}")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 class TestRemotePayloadTransport:
-    def test_task_output_goes_to_the_pods_own_streams(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_task_output_goes_to_the_pods_own_streams(self, tmp_path: Path) -> None:
         assert evaluate_remotely(remote_chatty(value=1)) == 2
 
-        # Not to log files at the driver's paths, which only the pod would see.
-        captured = capsys.readouterr()
-        assert "hello from the pod" in captured.out
-        assert "a warning" in captured.err
+        # Not to log files at the driver's paths, which only the pod would
+        # see, but to its streams, which the driver copies into the task log.
+        log = task_stdout_log(tmp_path / "runs")
+        assert "hello from the pod" in log
+        assert "a warning" in log
 
-    def test_failing_task_traceback_goes_to_the_pods_stderr(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_failing_task_traceback_goes_to_the_pods_stderr(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="boom in the pod"):
             evaluate_remotely(remote_fails())
 
         # Writing the traceback must leave the process's stderr open.
-        assert "Traceback" in capsys.readouterr().err
+        assert "Traceback" in task_stdout_log(tmp_path / "runs")
+
+    @pytest.mark.parametrize(
+        ("make", "printed"),
+        [
+            (lambda dest: remote_prints_no_newline(value=1), "no newline"),
+            (lambda dest: remote_shell_prints_no_newline(dest=dest), "done"),
+        ],
+        ids=["python", "shell"],
+    )
+    def test_output_without_a_final_newline_leaves_the_result_readable(
+        self, tmp_path: Path, make, printed: str
+    ) -> None:
+        # The result line the worker prints last must not join the output's.
+        evaluate_remotely(make(str(tmp_path / "ok.txt")))
+
+        assert printed in task_stdout_log(tmp_path / "runs")
+
+    @pytest.mark.parametrize(
+        "make", [remote_lists_its_env, remote_shell_lists_its_env], ids=["python", "shell"]
+    )
+    def test_task_code_never_sees_the_payload(self, tmp_path: Path, make) -> None:
+        # It holds the task's arguments and resolved secrets, base64-encoded,
+        # which redaction cannot match.
+        dest = tmp_path / "env.txt"
+
+        evaluate_remotely(make(dest=str(dest)))
+
+        assert "GINKGO_WORKER_PAYLOAD" not in dest.read_text(encoding="utf-8")
 
     def test_large_dataframe_crosses_both_ways(self) -> None:
         # Random floats keep the encoded frame well over the inline limit.
