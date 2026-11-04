@@ -15,24 +15,18 @@ from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.task_runners.shell import ShellTaskError
 from tests.conftest import EventCollector
 from tests.remote_fakes import (
-    LoggingRoundTripExecutor,
     RemoteRoundTrip,
+    RoundTripExecutor,
     evaluate_remotely,
+    task_stdout_log,
 )
 
 
 pytestmark = pytest.mark.usefixtures("remote_round_trip")
 
-UPPER_SCRIPT = """\
-import argparse
-from pathlib import Path
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--src")
-parser.add_argument("--dest")
-args = parser.parse_args()
-Path(args.dest).write_text(Path(args.src).read_text().upper())
-"""
+# Anchored to this file, as a workflow's scripts are: a pod has its own
+# working directory, so a relative path would not resolve there.
+UPPER_SCRIPT = Path(__file__).parent / "fixtures" / "upper.py"
 
 
 @task(kind="shell")
@@ -43,7 +37,7 @@ def shout(src: file, dest: Out[file]):
 
 @task(kind="script")
 def shout_script(src: file, dest: Out[file]):
-    return script("upper.py")
+    return script(UPPER_SCRIPT)
 
 
 @task(kind="shell", retries=1, retry_on_exit_codes=(7,))
@@ -72,7 +66,7 @@ def in_a_pixi_env(dest: Out[file]):
 
 
 def test_a_shell_command_reads_and_writes_pod_paths(
-    tmp_path: Path, remote_round_trip: RemoteRoundTrip, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, remote_round_trip: RemoteRoundTrip
 ) -> None:
     src = tmp_path / "in.txt"
     src.write_text("hello\n", encoding="utf-8")
@@ -84,7 +78,7 @@ def test_a_shell_command_reads_and_writes_pod_paths(
     assert Path(result) == dest
     assert dest.read_text(encoding="utf-8") == "HELLO\n"
     # The command ran in the pod, against the pod's scratch path.
-    assert f"wrote {remote_round_trip.pod_scratch}" in capsys.readouterr().out
+    assert f"wrote {remote_round_trip.pod_scratch}" in task_stdout_log(tmp_path / "runs")
     [started] = collector.started()
     assert started.execution_backend == "remote"
     # The command's own usage, sampled in the pod, reaches the driver.
@@ -93,7 +87,6 @@ def test_a_shell_command_reads_and_writes_pod_paths(
 
 
 def test_a_script_runs_in_the_pod(tmp_path: Path) -> None:
-    (tmp_path / "upper.py").write_text(UPPER_SCRIPT, encoding="utf-8")
     src = tmp_path / "in.txt"
     src.write_text("quiet", encoding="utf-8")
     dest = tmp_path / "out" / "loud.txt"
@@ -137,7 +130,7 @@ def test_another_exit_code_fails_the_remote_task_without_a_retry(tmp_path: Path)
 def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> None:
     evaluator = ConcurrentEvaluator(
         jobs=1,
-        executor_registry=ExecutorRegistry.for_executor(LoggingRoundTripExecutor(), name="remote"),
+        executor_registry=ExecutorRegistry.for_executor(RoundTripExecutor(), name="remote"),
         run_dir=RunDir.create(run_id=uuid.uuid4().hex, root=tmp_path / "runs"),
         secret_resolver=build_secret_resolver(
             project_root=tmp_path, config={}, environ={"API_TOKEN": "super-secret"}
@@ -146,8 +139,7 @@ def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> No
 
     evaluator.evaluate(echoes(token=secret("API_TOKEN"), dest=str(tmp_path / "ok.txt")))
 
-    [log] = (tmp_path / "runs").rglob("*.stdout.log")
-    text = log.read_text(encoding="utf-8")
+    text = task_stdout_log(tmp_path / "runs")
     assert "from-the-command [REDACTED]" in text
     assert "err-line" in text
     assert "super-secret" not in text

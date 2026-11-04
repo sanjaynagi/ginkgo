@@ -1,7 +1,7 @@
 """Functional tests for remote round trips: payload transport and ``Out[...]`` parameters.
 
 Exercises the full round trip through a fake ``RemoteExecutor`` that runs
-``ginkgo.remote.worker.run_worker_payload`` in-process against a distinct
+``ginkgo.remote.worker.main`` in-process against a distinct
 "pod" scratch directory and a local-directory-backed fake ``ObjectStore`` —
 close enough to a real backend to prove worker-local path rewriting, staging
 the written output back, and restoring it at the driver's declared path all
@@ -26,7 +26,12 @@ from ginkgo.runtime.remote_executor import (
     RemoteJobHandle,
 )
 from tests.conftest import EventCollector
-from tests.remote_fakes import RemoteRoundTrip, RoundTripExecutor, evaluate_remotely
+from tests.remote_fakes import (
+    RemoteRoundTrip,
+    RoundTripExecutor,
+    evaluate_remotely,
+    task_stdout_log,
+)
 
 
 pytestmark = pytest.mark.usefixtures("remote_round_trip")
@@ -145,24 +150,21 @@ def remote_fails() -> int:
 
 
 class TestRemotePayloadTransport:
-    def test_task_output_goes_to_the_pods_own_streams(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_task_output_goes_to_the_pods_own_streams(self, tmp_path: Path) -> None:
         assert evaluate_remotely(remote_chatty(value=1)) == 2
 
-        # Not to log files at the driver's paths, which only the pod would see.
-        captured = capsys.readouterr()
-        assert "hello from the pod" in captured.out
-        assert "a warning" in captured.err
+        # Not to log files at the driver's paths, which only the pod would
+        # see, but to its streams, which the driver copies into the task log.
+        log = task_stdout_log(tmp_path / "runs")
+        assert "hello from the pod" in log
+        assert "a warning" in log
 
-    def test_failing_task_traceback_goes_to_the_pods_stderr(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_failing_task_traceback_goes_to_the_pods_stderr(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="boom in the pod"):
             evaluate_remotely(remote_fails())
 
         # Writing the traceback must leave the process's stderr open.
-        assert "Traceback" in capsys.readouterr().err
+        assert "Traceback" in task_stdout_log(tmp_path / "runs")
 
     def test_large_dataframe_crosses_both_ways(self) -> None:
         # Random floats keep the encoded frame well over the inline limit.
