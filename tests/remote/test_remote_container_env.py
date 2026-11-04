@@ -152,10 +152,12 @@ def test_a_matching_exit_code_retries_the_task() -> None:
 def test_another_exit_code_fails_the_task_without_a_retry(tmp_path: Path) -> None:
     executor = ContainerRoundTripExecutor()
     collector = EventCollector()
+    dest = tmp_path / "x"
+    dest.write_text("from an earlier run", encoding="utf-8")
 
     with pytest.raises(ShellTaskError, match="exit code 3") as raised:
         evaluate_remotely(
-            fails_with_three(dest=str(tmp_path / "x")), event_bus=collector.bus, executor=executor
+            fails_with_three(dest=str(dest)), event_bus=collector.bus, executor=executor
         )
 
     assert raised.value.exit_code == 3
@@ -163,8 +165,9 @@ def test_another_exit_code_fails_the_task_without_a_retry(tmp_path: Path) -> Non
     [failed] = collector.failed()
     assert failed.exit_code == 3
     assert failed.failure["kind"] == "command_error"
-    # A failed command's outputs are removed, as they are locally.
-    assert not (tmp_path / "x").exists()
+    # The declared output holds neither an earlier run's file nor the failed
+    # command's partial one, as it would locally.
+    assert not dest.exists()
 
 
 def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> None:
