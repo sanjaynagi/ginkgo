@@ -82,8 +82,12 @@ path in each:
 So the task's image needs only a shell and the command's tools, not Python or
 Ginkgo. The image sees nothing of the worker's files but the volume. With
 [code sync](#code-sync) the code bundle is on it, and the command runs in the
-bundle's copy of your project, as a container task runs in your project on
-your machine, so a relative path means what it does there. Without code sync
+bundle's copy of the directory holding your package. With
+`package = "my_workflow"` that is your project, as a container task runs in
+your project on your machine, so a relative path into your package means what
+it does there. With a nested package, such as `package = "src/my_workflow"`,
+it is `src/`, so a relative path resolves against `src/` rather than your
+project root. Either way only your package is in the bundle. Without code sync
 your code is only in the worker image, so the command runs in an empty
 directory on the volume: a relative output it writes there comes back, but
 nothing of your project is there to read. For the same reason a script task

@@ -110,10 +110,11 @@ The worker entry point (`remote/worker.py`) runs as
    marked `ran_directive` so the driver completes the task with it, and a
    failed command's exit code travels in the error so `retry_on_exit_codes`
    still applies. For a task with a Pixi `env=`, the worker first builds an
-   `EnvironmentRouter` rooted at the extracted code bundle (or its working
-   directory without one), which stands in for the driver's project root.
-   It searches the env directory the driver searched, which the payload
-   names relative to that root, rather than discovering one. It checks the
+   `EnvironmentRouter` rooted at the extracted code bundle, which stands in
+   for the code package's parent directory, or without one at its working
+   directory, which stands in for the driver's project root. It searches the
+   env directory the driver searched, which the payload names relative to
+   that root, rather than discovering one. It checks the
    env's `env_identity` (its manifest) and `materialized_digest` (its lock)
    against the driver's, sent in the payload, and fails the task naming the
    env if either differs. Then it runs `prepare` with the context's `locked`
@@ -158,9 +159,12 @@ command's paths are the same in each:
    secrets into the log exactly as it does around a local command. Then step 5.
 
 Each step works in the same directory on the volume (`_enter_task_workdir`):
-the extracted code bundle, which stands in for the project root a local
-container task runs in, or, with no bundle, an empty `ginkgo-work` directory,
-since a baked project is only in the worker's image. So the body, the command
+the extracted code bundle, which stands in for the code package's parent
+directory, or, with no bundle, an empty `ginkgo-work` directory, since a baked
+project is only in the worker's image. That parent is the project root a local
+container task runs in only when the package sits at the project root: for a
+nested package, `package = "src/wf"`, it is `src/`, and nothing beside the
+package is in the bundle. So the body, the command
 and the output checks resolve a relative path alike. Placement rejects a
 script task in its own image on an executor that bakes its code, since that
 image could not see the script.

@@ -139,6 +139,24 @@ def test_the_command_runs_in_the_env_the_code_bundle_carries(
     )
 
 
+def test_the_worker_finds_the_env_of_a_package_nested_in_the_project(
+    tmp_path: Path, remote_round_trip: RemoteRoundTrip
+) -> None:
+    # The bundle holds src/, the package's parent, rather than the project.
+    package = _declare_package(tmp_path / "src")
+    dest = tmp_path / "prefix.txt"
+
+    _evaluate(
+        in_a_pixi_env(dest=str(dest)),
+        context=EnvironmentContext(project_root=tmp_path, workflow_root=package, config={}),
+        code={"mode": "sync", "package": "src/wf"},
+    )
+
+    _assert_ran_in_the_bundles_lock(
+        package=package, dest=dest, remote_round_trip=remote_round_trip
+    )
+
+
 def test_a_task_locked_after_the_bundle_was_first_built_gets_its_lock(
     tmp_path: Path, remote_round_trip: RemoteRoundTrip
 ) -> None:

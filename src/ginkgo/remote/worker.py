@@ -132,8 +132,9 @@ def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | Non
     handed_off = False
     try:
         # Code-sync: download and extract the workflow package before import.
-        # The bundle stands in for the driver's project root; without one,
-        # the image's working directory does.
+        # The bundle stands in for the package's parent directory, the
+        # driver's project root unless the package is nested in it; without
+        # one, the image's working directory stands in for the project root.
         project_root = Path.cwd()
         dest_dir = None
         if code_bundle is not None:
@@ -280,11 +281,12 @@ def _enter_task_workdir(*, code_bundle_dir: Path | None) -> None:
     """Work in the directory the task's command runs in, on the shared scratch.
 
     Locally a container task's command runs in the project root, mounted
-    into its image. Here the code bundle stands in for the project, and it is
-    on the scratch the task's image shares, so the body, the command and the
-    output checks all resolve a relative path against it, as they would
-    locally. Without a bundle the project is only in the worker's image, so
-    they work in an empty directory instead.
+    into its image. Here the code bundle stands in for the code package's
+    parent directory, the project root unless the package is nested in it,
+    and it is on the scratch the task's image shares, so the body, the
+    command and the output checks all resolve a relative path against it.
+    Without a bundle the project is only in the worker's image, so they work
+    in an empty directory instead.
     """
     directory = code_bundle_dir or _scratch_root() / "ginkgo-work"
     directory.mkdir(exist_ok=True)
@@ -412,8 +414,9 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
     """Install the env the driver's cache key names, and return its backend.
 
     The env is searched for where the driver searched, relative to
-    *project_root*, which stands in for the driver's project root and carries
-    each env's manifest and lock. Its first use in a worker installs it,
+    *project_root*: the code bundle, which stands in for the code package's
+    parent directory, or the image's working directory, which stands in for
+    the driver's project root. It carries each env's manifest and lock. Its first use in a worker installs it,
     exactly as its lock pins it. Returns ``None`` when the driver named no
     env: the task declares none, or the driver had no environment backend to
     run one in.

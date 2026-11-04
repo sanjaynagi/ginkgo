@@ -1852,7 +1852,7 @@ class ConcurrentEvaluator:
             "env": node.task_def.env,
             # A remote worker searches for the env where the driver did, and
             # checks that the env it finds is this one, locked as it is here.
-            "env_workflow_root": self._env_workflow_root(),
+            "env_workflow_root": self._env_workflow_root(executor_name=node.executor_name),
             "env_identity": self._env_identity(env=node.task_def.env),
             # Not for a task that runs in its own image: the executor pulls
             # that, and the driver's copy, if it has one, is not what runs.
@@ -2223,23 +2223,28 @@ class ConcurrentEvaluator:
             return None
         return self.backend.env_identity(env=env) or None
 
-    def _env_workflow_root(self) -> str | None:
-        """Return where named envs are searched for, relative to the project root.
+    def _env_workflow_root(self, *, executor_name: str | None) -> str | None:
+        """Return where named envs are searched for, relative to a remote worker's root.
 
-        A remote worker roots its search there, in the code bundle or its
-        image's working directory, which stand in for the project root.
-        ``None`` when the backend names no such directory inside the project.
+        A worker on *executor_name* roots its search in the code bundle, which
+        holds the code package's parent, when the executor syncs code, and
+        otherwise in its image's working directory, which stands in for the
+        project root. ``None`` when the backend names no such directory there.
         """
         if not isinstance(self.backend, EnvironmentRouter):
             return None
         context = self.backend.context
         if context.workflow_root is None:
             return None
+        root = context.project_root
+        code = self.executor_registry.code_config(executor_name) if executor_name else None
+        if code is not None and code.get("mode") == "sync" and code.get("package"):
+            root = (root / code["package"]).parent
         workflow_root = context.workflow_root.resolve()
-        project_root = context.project_root.resolve()
-        if not workflow_root.is_relative_to(project_root):
+        root = root.resolve()
+        if not workflow_root.is_relative_to(root):
             return None
-        return workflow_root.relative_to(project_root).as_posix()
+        return workflow_root.relative_to(root).as_posix()
 
     def _annotate_task(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None:
         """Attach open-ended facts to a task node."""
