@@ -213,7 +213,9 @@ gets the same answer:
   Establishing evidence would mean installing or pulling an environment to serve
   a cache hit, which is the cost the deferred materialisation exists to avoid.
   This is the case a shared cache lands in on a machine that has never built the
-  environment.
+  environment. A task whose command runs remotely in its own image is always in
+  it: its executor pulls the image, so the driver records no digest for it and
+  compares none, whatever copy of the image the driver holds.
 
 Every digest observed is also written to `env_materializations`, keyed by
 `(env_hash, socket.gethostname())`, so what a declaration installed as is

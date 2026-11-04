@@ -164,8 +164,9 @@ A task without a container env runs the same phases in one worker container.
 The command ran in another container, so it has no measured usage, and its
 inputs are always downloaded rather than mounted, since a mount in the worker's
 container would not reach it. The driver neither validates nor pulls the image,
-and records no image digest for it: the cache key names the image as declared,
-as for a local container task.
+and records no image digest for it, even when it holds a copy: the cache key
+names the image as declared, as for a local container task, and its cache
+entry is never checked against the driver's copy.
 
 The same worker image serves both K8s and GCP Batch executors. It installs
 core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a

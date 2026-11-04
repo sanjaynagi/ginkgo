@@ -434,6 +434,7 @@ class ConcurrentEvaluator:
             index=self._cache_index,
             backend=self.backend,
             publisher=load_remote_publisher(),
+            placement=self.placement,
             hash_memo=self._hash_memo,
             trust_mtimes=self.trust_mtimes,
         )

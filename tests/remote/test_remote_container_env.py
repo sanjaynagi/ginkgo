@@ -8,7 +8,7 @@ place of the image, and the worker's stage-out.
 from __future__ import annotations
 
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -16,11 +16,13 @@ import pytest
 from ginkgo import Out, file, script, secret, shell, task
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.runtime.environment.secrets import build_secret_resolver
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.rundir import RunDir
+from ginkgo.workspace_layout import WorkspaceLayout
 from ginkgo.runtime.task_runners.shell import ShellTaskError
-from tests.conftest import EventCollector
+from tests.conftest import EventCollector, ShellEnvironment
 from tests.remote_fakes import ContainerRoundTripExecutor, RemoteRoundTrip, evaluate_remotely
 
 pytestmark = pytest.mark.usefixtures("remote_round_trip")
@@ -209,3 +211,61 @@ def test_a_command_naming_a_driver_path_fails_the_fake(tmp_path: Path) -> None:
             executor=ContainerRoundTripExecutor(),
         )
     assert not (tmp_path / "marker").exists()
+
+
+@dataclass(kw_only=True)
+class _DriverHoldsTheImage(ShellEnvironment):
+    """A driver whose own container runtime holds the task's image, as *image_id*."""
+
+    image_id: str
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        return self.image_id
+
+
+def _cached_image_id(cache_key: str) -> str | None:
+    """Return the image ID the cache entry for *cache_key* was recorded with."""
+    index = CacheIndex.open(path=WorkspaceLayout.for_cwd().db)
+    try:
+        entry = index.entry(cache_key)
+        assert entry is not None
+        return entry.env_materialized_digest
+    finally:
+        index.close()
+
+
+def _run_writes(dest: Path, *, image_id: str, executor: ContainerRoundTripExecutor | None):
+    """Run ``writes`` once, remotely on *executor* or else locally, and return its events."""
+    collector = EventCollector()
+    registry = ExecutorRegistry() if executor is None else ExecutorRegistry.for_executor(executor)
+    ConcurrentEvaluator(
+        jobs=1,
+        executor_registry=registry,
+        backend=_DriverHoldsTheImage(image_id=image_id),
+        event_bus=collector.bus,
+    ).evaluate(writes(dest=str(dest)))
+    return collector
+
+
+def test_the_drivers_copy_of_a_remote_image_is_not_in_the_cache(tmp_path: Path) -> None:
+    executor = ContainerRoundTripExecutor()
+
+    [completed] = _run_writes(
+        tmp_path / "remote.txt", image_id="sha256:one", executor=executor
+    ).succeeded()
+    again = _run_writes(tmp_path / "remote.txt", image_id="sha256:two", executor=executor)
+
+    # The executor pulled the image, so the driver's copy says nothing of it.
+    assert _cached_image_id(completed.cache_key) is None
+    assert again.cached()
+    assert executor.images == ["busybox:1.36"]
+
+
+def test_a_local_run_still_records_and_checks_its_image(tmp_path: Path) -> None:
+    [completed] = _run_writes(
+        tmp_path / "local.txt", image_id="sha256:one", executor=None
+    ).succeeded()
+    again = _run_writes(tmp_path / "local.txt", image_id="sha256:two", executor=None)
+
+    assert _cached_image_id(completed.cache_key) == "sha256:one"
+    assert not again.cached()

@@ -223,6 +223,9 @@ class CacheStore:
     publisher : RemotePublisher | None
         Optional remote publisher for uploading artifacts after local storage.
         When set, artifacts are published to the remote store automatically.
+    placement : Placement | None
+        Where the run's tasks run. A task whose command runs remotely in its
+        own image has no environment materialised here to record or check.
     index : CacheIndex
         The database rows that index the entries. Required, and never opened
         here: which database this is, and whether it may be written, is the
@@ -234,6 +237,7 @@ class CacheStore:
     backend: Any | None = None  # ExecutionEnvironment; typed as Any to avoid circular import
     artifact_store: LocalArtifactStore | None = None
     publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
+    placement: Any | None = None  # Placement; typed as Any to avoid circular import
     hash_memo: HashMemo | None = None
     trust_mtimes: bool = False
     _root: Path = field(init=False, repr=False)
@@ -1012,6 +1016,9 @@ class CacheStore:
         transaction, so recording is :meth:`save`'s job.
         """
         if task_def.env is None or self.backend is None:
+            return None
+        # Its executor pulls the image; a copy the driver holds is not that one.
+        if self.placement is not None and self.placement.runs_in_remote_image(task_def=task_def):
             return None
         return self.backend.materialized_digest(env=task_def.env)
 
