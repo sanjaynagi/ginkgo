@@ -191,7 +191,10 @@ core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a
 worker can stage and publish to any supported store, and the `pixi` binary
 with ginkgo-pixi, so it can install a task's Pixi env. It needs no executor
 plugin, since it runs tasks and never submits them; ginkgo-gcp brings the Batch
-client libraries along with its `gs://` store regardless.
+client libraries along with its `gs://` store regardless. A task that streams
+an input runs in the executor's `fuse_image` instead, whatever its env, so
+`Dockerfile.worker-fuse` installs the same plugins and `pixi` beside the FUSE
+drivers.
 
 ## Code Sync
 

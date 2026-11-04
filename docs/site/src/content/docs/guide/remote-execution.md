@@ -471,7 +471,8 @@ same number at a time.
 
 `fuse` mode needs a worker image with `gcsfuse`, `mountpoint-s3` or `rclone`.
 On most clouds it also needs a privileged container. The repository has
-`Dockerfile.worker-fuse` for this:
+`Dockerfile.worker-fuse` for this. Every task that streams an input runs in
+it, so it also has `pixi` and `ginkgo-pixi`, as the regular worker image does:
 
 ```bash
 docker buildx build --platform linux/amd64 \
