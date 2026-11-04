@@ -69,6 +69,11 @@ def writes_here() -> file:
 
 
 @task(kind="shell", env=IMAGE)
+def writes_nothing(dest: Out[file]):
+    return shell(cmd="true")
+
+
+@task(kind="shell", env=IMAGE)
 def touches(marker: str, dest: Out[file]):
     return shell(cmd=f"touch {marker}; echo ok > {dest}")
 
@@ -168,6 +173,19 @@ def test_another_exit_code_fails_the_task_without_a_retry(tmp_path: Path) -> Non
     # The declared output holds neither an earlier run's file nor the failed
     # command's partial one, as it would locally.
     assert not dest.exists()
+
+
+def test_an_unwritten_output_is_named_by_its_driver_path(
+    tmp_path: Path, remote_round_trip: RemoteRoundTrip
+) -> None:
+    dest = tmp_path / "out" / "never.txt"
+
+    # Stage-out finds the output missing, against the pod's scratch path.
+    with pytest.raises(FileNotFoundError, match="did not create") as raised:
+        evaluate_remotely(writes_nothing(dest=str(dest)), executor=ContainerRoundTripExecutor())
+
+    assert repr(str(dest)) in str(raised.value)
+    assert str(remote_round_trip.pod_scratch) not in str(raised.value)
 
 
 def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> None:
