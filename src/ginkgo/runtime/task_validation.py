@@ -795,7 +795,12 @@ class TaskValidator:
             annotation = task_def.type_hints.get(name)
             if name not in task_def.output_params and not is_path_shaped_annotation(annotation):
                 continue
-            if contains_dynamic_expression(value) or collect_secret_refs(value):
+            # A remote input's path exists only once a worker has fetched it.
+            if (
+                contains_dynamic_expression(value)
+                or collect_secret_refs(value)
+                or is_remote_path_value(value)
+            ):
                 continue
             entries: list[tuple[str, str, str]] = []
             _collect_output_paths(annotation=annotation, value=value, name=name, entries=entries)

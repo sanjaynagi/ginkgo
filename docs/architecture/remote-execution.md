@@ -131,7 +131,8 @@ command's paths are the same in each:
 1. **Stage-in** (worker image, `GINKGO_WORKER_PHASE=stage-in`) does steps 1-3,
    then `run_task` calls the body and the kind's runner with `_StageIn` as its
    shell runner. Where a local runner would start a subprocess, `_StageIn`
-   writes `ginkgo-command/command.sh`: the command under `sh -eo pipefail`,
+   writes `ginkgo-command/command.sh`: the command in strict mode under `bash`
+   when the image has it, else `sh`,
    with the variables the local runner exports (`GINKGO_THREADS` and the like),
    redirecting its stdout, stderr and exit code to files beside it. It then
    raises `CommandHandedOff`, which `run_task` reports as handed off, and the

@@ -68,12 +68,14 @@ path in each:
 
 1. The worker downloads the code and inputs and writes the command, with the
    variables Ginkgo sets for it, as a script on the volume.
-2. The task's image runs the script with `sh` and records its exit code.
+2. The task's image runs the script and records its exit code.
 3. The worker checks the declared outputs, uploads them and reports the
    result.
 
-So the task's image needs only `sh` and the command's tools, not Python or
-Ginkgo. Its `sh` must accept `-o pipefail`, as busybox, Alpine and bash do.
+So the task's image needs only a shell and the command's tools, not Python or
+Ginkgo. The command runs under `bash` when the image has it, as a container
+task does on your machine, and otherwise under `sh`, which must accept
+`-o pipefail`, as busybox's and Alpine's do.
 The executor pulls the image as it pulls the worker image, with the same pull
 policy and pull secrets on Kubernetes, so your machine needs no Docker. The
 cluster resolves a tag when it pulls, and the cache key names the image as you

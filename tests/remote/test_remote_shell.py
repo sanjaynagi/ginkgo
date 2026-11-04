@@ -7,12 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import Out, file, script, secret, shell, task
+from ginkgo import Out, file, remote_file, script, secret, shell, task
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.task_runners.shell import ShellTaskError
+from ginkgo.runtime.task_validation import TaskValidator
 from tests.conftest import EventCollector
 from tests.remote_fakes import (
     LoggingRoundTripExecutor,
@@ -141,3 +142,12 @@ def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> No
     assert "from-the-command [REDACTED]" in text
     assert "err-line" in text
     assert "super-secret" not in text
+
+
+def test_a_remote_input_passes_the_command_path_check() -> None:
+    # Its path exists only once the worker has fetched it, so the driver
+    # cannot check it for spaces.
+    TaskValidator().validate_command_paths(
+        task_def=shout,
+        args={"src": remote_file("s3://bucket/in.txt"), "dest": "out.txt"},
+    )

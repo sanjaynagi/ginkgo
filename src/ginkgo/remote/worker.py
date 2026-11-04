@@ -278,8 +278,8 @@ class _StageIn(ShellRunner):
     """Leave a task's command for its own image to run, instead of running it here.
 
     ``command.sh`` runs it as the local runner runs a container env's command:
-    under ``sh`` in strict mode, with only the variables ginkgo computes for
-    it. It records the command's output and exit status beside itself rather
+    in strict mode under ``bash`` (``sh`` when the image has no bash), with only
+    the variables ginkgo computes for it. It records the command's output and exit status beside itself rather
     than exiting with it, so the job goes on to stage-out.
     """
 
@@ -297,10 +297,13 @@ class _StageIn(ShellRunner):
         env.update(extra_env or {})
         names = [*computed_env_var_names(task_def=node.task_def), *sorted(extra_env or {})]
         recorded = {name: shlex.quote(str(_command_dir() / name)) for name in _RECORDED}
+        # bash when the image has it, as a local container task's default
+        # shell; otherwise sh, which must accept -o pipefail (busybox, Alpine).
+        strict_args = shlex.join(shell_argv(shell="sh", cmd=cmd)[1:])
         lines = [
             *(f"export {name}={shlex.quote(env[name])}" for name in names),
-            f"{shlex.join(shell_argv(shell='sh', cmd=cmd))} "
-            f"> {recorded['stdout']} 2> {recorded['stderr']}",
+            "if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi",
+            f'"$shell" {strict_args} > {recorded["stdout"]} 2> {recorded["stderr"]}',
             f"echo $? > {recorded['exit_code']}",
         ]
         (_command_dir() / "command.sh").write_text("\n".join(lines) + "\n", encoding="utf-8")
