@@ -7,6 +7,7 @@ is real: the env has no packages, so it installs without the network.
 from __future__ import annotations
 
 import shutil
+import tarfile
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -19,7 +20,12 @@ from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.rundir import RunDir
-from tests.remote_fakes import RemoteRoundTrip, RoundTripExecutor, set_up_round_trip
+from tests.remote_fakes import (
+    FakeObjectStore,
+    RemoteRoundTrip,
+    RoundTripExecutor,
+    set_up_round_trip,
+)
 
 pytestmark = pytest.mark.skipif(shutil.which("pixi") is None, reason="pixi not found on PATH")
 
@@ -36,6 +42,16 @@ def in_a_pixi_env(dest: Out[file]):
     return shell(cmd=f'echo "$CONDA_PREFIX" > {dest}')
 
 
+@task()
+def upstream() -> str:
+    return "token"
+
+
+@task(kind="shell", env="tools")
+def downstream(token: str, dest: Out[file]):
+    return shell(cmd=f'echo "$CONDA_PREFIX" > {dest}')
+
+
 @pytest.fixture
 def remote_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RemoteRoundTrip:
     monkeypatch.chdir(tmp_path)
@@ -46,6 +62,42 @@ def _declare_tools_env(envs_dir: Path, *, extra: str = "") -> None:
     """Write the ``tools`` env's manifest under *envs_dir*."""
     (envs_dir / "tools").mkdir(parents=True)
     (envs_dir / "tools" / "pixi.toml").write_text(TOOLS_ENV + extra, encoding="utf-8")
+
+
+def _declare_package(root: Path) -> Path:
+    """Write a ``wf`` package under *root* with its ``tools`` env, not yet locked."""
+    package = root / "wf"
+    _declare_tools_env(package / "envs")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "flow.py").write_text("", encoding="utf-8")
+    return package
+
+
+def _bundled(store: FakeObjectStore, member: str) -> list[bytes]:
+    """Return *member* from each code bundle published to *store* that has it."""
+    found = []
+    for bundle in sorted(store.root.rglob("code-bundles/*.tar.gz")):
+        with tarfile.open(bundle) as tar:
+            if member in tar.getnames():
+                found.append(tar.extractfile(member).read())
+    return found
+
+
+def _assert_ran_in_the_bundles_lock(
+    *, package: Path, dest: Path, remote_round_trip: RemoteRoundTrip
+) -> None:
+    """Assert the command ran in the pod's install of the lock the driver wrote.
+
+    The bundle carries the driver's ``pixi.lock``, the pod's copy is still that
+    lock, and the command's ``CONDA_PREFIX`` is the pod's install, not the
+    driver's, which the bundle leaves out.
+    """
+    driver_lock = (package / "envs/tools/pixi.lock").read_bytes()
+    assert driver_lock in _bundled(remote_round_trip.store, "wf/envs/tools/pixi.lock")
+    pod_env = remote_round_trip.pod_scratch / "ginkgo-code-bundle/wf/envs/tools"
+    assert (pod_env / "pixi.lock").read_bytes() == driver_lock
+    prefix = Path(dest.read_text(encoding="utf-8").strip())
+    assert prefix.resolve() == (pod_env / ".pixi/envs/default").resolve()
 
 
 def _evaluate(
@@ -70,10 +122,7 @@ def _evaluate(
 def test_the_command_runs_in_the_env_the_code_bundle_carries(
     tmp_path: Path, remote_round_trip: RemoteRoundTrip
 ) -> None:
-    package = tmp_path / "wf"
-    _declare_tools_env(package / "envs")
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "flow.py").write_text("", encoding="utf-8")
+    package = _declare_package(tmp_path)
     dest = tmp_path / "prefix.txt"
 
     _evaluate(
@@ -82,11 +131,28 @@ def test_the_command_runs_in_the_env_the_code_bundle_carries(
         code={"mode": "sync", "package": "wf"},
     )
 
-    # The worker installed the env from the bundle's copy of the manifest and
-    # lock, not the driver's install, which the bundle leaves out.
-    pod_env = remote_round_trip.pod_scratch / "ginkgo-code-bundle/wf/envs/tools/.pixi/envs/default"
-    prefix = Path(dest.read_text(encoding="utf-8").strip())
-    assert prefix.resolve() == pod_env.resolve()
+    _assert_ran_in_the_bundles_lock(
+        package=package, dest=dest, remote_round_trip=remote_round_trip
+    )
+
+
+def test_a_task_locked_after_the_bundle_was_first_built_gets_its_lock(
+    tmp_path: Path, remote_round_trip: RemoteRoundTrip
+) -> None:
+    # upstream, with no env, is dispatched first, before the driver prepares
+    # downstream's env and so writes its lock.
+    package = _declare_package(tmp_path)
+    dest = tmp_path / "prefix.txt"
+
+    _evaluate(
+        downstream(token=upstream(), dest=str(dest)),
+        context=EnvironmentContext(project_root=tmp_path, workflow_root=package, config={}),
+        code={"mode": "sync", "package": "wf"},
+    )
+
+    _assert_ran_in_the_bundles_lock(
+        package=package, dest=dest, remote_round_trip=remote_round_trip
+    )
 
 
 def test_a_worker_env_unlike_the_drivers_fails_the_task(

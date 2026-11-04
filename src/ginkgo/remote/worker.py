@@ -180,8 +180,9 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
 
     The env is found as the driver finds it, under *project_root*, which
     carries each env's manifest and lock. Its first use in a worker installs
-    it. Returns ``None`` when the driver named no env: the task declares
-    none, or the driver had no environment backend to run one in.
+    it, exactly as its lock pins it. Returns ``None`` when the driver named no
+    env: the task declares none, or the driver had no environment backend to
+    run one in.
 
     Raises
     ------
@@ -206,6 +207,7 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
                 fallback=Path(module_file).parent if module_file else None,
             ),
             config={},
+            locked=True,
         )
     )
     identity = backend.env_identity(env=env)

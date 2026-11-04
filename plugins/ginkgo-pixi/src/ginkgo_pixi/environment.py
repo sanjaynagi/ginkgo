@@ -113,6 +113,10 @@ class PixiRegistry:
     workflow_root : Path | None
         Directory containing the resolved workflow entrypoint. Canonical
         package-local envs are discovered from ``workflow_root/envs/``.
+    locked : bool
+        Whether :meth:`prepare` installs only from an up-to-date
+        ``pixi.lock`` (``pixi install --locked``), failing rather than
+        solving the env and writing a new one.
 
     Raises
     ------
@@ -122,6 +126,7 @@ class PixiRegistry:
 
     project_root: Path = field(default_factory=Path.cwd)
     workflow_root: Path | None = None
+    locked: bool = False
     _envs_dirs: tuple[Path, ...] = field(init=False, repr=False)
     _lock_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     _identity_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
@@ -377,6 +382,7 @@ class PixiRegistry:
             "install",
             "--manifest-path",
             str(manifest),
+            *(["--locked"] if self.locked else []),
         ]
         completed = subprocess.run(
             argv,
@@ -509,5 +515,6 @@ def build_pixi_environment(context: EnvironmentContext) -> PixiEnvironment:
         pixi_registry=PixiRegistry(
             project_root=context.project_root,
             workflow_root=context.workflow_root,
+            locked=context.locked,
         )
     )
