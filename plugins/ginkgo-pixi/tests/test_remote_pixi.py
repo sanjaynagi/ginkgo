@@ -48,13 +48,16 @@ def _declare_tools_env(envs_dir: Path, *, extra: str = "") -> None:
     (envs_dir / "tools" / "pixi.toml").write_text(TOOLS_ENV + extra, encoding="utf-8")
 
 
-def _evaluate(expr: object, *, context: EnvironmentContext, code: dict | None) -> object:
+def _evaluate(
+    expr: object, *, context: EnvironmentContext, code: dict | None, image: Path | None = None
+) -> object:
     """Evaluate *expr* remotely, with the driver's envs found from *context*.
 
     With *code*, the executor ships the workflow package in a code bundle, as
-    ``[remote.executors.<name>.code]`` does.
+    ``[remote.executors.<name>.code]`` does. *image* is the worker image's
+    working directory.
     """
-    registry = ExecutorRegistry.for_executor(RoundTripExecutor(), name="remote")
+    registry = ExecutorRegistry.for_executor(RoundTripExecutor(workdir=image), name="remote")
     registry.specs["remote"] = replace(registry.specs["remote"], code=code)
     return ConcurrentEvaluator(
         jobs=1,
@@ -90,9 +93,9 @@ def test_a_worker_env_unlike_the_drivers_fails_the_task(
     tmp_path: Path, remote_round_trip: RemoteRoundTrip
 ) -> None:
     # The driver finds ``tools`` under driver/; the worker, with no code
-    # bundle, under its working directory, where the manifest differs.
+    # bundle, under its image's working directory, where the manifest differs.
     _declare_tools_env(tmp_path / "driver" / "envs")
-    _declare_tools_env(tmp_path / "envs", extra="description = 'an older copy'\n")
+    _declare_tools_env(tmp_path / "image" / "envs", extra="description = 'an older copy'\n")
 
     with pytest.raises(RuntimeError, match="worker's env 'tools' is not the one the driver"):
         _evaluate(
@@ -101,4 +104,5 @@ def test_a_worker_env_unlike_the_drivers_fails_the_task(
                 project_root=tmp_path / "driver", workflow_root=None, config={}
             ),
             code=None,
+            image=tmp_path / "image",
         )
