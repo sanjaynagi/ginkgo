@@ -46,7 +46,10 @@ class JobStep:
         worker step gets the attempt payload and the executor's own
         environment variables.
     command : tuple[str, ...]
-        The command to run, in place of the image's entrypoint.
+        The command to run. A worker step's replaces the worker image's
+        entrypoint. The task step's is passed to its image's own entrypoint,
+        as ``docker run image cmd`` passes it locally, so an entrypoint that
+        sets up the image's environment (micromamba's, say) still runs.
     env : dict[str, str]
         Variables this step needs on top of those.
     """

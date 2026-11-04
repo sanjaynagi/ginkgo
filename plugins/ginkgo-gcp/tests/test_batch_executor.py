@@ -52,10 +52,16 @@ def test_a_container_task_runs_its_image_between_two_workers() -> None:
         "busybox:1.36",
         "reg/worker:1",
     ]
-    assert [task.container.entrypoint, *task.container.commands] == [
-        "sh",
-        "/ginkgo-scratch/ginkgo-command/command.sh",
-    ]
+    # The task's image keeps its ENTRYPOINT, as docker run keeps it locally,
+    # and Batch passes it the commands. The workers replace theirs.
+    assert task.container.entrypoint == ""
+    assert list(task.container.commands) == ["sh", "/ginkgo-scratch/ginkgo-command/command.sh"]
+    for worker in (stage_in, stage_out):
+        assert [worker.container.entrypoint, *worker.container.commands] == [
+            "python",
+            "-m",
+            "ginkgo.remote.worker",
+        ]
     # Stage-out runs, and reports the result, whatever the task's image exits with.
     assert [r.ignore_exit_status for r in (stage_in, task, stage_out)] == [False, True, False]
     assert dict(task.environment.variables) == {}

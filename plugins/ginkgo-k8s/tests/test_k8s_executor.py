@@ -403,7 +403,10 @@ class TestExecutorSettings:
         assert [c.image for c in steps] == ["worker:1", "busybox:1.36", "worker:1"]
         assert {c.image_pull_policy for c in steps} == {"Always"}
         assert [s.name for s in spec.image_pull_secrets] == ["ocir-pull"]
-        assert task.command == ["sh", "/ginkgo-scratch/ginkgo-command/command.sh"]
+        # The task's image keeps its ENTRYPOINT, as docker run keeps it locally,
+        # and gets the command as its arguments.
+        assert task.command is None
+        assert task.args == ["sh", "/ginkgo-scratch/ginkgo-command/command.sh"]
         # The task's image gets neither the payload nor the executor's env.
         assert task.env is None
         for worker, phase in ((stage_in, "stage-in"), (stage_out, "stage-out")):

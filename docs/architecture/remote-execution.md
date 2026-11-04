@@ -142,7 +142,9 @@ command's paths are the same in each:
    returns no directive, before the command is finished here instead, and its
    result saved for stage-out to print.
 2. **Task** (the task's image) runs `sh command.sh`, which first `cd`s into
-   that directory. It needs no Python, and
+   that directory. The executor passes `sh command.sh` to the image's own
+   `ENTRYPOINT`, as `docker run` does for a local container task, and replaces
+   only the worker steps' entrypoints. It needs no Python, and
    gets neither the payload nor the executor's environment. The script always
    exits 0, recording the command's status instead, so the next step runs.
 3. **Stage-out** (worker image, `GINKGO_WORKER_PHASE=stage-out`) loads the

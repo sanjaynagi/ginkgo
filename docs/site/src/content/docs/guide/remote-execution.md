@@ -69,7 +69,10 @@ path in each:
 
 1. The worker downloads the code and inputs and writes the command, with the
    variables Ginkgo sets for it, as a script on the volume.
-2. The task's image runs the script and records its exit code.
+2. The task's image runs the script and records its exit code. As on your
+   machine, the image's `ENTRYPOINT` runs first and is handed the script to
+   run, so one that activates an environment, as micromamba images do, still
+   does.
 3. The worker checks the declared outputs, uploads them and reports the
    result.
 

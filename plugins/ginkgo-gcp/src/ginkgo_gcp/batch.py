@@ -122,10 +122,13 @@ class GCPBatchExecutor:
         runnables = []
         for step in steps:
             is_worker = step.image is None
+            # The task's image keeps its own entrypoint (see JobStep), and
+            # Batch passes it the commands; an empty entrypoint is unset.
+            entrypoint, *commands = step.command if is_worker else ("", *step.command)
             container = batch_v1.Runnable.Container(
                 image_uri=worker_image if is_worker else step.image,
-                entrypoint=step.command[0],
-                commands=list(step.command[1:]),
+                entrypoint=entrypoint,
+                commands=commands,
                 volumes=volumes,
                 options=privileged if is_worker else "",
             )

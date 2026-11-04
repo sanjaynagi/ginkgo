@@ -244,7 +244,9 @@ class KubernetesExecutor:
                     name=step.name,
                     image=worker_image if is_worker else step.image,
                     image_pull_policy=self.pull_policy,
-                    command=list(step.command),
+                    # The task's image keeps its own entrypoint (see JobStep).
+                    command=list(step.command) if is_worker else None,
+                    args=None if is_worker else list(step.command),
                     env=env or None,
                     resources=k8s_client.V1ResourceRequirements(
                         requests=resource_requests,
