@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
-from ginkgo.envs.container import is_container_env
+from ginkgo.envs.container import is_container_env, parse_container_uri
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.task_kinds import task_kind
 
@@ -92,10 +92,20 @@ class Placement:
         nor a container runtime.
         """
         return (
-            task_def.env is not None
-            and is_container_env(task_def.env)
+            remote_image(task_def=task_def) is not None
             and self.resolve(task_def=task_def) is not None
         )
+
+
+def remote_image(*, task_def: TaskDef) -> str | None:
+    """Return the image a remote executor runs the task's command in, or ``None`` for its worker's.
+
+    A container env's image: the worker can't start a container itself, so
+    the executor runs that image as a step of the job, between the worker's
+    (see :func:`ginkgo.remote.executor_support.job_steps`).
+    """
+    env = task_def.env
+    return parse_container_uri(env).image if env is not None and is_container_env(env) else None
 
 
 def _require_remote_capable_kind(*, task_def: TaskDef) -> None:

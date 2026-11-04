@@ -164,7 +164,8 @@ def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | Non
             "output_param_entries": output_param_entries,
             "input_digests": hydration.digests if hydration is not None else {},
         }
-        backend = _prepare_task_env(payload, project_root=project_root)
+        # A command that runs in an image of its own needs no env here.
+        backend = _prepare_task_env(payload, project_root=project_root) if image is None else None
         # Large values are read from and written to the shared store directly,
         # since nothing in the pod's transport directory reaches the client.
         result = run_task(
@@ -400,11 +401,8 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
     RuntimeError
         If the env found here is not the one the driver named.
     """
-    from ginkgo.envs.container import is_container_env
-
     expected = payload.get("env_identity")
-    # A container env's command runs in its own image, not in an env here.
-    if expected is None or is_container_env(payload["env"]):
+    if expected is None:
         return None
 
     from ginkgo.cli.workspace import resolve_envs_workflow_root
