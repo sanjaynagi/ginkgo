@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ginkgo import Out, file, folder, task
+from ginkgo import Out, file, folder, shell, task
 from ginkgo.core.remote import remote_file
 from ginkgo.remote.staging import RemoteIdentityError
 from ginkgo.core.hashing import hash_bytes
@@ -144,6 +144,17 @@ def remote_fails() -> int:
     raise ValueError("boom in the pod")
 
 
+@task()
+def remote_prints_no_newline(value: int) -> int:
+    print("no newline", end="")
+    return value
+
+
+@task(kind="shell")
+def remote_shell_prints_no_newline(dest: Out[file]):
+    return shell(cmd=f"echo ok > {dest}; printf done")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -165,6 +176,22 @@ class TestRemotePayloadTransport:
 
         # Writing the traceback must leave the process's stderr open.
         assert "Traceback" in task_stdout_log(tmp_path / "runs")
+
+    @pytest.mark.parametrize(
+        ("make", "printed"),
+        [
+            (lambda dest: remote_prints_no_newline(value=1), "no newline"),
+            (lambda dest: remote_shell_prints_no_newline(dest=dest), "done"),
+        ],
+        ids=["python", "shell"],
+    )
+    def test_output_without_a_final_newline_leaves_the_result_readable(
+        self, tmp_path: Path, make, printed: str
+    ) -> None:
+        # The result line the worker prints last must not join the output's.
+        evaluate_remotely(make(str(tmp_path / "ok.txt")))
+
+        assert printed in task_stdout_log(tmp_path / "runs")
 
     def test_large_dataframe_crosses_both_ways(self) -> None:
         # Random floats keep the encoded frame well over the inline limit.

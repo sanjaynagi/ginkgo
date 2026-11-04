@@ -27,10 +27,8 @@ def main() -> None:
 
     payload_b64 = os.environ.get("GINKGO_WORKER_PAYLOAD")
     if payload_b64 is None:
-        print(
-            json.dumps(
-                error_response(RuntimeError("GINKGO_WORKER_PAYLOAD environment variable not set"))
-            )
+        _print_result(
+            error_response(RuntimeError("GINKGO_WORKER_PAYLOAD environment variable not set"))
         )
         sys.exit(1)
 
@@ -38,18 +36,26 @@ def main() -> None:
         payload = json.loads(base64.b64decode(payload_b64))
     except Exception as exc:
         exc.args = (f"Failed to decode worker payload: {exc}",)
-        print(json.dumps(error_response(exc)))
+        _print_result(error_response(exc))
         sys.exit(1)
 
     try:
         result = run_worker_payload(payload)
     except Exception as exc:
-        print(json.dumps(error_response(exc)))
+        _print_result(error_response(exc))
         sys.exit(1)
 
-    # Print the result as a JSON line for the handle to parse.
-    print(json.dumps(result, default=str))
+    _print_result(result)
     sys.exit(0 if result.get("ok", False) else 1)
+
+
+def _print_result(result: dict) -> None:
+    """Print *result* as the JSON line the executor parses from the job's logs.
+
+    It starts a line of its own: the task's output, printed before it, may
+    not end in a newline, and the executor reads only whole lines.
+    """
+    print(f"\n{json.dumps(result, default=str)}")
 
 
 def run_worker_payload(payload: dict) -> dict:
