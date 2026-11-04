@@ -48,18 +48,21 @@ one relative to the working directory, which differs in the worker.
 
 A remote shell or script task with a Pixi `env=` runs its command in that
 environment in the worker. The worker looks for the environment's `pixi.toml`
-and `pixi.lock` where your machine does, in the code bundle or the image, and
-installs it from the lock before the command runs. With
+and `pixi.lock` where your machine does, relative to the code bundle or the
+image's working directory. It installs exactly the packages that lock pins
+before the command runs, and never solves the environment itself. With
 [code sync](#code-sync), keep the environment in the package's `envs/`
-directory, which the bundle carries. The lock must list the worker's
-platform, usually `linux-64`. If the worker's `pixi.toml` differs from your
-machine's, the task fails, because its result would not match its cache key.
+directory. The bundle carries it with the lock your machine writes or updates
+for the run, so don't exclude `pixi.lock` with `.gitignore` or `exclude`. The
+lock must list the worker's platform, usually `linux-64`. If the worker's
+`pixi.toml` or `pixi.lock` differs from your machine's, or it has no lock, the
+task fails, because its result would not match what the run records.
 
 The first task to use an environment in a worker installs it, downloads
 included, before its command starts. A pod runs one task, so every such task
 pays that install time. If you bake your code into the image, install each
-environment when you build the image, and the worker's install becomes a
-quick check.
+environment from the lock you run with when you build the image, and the
+worker's install becomes a quick check.
 
 A task with a container `env=` (`docker://` or `oci://`) can't run remotely
 yet, because the worker has no container runtime. It fails the run before any
