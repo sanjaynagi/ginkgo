@@ -89,10 +89,13 @@ def test_the_command_runs_in_the_env_the_code_bundle_carries(
 def test_a_worker_env_unlike_the_drivers_fails_the_task(
     tmp_path: Path, remote_round_trip: RemoteRoundTrip
 ) -> None:
-    # The driver finds ``tools`` under driver/; the worker, with no code
-    # bundle, under its working directory, where the manifest differs.
+    # The driver finds ``tools`` under driver/; the worker, in the code
+    # bundle, where the manifest differs.
     _declare_tools_env(tmp_path / "driver" / "envs")
-    _declare_tools_env(tmp_path / "envs", extra="description = 'an older copy'\n")
+    package = tmp_path / "wf"
+    _declare_tools_env(package / "envs", extra="description = 'an older copy'\n")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "flow.py").write_text("", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="worker's env 'tools' is not the one the driver"):
         _evaluate(
@@ -100,5 +103,5 @@ def test_a_worker_env_unlike_the_drivers_fails_the_task(
             context=EnvironmentContext(
                 project_root=tmp_path / "driver", workflow_root=None, config={}
             ),
-            code=None,
+            code={"mode": "sync", "package": "wf"},
         )
