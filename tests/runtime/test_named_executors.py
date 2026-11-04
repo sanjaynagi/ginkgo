@@ -108,6 +108,11 @@ def pinned_container_shell() -> str:
     raise AssertionError("never runs")
 
 
+@task(kind="shell", env="tools", executor="gpu-k8s")
+def pinned_pixi_shell() -> str:
+    raise AssertionError("never runs")
+
+
 class TestExecutorRegistryConfig:
     def test_named_executors_are_parsed_with_code_split_out(self) -> None:
         registry = ExecutorRegistry.from_config(CONFIG, default="gpu-k8s")
@@ -238,10 +243,14 @@ class TestExecutorRouting:
         with pytest.raises(ValueError, match="cannot be dispatched remotely"):
             self._evaluator(default=None).placement.resolve(task_def=pinned_subworkflow)
 
-    def test_a_pinned_task_with_an_env_is_rejected(self) -> None:
+    def test_a_pinned_task_with_a_container_env_is_rejected(self) -> None:
         # As doctor resolves it: pinned, with no run default.
         with pytest.raises(ValueError, match="cannot run a task in its own env"):
             self._evaluator(default=None).placement.resolve(task_def=pinned_container_shell)
+
+    def test_a_pinned_task_with_a_pixi_env_goes_to_its_executor(self) -> None:
+        placement = self._evaluator(default=None).placement
+        assert placement.resolve(task_def=pinned_pixi_shell) == "gpu-k8s"
 
 
 class TestTaskDeclaration:

@@ -1,8 +1,9 @@
 """A run on a real Kubernetes cluster: kind, with an in-cluster S3 server.
 
-The driver runs here and dispatches a task to a pod. The pod reads its input
+The driver runs here and dispatches tasks to pods. One pod reads its input
 straight from that server, and its output comes back through the artifact
-store. CI's ``kind`` job creates the cluster, loads the worker image and
+store. Another installs a Pixi env from the code bundle and runs a shell
+command in it. CI's ``kind`` job creates the cluster, loads the worker image and
 port-forwards the server (see ``.github/workflows/tests.yml``); elsewhere the
 test is skipped.
 """
@@ -49,7 +50,7 @@ store = "s3://ginkgo/artifacts/"
 WORKFLOW = """
 from pathlib import Path
 
-from ginkgo import file, flow, remote_file, task
+from ginkgo import Out, file, flow, remote_file, shell, task
 
 
 @task(executor="kind")
@@ -64,9 +65,29 @@ def keep(*, shouted: file) -> str:
     return "result.txt"
 
 
+# jq is in the env, not the worker image.
+@task(kind="shell", env="tools", executor="kind")
+def jq_version(*, out: Out[file]):
+    return shell(cmd=f"jq --version > {out}")
+
+
 @flow
 def main():
-    return keep(shouted=shout(text=remote_file("s3://ginkgo/inputs/greeting.txt")))
+    return [
+        keep(shouted=shout(text=remote_file("s3://ginkgo/inputs/greeting.txt"))),
+        jq_version(out="jq-version.txt"),
+    ]
+"""
+
+# One small package, so the pod's install is quick.
+TOOLS_ENV = """
+[workspace]
+name = "tools"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+
+[dependencies]
+jq = "*"
 """
 
 
@@ -80,13 +101,15 @@ def _put_input() -> None:
     fs.pipe("ginkgo/inputs/greeting.txt", b"hello from s3")
 
 
-def test_a_task_runs_in_a_pod_and_its_output_comes_back(tmp_path: Path) -> None:
+def test_tasks_run_in_pods_and_their_outputs_come_back(tmp_path: Path) -> None:
     _put_input()
     (tmp_path / "ginkgo.toml").write_text(CONFIG, encoding="utf-8")
     package = tmp_path / "kind_workflow"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "flow.py").write_text(WORKFLOW, encoding="utf-8")
+    (package / "envs" / "tools").mkdir(parents=True)
+    (package / "envs" / "tools" / "pixi.toml").write_text(TOOLS_ENV, encoding="utf-8")
     run_id = uuid.uuid4().hex
     env = {**os.environ, "GINKGO_PARENT_RUN_ID": run_id}
     # CI runs the driver as a service account that holds only
@@ -106,6 +129,7 @@ def test_a_task_runs_in_a_pod_and_its_output_comes_back(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "result.txt").read_text() == "HELLO FROM S3"
+    assert (tmp_path / "jq-version.txt").read_text().startswith("jq-")
     jobs = subprocess.run(
         ["kubectl", "get", "jobs", "-l", f"ginkgo/parent-run-id={run_id}", "-o", "name"],
         text=True,

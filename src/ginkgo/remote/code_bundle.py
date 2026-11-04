@@ -26,11 +26,13 @@ from ginkgo.remote.backend import ObjectStore
 
 logger = logging.getLogger(__name__)
 
-# Directories and patterns excluded from the code bundle by default.
+# Directories and patterns excluded from the code bundle by default. An
+# env's installed ``.pixi/`` is the driver's: a worker installs its own.
 _DEFAULT_EXCLUDES: frozenset[str] = frozenset(
     {
         "__pycache__",
         ".git",
+        ".pixi",
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",

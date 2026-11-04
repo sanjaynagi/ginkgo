@@ -66,11 +66,6 @@ def in_a_container(dest: Out[file]):
     return shell(cmd=f"echo hi > {dest}")
 
 
-@task(kind="shell", env="tools")
-def in_a_pixi_env(dest: Out[file]):
-    return shell(cmd=f"echo hi > {dest}")
-
-
 def test_a_shell_command_reads_and_writes_pod_paths(
     tmp_path: Path, remote_round_trip: RemoteRoundTrip, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -153,13 +148,10 @@ def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> No
     assert "super-secret" not in text
 
 
-@pytest.mark.parametrize(
-    "make", [in_a_container, in_a_pixi_env], ids=["container-env", "pixi-env"]
-)
-def test_an_env_on_a_remote_executor_fails_before_the_run(tmp_path: Path, make) -> None:
+def test_a_container_env_on_a_remote_executor_fails_before_the_run(tmp_path: Path) -> None:
     collector = EventCollector()
 
     with pytest.raises(ValueError, match="a remote worker cannot run a task in its own env"):
-        evaluate_remotely(make(dest=str(tmp_path / "x")), event_bus=collector.bus)
+        evaluate_remotely(in_a_container(dest=str(tmp_path / "x")), event_bus=collector.bus)
 
     assert collector.started() == []

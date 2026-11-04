@@ -1844,6 +1844,8 @@ class ConcurrentEvaluator:
             "display_label": node.display_label,
             "threads": node.threads,
             "env": node.task_def.env,
+            # A remote worker checks that the env it builds is this one.
+            "env_identity": self._env_identity(env=node.task_def.env),
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
             "task_kind": node.task_def.kind,

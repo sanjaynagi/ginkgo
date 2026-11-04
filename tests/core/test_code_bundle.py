@@ -69,6 +69,8 @@ def package(tmp_path: Path) -> Path:
         ("my_workflow/tasks.pyc", True),
         ("my_workflow/.git/config", True),
         ("my_workflow/foo.egg-info/PKG-INFO", True),
+        ("my_workflow/envs/tools/.pixi/envs/default/bin/jq", True),
+        ("my_workflow/envs/tools/pixi.lock", False),
         ("my_workflow/tasks.py", False),
         ("my_workflow/sub/helpers.py", False),
     ],
