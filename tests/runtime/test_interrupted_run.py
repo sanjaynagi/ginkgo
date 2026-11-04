@@ -117,7 +117,7 @@ class NeverFinishes(RemoteExecutor):
         return Handle()
 
 
-@task(remote=True)
+@task()
 def forever() -> int:
     return 1
 

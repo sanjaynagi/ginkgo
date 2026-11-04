@@ -61,8 +61,9 @@ each step below.
    - The artifact store.
    - An executor named `oke`.
 
-   Tasks run on OKE when they name it with `@task(executor="oke")`, or when the
-   run makes it the default with `--executor oke`.
+   With `--executor oke`, every Python task runs on OKE. Without it, only
+   tasks that name it with `@task(executor="oke")` do. Shell, script,
+   notebook and subworkflow tasks run in the driver's pod for now.
 5. **Run.** `deploy/oke/driver-job.yaml` runs `ginkgo run` in the image. It
    mounts a PersistentVolumeClaim (PVC) at the project's `.ginkgo/` directory.
    Run history and the cache then outlive the pod, so a rerun reuses earlier

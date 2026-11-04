@@ -6,7 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
 
-from ginkgo import evaluate, task
+from ginkgo import Out, evaluate, file, shell, task
 from ginkgo.core.expr import Expr
 from ginkgo.core.task import TaskDef
 from ginkgo.plugins.registry import PluginNotFoundError
@@ -63,9 +63,19 @@ def crunches(x: int) -> int:
     return x
 
 
-@task(remote=True)
-def follows_default(x: int) -> int:
+@task()
+def follows_default(x: int) -> str:
+    return str(x)
+
+
+@task(executor="local")
+def opts_out(x: int) -> int:
     return x
+
+
+@task(kind="shell")
+def plain_shell(dest: Out[file]) -> file:
+    return shell(cmd=f"echo hi > {dest}")
 
 
 @task(executor="nope")
@@ -196,7 +206,16 @@ class TestExecutorRouting:
         assert unset.placement.resolve(task_def=crunches) == "cheap-batch"
         evaluator = self._evaluator(default="cheap-batch")
         assert evaluator.placement.resolve(task_def=trains) == "gpu-k8s"
+
+    def test_the_run_default_takes_every_remote_capable_task(self) -> None:
+        assert self._evaluator(default=None).placement.resolve(task_def=follows_default) is None
+        evaluator = self._evaluator(default="cheap-batch")
         assert evaluator.placement.resolve(task_def=follows_default) == "cheap-batch"
+        # A kind that cannot go remote stays on the driver rather than failing.
+        assert evaluator.placement.resolve(task_def=plain_shell) is None
+
+    def test_executor_local_opts_out_of_the_run_default(self) -> None:
+        assert self._evaluator(default="cheap-batch").placement.resolve(task_def=opts_out) is None
 
     def test_unknown_executor_name_fails_at_build(self) -> None:
         evaluator = self._evaluator(default="gpu-k8s")
@@ -211,11 +230,7 @@ class TestExecutorRouting:
 
 class TestTaskDeclaration:
     def test_executor_lands_on_the_task_def(self) -> None:
-        assert (trains.executor, trains.remote) == ("gpu-k8s", False)
-
-    def test_executor_and_remote_together_are_rejected(self) -> None:
-        with pytest.raises(ValueError, match="drop remote=True"):
-            task(executor="gpu-k8s", remote=True)(lambda x: x)
+        assert trains.executor == "gpu-k8s"
 
     def test_empty_executor_name_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="non-empty name"):
@@ -349,6 +364,19 @@ class TestExecutionBackendContract:
         assert list(recording_executors) == ["gpu-k8s"]
         assert len(recording_executors["gpu-k8s"].submitted) == 1
 
+    def test_only_remote_capable_tasks_follow_the_run_default(
+        self, recording_executors, tmp_path
+    ) -> None:
+        seen, bus = _started_backends()
+        registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
+        ConcurrentEvaluator(jobs=1, event_bus=bus, executor_registry=registry).evaluate(
+            [follows_default(x=1), opts_out(x=2), plain_shell(dest=str(tmp_path / "hi.txt"))]
+        )
+        assert sorted(seen) == ["gpu-k8s", "local", "local"]
+        submitted = recording_executors["gpu-k8s"].submitted
+        assert [payload["task_name"] for payload in submitted] == [follows_default.name]
+        assert (tmp_path / "hi.txt").read_text() == "hi\n"
+
 
 class _QueuedFuture(Future):
     """Future of a work item that no pool thread has picked up yet.
@@ -383,7 +411,7 @@ def test_fail_fast_cancels_a_queued_remote_job_on_its_executor(
     monkeypatch.setattr(Executors, "get_or_create_remote_watcher", lambda self: _QueuedWatcher())
     evaluator = ConcurrentEvaluator(
         jobs=2,
-        executor_registry=ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s"),
+        executor_registry=ExecutorRegistry.from_config(NO_CODE_CONFIG, default=None),
     )
 
     with pytest.raises(ValueError, match="local failure"):

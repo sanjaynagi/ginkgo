@@ -30,23 +30,23 @@ def read_text(path: file) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-@task(remote=True)
+@task()
 def expand(x: int):
     return double(x=x)
 
 
-@task(remote=True)
+@task()
 def expand_annotated(x: int) -> int:
     return double(x=x)
 
 
-@task(remote=True)
+@task()
 def expand_total_and_parts(n: int) -> list:
     calls = [double(x=i) for i in range(n)]
     return [total(xs=calls), calls]
 
 
-@task(remote=True)
+@task()
 def write_then_read(text: str):
     # The driver's temporary directory is hidden from the pod, and this one
     # is removed once the job ends, so the child reads what the store holds.

@@ -21,13 +21,13 @@ def needs_t4(x: int) -> int:
     return x * 2
 
 
-@task(remote=True)
-def explicitly_remote(x: int) -> int:
+@task(gpu=1, executor="local")
+def local_gpu(x: int) -> int:
     return x
 
 
-@task(kind="shell", remote=True)
-def remote_shell() -> str:
+@task(kind="shell", executor="remote")
+def pinned_shell() -> str:
     raise AssertionError("never runs")
 
 
@@ -51,8 +51,7 @@ class TestGpuPlacement:
         ("expr", "match"),
         [
             (lambda: needs_gpu(x=21), "requires 1 GPU"),
-            (lambda: explicitly_remote(x=1), "no default executor"),
-            (lambda: remote_shell(), "cannot be dispatched remotely"),
+            (lambda: pinned_shell(), "cannot be dispatched remotely"),
         ],
     )
     def test_unplaceable_tasks_fail(self, expr, match: str) -> None:
@@ -63,29 +62,32 @@ class TestGpuPlacement:
         ("task_def", "gpus", "placed"),
         [
             (needs_gpu, 0, "remote"),
-            (needs_gpu, 1, None),
-            (explicitly_remote, 1, "remote"),
+            (needs_gpu, 1, "remote"),
+            (local_gpu, 1, None),
+            (gpu_shell, 1, None),
         ],
-        ids=["gpu-over-budget", "gpu-within-budget", "explicit-remote-wins"],
+        ids=["gpu-over-budget", "gpu-within-budget", "local-opt-out", "shell-stays-local"],
     )
     def test_placement_with_an_executor(self, task_def, gpus: int, placed) -> None:
         evaluator = ConcurrentEvaluator(jobs=1, gpus=gpus, executor_registry=prebuilt_registry())
         assert evaluator.placement.resolve(task_def=task_def) == placed
 
-    def test_remote_true_follows_the_run_default(self) -> None:
-        registry = prebuilt_registry(name="gpu-k8s")
-        evaluator = ConcurrentEvaluator(jobs=1, executor_registry=registry)
-        assert evaluator.placement.resolve(task_def=explicitly_remote) == "gpu-k8s"
-
-    def test_gpu_on_non_python_kind_with_executor_names_the_kind(self) -> None:
+    @pytest.mark.parametrize(
+        ("task_def", "match"),
+        [
+            (gpu_shell, "kind='shell' cannot be dispatched remotely"),
+            (local_gpu, "declares executor='local'"),
+        ],
+    )
+    def test_a_local_task_over_the_gpu_budget_fails(self, task_def, match: str) -> None:
         evaluator = ConcurrentEvaluator(jobs=1, executor_registry=prebuilt_registry())
-        with pytest.raises(ValueError, match="kind='shell' cannot be dispatched remotely"):
-            evaluator.placement.resolve(task_def=gpu_shell)
+        with pytest.raises(ValueError, match=match):
+            evaluator.placement.resolve(task_def=task_def)
 
     def test_placement_misconfiguration_fails_at_build(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1)
         with pytest.raises(ValueError, match="no default executor"):
-            evaluator.build_graph(explicitly_remote(x=1))
+            evaluator.build_graph(needs_gpu(x=1))
             evaluator.validate_graph()
 
 

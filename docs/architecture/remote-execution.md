@@ -1,15 +1,18 @@
 # Remote Execution
 
-Ginkgo supports dispatching individual tasks to cloud infrastructure while the
-rest of the workflow runs locally. Placement is decided per task from its
-declared requirement and the available capability: `executor="name"` pins a
-task to one configured executor, `remote=True` is an explicit directive to the
-run's *default* executor (`--executor`), and a task whose `gpu` requirement
-exceeds the local `--gpus` budget is dispatched to that default when one is
-configured. Any route without a usable executor is a build error — a task never
-silently runs somewhere its requirement cannot be met. Remote-placed tasks
-consume a `--jobs` slot but no local core/memory/GPU budget; their resources
-are satisfied by the executor.
+Ginkgo supports dispatching a workflow's tasks to cloud infrastructure while
+the driver runs locally. Placement is decided per task: `executor="name"` pins
+a task to one configured executor and `executor="local"` keeps it on the
+driver; otherwise every task whose kind is `remote_capable` (today only
+`python`) goes to the run's *default* executor (`--executor`), and the rest run
+on the driver. Shell, script, notebook and subworkflow tasks therefore run on
+the driver for now, even under `--executor`. Naming an executor on a kind that
+is not remote-capable is a build error, as is a locally placed task whose `gpu`
+requirement exceeds the local `--gpus` budget — a task never silently runs
+somewhere its requirement cannot be met. Cached tasks are never dispatched:
+placement is resolved only after a cache miss. Remote-placed tasks consume a
+`--jobs` slot but no local core/memory/GPU budget; their resources are
+satisfied by the executor.
 
 ## Executor Registry
 

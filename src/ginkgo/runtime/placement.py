@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
-from ginkgo.runtime.executor_registry import ExecutorRegistry
+from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.task_kinds import task_kind
 
 
@@ -27,8 +27,7 @@ class Placement:
     resource_overrides : ResourceOverrides | None
         Site-level overrides merged over each task's declared resources.
     gpus : int
-        The local GPU budget. A task needing more is placed on the default
-        executor.
+        The local GPU budget. A task placed locally may not need more.
     """
 
     executor_registry: ExecutorRegistry = field(default_factory=ExecutorRegistry)
@@ -55,46 +54,38 @@ class Placement:
     def resolve(self, *, task_def: TaskDef) -> str | None:
         """Return the executor a task is placed on, or ``None`` for local.
 
-        Placement is derived from the declared requirement and the available
-        capability. A task naming an ``executor`` routes there whatever the
-        run default is; ``remote=True`` routes to the run's default executor
-        (``--executor``); and a GPU requirement the local ``--gpus`` budget
-        cannot satisfy falls back to that same default. Any route without a
-        usable executor is an error rather than a silent local run.
+        A task naming an ``executor`` routes there whatever the run default
+        is, and ``executor="local"`` keeps it on the driver. Otherwise a task
+        whose kind is remote-capable goes to the run's default executor
+        (``--executor``) when there is one, and any other task runs locally.
+        A local task whose GPU requirement the ``--gpus`` budget cannot
+        satisfy is an error rather than a run that can never schedule it.
         """
         registry = self.executor_registry
-        if task_def.executor is not None:
-            _require_remote_capable_kind(task_def=task_def, reason="executor")
+        if task_def.executor not in (None, LOCAL):
+            _require_remote_capable_kind(task_def=task_def)
             return registry.resolve(task_def.executor, task_name=task_def.base_name)
-        if task_def.remote:
-            _require_remote_capable_kind(task_def=task_def, reason="remote")
-            if not registry.has_default:
-                raise ValueError(
-                    f"{task_def.base_name} declares remote=True but this run has no default "
-                    f"executor (pass --executor <name>). {registry.available_hint()}"
-                )
-            assert registry.default_name is not None
+        remote_capable = task_kind(task_def).remote_capable
+        if task_def.executor is None and remote_capable and registry.has_default:
             return registry.default_name
         gpu = self.effective_resources(task_def=task_def).gpu
         if gpu > self.gpus:
-            if not task_kind(task_def).remote_capable:
-                raise ValueError(
-                    f"{task_def.base_name} requires {gpu} GPU(s) but only {self.gpus} "
-                    "are available locally (--gpus), and kind="
-                    f"{task_def.kind!r} cannot be dispatched remotely"
+            if task_def.executor == LOCAL:
+                reason = f"it declares executor={LOCAL!r}"
+            elif not remote_capable:
+                reason = f"kind={task_def.kind!r} cannot be dispatched remotely"
+            else:
+                reason = (
+                    f"this run has no default executor (--executor). {registry.available_hint()}"
                 )
-            _require_remote_capable_kind(task_def=task_def, reason="a GPU requirement")
-            if not registry.has_default:
-                raise ValueError(
-                    f"{task_def.base_name} requires {gpu} GPU(s) but only {self.gpus} "
-                    "are available locally (--gpus) and this run has no default "
-                    f"executor (--executor). {registry.available_hint()}"
-                )
-            return registry.default_name
+            raise ValueError(
+                f"{task_def.base_name} requires {gpu} GPU(s) but only {self.gpus} "
+                f"are available locally (--gpus), and {reason}"
+            )
         return None
 
 
-def _require_remote_capable_kind(*, task_def: TaskDef, reason: str) -> None:
+def _require_remote_capable_kind(*, task_def: TaskDef) -> None:
     """Reject remote placement for task kinds the workers cannot run.
 
     ``Out[...]`` parameters are supported on remote tasks: when a remote
@@ -108,8 +99,7 @@ def _require_remote_capable_kind(*, task_def: TaskDef, reason: str) -> None:
     works when the worker shares the driver's filesystem.
     """
     if not task_kind(task_def).remote_capable:
-        declaration = "remote=True" if reason == "remote" else f"executor={task_def.executor!r}"
         raise ValueError(
-            f"{task_def.base_name} declares {declaration} but kind={task_def.kind!r} "
-            "cannot be dispatched remotely"
+            f"{task_def.base_name} declares executor={task_def.executor!r} but "
+            f"kind={task_def.kind!r} cannot be dispatched remotely"
         )

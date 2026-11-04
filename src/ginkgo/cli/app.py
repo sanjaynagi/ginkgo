@@ -473,10 +473,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         default="local",
         metavar="NAME",
         help=(
-            "Default executor for remote tasks: 'local' (default), a name from "
+            "Executor for every remote-capable task: 'local' (default), a name from "
             "[remote.executors] in ginkgo.toml, or 'k8s'/'batch' for the legacy "
-            "[remote.k8s]/[remote.batch] sections. Tasks declaring "
-            "executor=... always use the executor they name."
+            "[remote.k8s]/[remote.batch] sections. Tasks declaring executor=... "
+            "use the executor they name, and executor='local' keeps a task on "
+            "this machine."
         ),
     )
 

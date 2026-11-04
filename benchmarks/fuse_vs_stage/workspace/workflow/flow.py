@@ -30,7 +30,7 @@ PREFIX = os.environ.get("GINKGO_FUSE_BENCH_PREFIX", "1gb")
 BASE = f"gs://{BUCKET}/{PREFIX}"
 
 
-@task(remote=True, remote_input_access=ACCESS, streaming_compatible=True)
+@task(remote_input_access=ACCESS, streaming_compatible=True)
 def read_sparse(*, data: file) -> dict:
     """Read 100 random 64 KiB windows from ``data``."""
     size = Path(data).stat().st_size
@@ -57,7 +57,7 @@ def read_sparse(*, data: file) -> dict:
     }
 
 
-@task(remote=True, remote_input_access=ACCESS, streaming_compatible=True)
+@task(remote_input_access=ACCESS, streaming_compatible=True)
 def read_sequential(*, data: file) -> dict:
     """Read ``data`` sequentially end-to-end."""
     size = Path(data).stat().st_size
@@ -78,7 +78,7 @@ def read_sequential(*, data: file) -> dict:
     }
 
 
-@task(remote=True, remote_input_access=ACCESS, streaming_compatible=True)
+@task(remote_input_access=ACCESS, streaming_compatible=True)
 def read_tabular(*, data: file) -> dict:
     """Project 2 of 20 columns from a parquet file."""
     import pyarrow.parquet as pq
