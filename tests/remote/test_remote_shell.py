@@ -62,6 +62,16 @@ def script_forgets_its_output(dest: Out[file]):
 
 
 @task(kind="shell")
+def logs_to_a_file(dest: Out[file]):
+    return shell(cmd=f"echo ok > {dest}", log="task.log")
+
+
+@task(kind="script")
+def script_logs_to_a_file(src: file, dest: Out[file]):
+    return script(UPPER_SCRIPT, log="task.log")
+
+
+@task(kind="shell")
 def echoes(token: str, dest: Out[file]):
     return shell(cmd=f"echo from-the-command {token}; echo err-line >&2; echo ok > {dest}")
 
@@ -152,6 +162,26 @@ def test_an_unwritten_output_is_named_by_its_driver_path(
     # As a local task's error names it, not by the pod's scratch path.
     assert repr(str(dest)) in str(raised.value)
     assert str(remote_round_trip.pod_scratch) not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda src, dest: logs_to_a_file(dest=dest),
+        lambda src, dest: script_logs_to_a_file(src=src, dest=dest),
+    ],
+    ids=["shell", "script"],
+)
+def test_a_log_file_fails_a_remote_task_before_its_command_runs(tmp_path: Path, make) -> None:
+    # A log file written in the pod would never reach the driver.
+    src = tmp_path / "in.txt"
+    src.write_text("quiet", encoding="utf-8")
+    dest = tmp_path / "out.txt"
+
+    with pytest.raises(ValueError, match="log='task.log'"):
+        evaluate_remotely(make(src=file(src), dest=str(dest)))
+
+    assert not dest.exists()
 
 
 def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> None:

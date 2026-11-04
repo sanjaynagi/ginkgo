@@ -99,7 +99,9 @@ The worker entry point (`remote/worker.py`) runs as
    marked `ran_directive` so the driver completes the task with it, and a
    failed command's exit code travels in the error so `retry_on_exit_codes`
    still applies. A remote task with `env=` is rejected at placement, since
-   the worker runs every command in its own image
+   the worker runs every command in its own image. A directive naming a
+   `log=` file fails in the worker before its command runs, since nothing
+   would bring the file back
 5. Uploads outputs and large result values, then prints a JSON result line to
    stdout for the handle to parse. A result holding task expressions is
    pickled whole with its `file`/`folder` leaves uploaded beside it, and the
