@@ -85,7 +85,8 @@ rejected at submit rather than silently scheduled without a GPU. Job logs are re
 The worker entry point (`remote/worker.py`) runs as
 `python -m ginkgo.remote.worker` inside the container. It:
 
-1. Reads the task payload from `GINKGO_WORKER_PAYLOAD` (base64-encoded JSON)
+1. Reads the task payload from `GINKGO_WORKER_PAYLOAD` (base64-encoded JSON),
+   and removes it from its environment, since it holds the resolved secrets
 2. Optionally downloads and extracts a code bundle (code-sync mode)
 3. Downloads `file`/`folder` inputs and large values from the artifact store
    into its own scratch directory

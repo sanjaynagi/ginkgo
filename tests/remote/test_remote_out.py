@@ -10,6 +10,7 @@ actually work, not just that they typecheck.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -155,6 +156,16 @@ def remote_shell_prints_no_newline(dest: Out[file]):
     return shell(cmd=f"echo ok > {dest}; printf done")
 
 
+@task()
+def remote_lists_its_env(dest: Out[file]) -> None:
+    Path(dest).write_text("\n".join(os.environ), encoding="utf-8")
+
+
+@task(kind="shell")
+def remote_shell_lists_its_env(dest: Out[file]):
+    return shell(cmd=f"env > {dest}")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -192,6 +203,18 @@ class TestRemotePayloadTransport:
         evaluate_remotely(make(str(tmp_path / "ok.txt")))
 
         assert printed in task_stdout_log(tmp_path / "runs")
+
+    @pytest.mark.parametrize(
+        "make", [remote_lists_its_env, remote_shell_lists_its_env], ids=["python", "shell"]
+    )
+    def test_task_code_never_sees_the_payload(self, tmp_path: Path, make) -> None:
+        # It holds the task's arguments and resolved secrets, base64-encoded,
+        # which redaction cannot match.
+        dest = tmp_path / "env.txt"
+
+        evaluate_remotely(make(dest=str(dest)))
+
+        assert "GINKGO_WORKER_PAYLOAD" not in dest.read_text(encoding="utf-8")
 
     def test_large_dataframe_crosses_both_ways(self) -> None:
         # Random floats keep the encoded frame well over the inline limit.

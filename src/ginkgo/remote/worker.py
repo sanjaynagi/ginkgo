@@ -25,7 +25,9 @@ def main() -> None:
     """Execute a task from a remote worker payload."""
     from ginkgo.runtime.worker import error_response
 
-    payload_b64 = os.environ.get("GINKGO_WORKER_PAYLOAD")
+    # Taken out of the environment, so neither the task nor any command it
+    # runs sees the arguments and resolved secrets the payload holds.
+    payload_b64 = os.environ.pop("GINKGO_WORKER_PAYLOAD", None)
     if payload_b64 is None:
         _print_result(
             error_response(RuntimeError("GINKGO_WORKER_PAYLOAD environment variable not set"))
