@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from kubernetes import client as k8s
 
 from ginkgo_k8s.executor import (
     KubernetesExecutor,
@@ -186,6 +188,7 @@ class TestKubernetesJobHandle:
     def test_state_running(self) -> None:
         handle = self._make_handle()
         handle._batch_api.read_namespaced_job.return_value.status = self._make_status(active=1)
+        handle._core_api.list_namespaced_pod.return_value.items = []
 
         assert handle.state() == RemoteJobState.RUNNING
 
@@ -417,6 +420,115 @@ class TestExecutorSettings:
                 (volume.name, "/ginkgo-scratch")
             ]
             assert container.resources.limits["cpu"] == "2"
+
+
+def _pod(*, scheduled: bool = True, waiting: dict[str, str] | None = None) -> k8s.V1Pod:
+    """A container task's pod, whose containers named in *waiting* wait for that reason.
+
+    Every container's image is named ``<container>:1``.
+    """
+    waiting = waiting or {}
+
+    def status(name: str) -> k8s.V1ContainerStatus:
+        reason = waiting.get(name)
+        state = (
+            k8s.V1ContainerState(waiting=k8s.V1ContainerStateWaiting(reason=reason, message="no"))
+            if reason is not None
+            else k8s.V1ContainerState(running=k8s.V1ContainerStateRunning())
+        )
+        return k8s.V1ContainerStatus(
+            name=name, image=f"{name}:1", image_id="", ready=False, restart_count=0, state=state
+        )
+
+    scheduled_condition = k8s.V1PodCondition(
+        type="PodScheduled",
+        status="True" if scheduled else "False",
+        reason=None if scheduled else "Unschedulable",
+        message=None if scheduled else "0/3 nodes are available",
+    )
+    return k8s.V1Pod(
+        metadata=k8s.V1ObjectMeta(name="ginkgo-test-001-xyz"),
+        status=k8s.V1PodStatus(
+            phase="Pending",
+            conditions=[scheduled_condition],
+            init_container_statuses=[status("stage-in"), status("task")],
+            container_statuses=[status("stage-out")],
+        ),
+    )
+
+
+class TestAPodThatCannotStart:
+    """A Job counts a Pending pod as active, so its handle reads the pod itself."""
+
+    @pytest.fixture
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        now = [1000.0]
+        monkeypatch.setattr("ginkgo_k8s.executor.time", SimpleNamespace(monotonic=lambda: now[0]))
+        return now
+
+    def _handle(self, *pods: k8s.V1Pod) -> KubernetesJobHandle:
+        """A handle to an active Job whose pod reads as each of *pods* in turn."""
+        handle = KubernetesJobHandle(
+            job_name="ginkgo-test-001",
+            namespace="ginkgo",
+            unschedulable_timeout=60.0,
+            _batch_api=MagicMock(),
+            _core_api=MagicMock(),
+        )
+        status = handle._batch_api.read_namespaced_job.return_value.status
+        status.succeeded, status.active, status.conditions = None, 1, []
+        handle._core_api.list_namespaced_pod.side_effect = [
+            k8s.V1PodList(items=[pod]) for pod in pods
+        ]
+        handle._core_api.read_namespaced_pod_log.side_effect = Exception("no logs")
+        return handle
+
+    @pytest.mark.parametrize(
+        ("pod", "reason"),
+        [
+            (
+                _pod(waiting={"task": "ErrImagePull"}),
+                "container 'task' cannot pull image 'task:1'",
+            ),
+            (
+                _pod(waiting={"stage-in": "ImagePullBackOff"}),
+                "container 'stage-in' cannot pull image 'stage-in:1'",
+            ),
+            (
+                _pod(waiting={"stage-out": "InvalidImageName"}),
+                "container 'stage-out' cannot pull image 'stage-out:1'",
+            ),
+            (_pod(scheduled=False), "unschedulable: Unschedulable: 0/3 nodes are available"),
+        ],
+    )
+    def test_it_fails_once_the_timeout_passes(
+        self, clock: list[float], pod: k8s.V1Pod, reason: str
+    ) -> None:
+        handle = self._handle(pod, pod, pod)
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 59
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 1
+        assert handle.state() == RemoteJobState.FAILED
+
+        error = handle.result().payload["error"]
+        assert error["message"].startswith(f"Kubernetes pod could not start: {reason}")
+        # Deleted, since it would otherwise hold its node or quota for good.
+        handle._batch_api.delete_namespaced_job.assert_called_once()
+
+    def test_a_registry_error_that_clears_restarts_the_clock(self, clock: list[float]) -> None:
+        stuck = _pod(waiting={"task": "ErrImagePull"})
+        handle = self._handle(stuck, _pod(), stuck, stuck)
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 30
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 30
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 59
+        assert handle.state() == RemoteJobState.RUNNING
+        handle._batch_api.delete_namespaced_job.assert_not_called()
 
 
 def test_an_unknown_setting_is_refused() -> None:
