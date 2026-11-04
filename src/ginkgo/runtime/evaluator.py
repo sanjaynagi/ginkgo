@@ -1854,14 +1854,8 @@ class ConcurrentEvaluator:
             # checks that the env it finds is this one, locked as it is here.
             "env_workflow_root": self._env_workflow_root(executor_name=node.executor_name),
             "env_identity": self._env_identity(env=node.task_def.env),
-            # Not for a task that runs in its own image: the executor pulls
-            # that, and the driver's copy, if it has one, is not what runs.
-            "env_materialized_digest": (
-                self.backend.materialized_digest(env=node.task_def.env)
-                if node.task_def.env is not None
-                and self.backend is not None
-                and not self.placement.runs_in_remote_image(task_def=node.task_def)
-                else None
+            "env_materialized_digest": self._cache_store.materialized_digest(
+                task_def=node.task_def
             ),
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),

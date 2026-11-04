@@ -129,7 +129,6 @@ def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | Non
         _reset_command_dir()
 
     mounted_access = None
-    handed_off = False
     try:
         # Code-sync: download and extract the workflow package before import.
         # The bundle stands in for the package's parent directory, the
@@ -178,7 +177,6 @@ def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | Non
             shell_runner_type=_StageIn if phase == "stage-in" else None,
         )
         if result.get("handed_off"):
-            handed_off = True
             # The payload holds the inputs' paths as file and folder values.
             (_command_dir() / "stage.pickle").write_bytes(pickle.dumps(stage))
             return None
@@ -196,11 +194,9 @@ def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | Non
                 mounted_access.close()
             except Exception:  # noqa: BLE001
                 pass
-        if output_param_entries and not handed_off:
-            _remove_output_param_scratch(entries=output_param_entries)
 
-    if output_param_entries and not result.get("ok"):
-        _name_output_params_by_driver_path(result, entries=output_param_entries)
+    if output_param_entries:
+        _settle_output_params(result, entries=output_param_entries)
     if phase == "stage-in":
         (_command_dir() / "result.json").write_text(json.dumps(result, default=str))
         return None
@@ -233,12 +229,9 @@ def _stage_out() -> dict:
         result = _finish(result, stage=stage, remote_store=remote_store, input_access=None)
     except Exception as exc:
         result = error_response(exc)
-    finally:
-        if entries:
-            _remove_output_param_scratch(entries=entries)
 
-    if entries and not result.get("ok"):
-        _name_output_params_by_driver_path(result, entries=entries)
+    if entries:
+        _settle_output_params(result, entries=entries)
     return result
 
 
@@ -519,6 +512,13 @@ def _remove_output_param_scratch(*, entries: list[dict[str, str]]) -> None:
     scratch_dir = _scratch_root() / "ginkgo-outputs"
     for dispatch_dir in {entry["relative"].split("/", 1)[0] for entry in entries}:
         shutil.rmtree(scratch_dir / dispatch_dir, ignore_errors=True)
+
+
+def _settle_output_params(result: dict, *, entries: list[dict[str, str]]) -> None:
+    """Delete a finished task's ``Out[...]`` scratch, and name those in a failure by driver path."""
+    _remove_output_param_scratch(entries=entries)
+    if not result.get("ok"):
+        _name_output_params_by_driver_path(result, entries=entries)
 
 
 def _stage_output_params(
