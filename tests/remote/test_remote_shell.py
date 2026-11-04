@@ -62,8 +62,8 @@ def script_forgets_its_output(dest: Out[file]):
 
 
 @task(kind="shell")
-def logs_to_a_file(dest: Out[file]):
-    return shell(cmd=f"echo ok > {dest}", log="task.log")
+def logs_to_a_file(marker: str, dest: Out[file]):
+    return shell(cmd=f"touch {marker}; echo ok > {dest}", log="task.log")
 
 
 @task(kind="script")
@@ -167,8 +167,8 @@ def test_an_unwritten_output_is_named_by_its_driver_path(
 @pytest.mark.parametrize(
     "make",
     [
-        lambda src, dest: logs_to_a_file(dest=dest),
-        lambda src, dest: script_logs_to_a_file(src=src, dest=dest),
+        lambda src, marker, dest: logs_to_a_file(marker=marker, dest=dest),
+        lambda src, marker, dest: script_logs_to_a_file(src=src, dest=dest),
     ],
     ids=["shell", "script"],
 )
@@ -176,12 +176,13 @@ def test_a_log_file_fails_a_remote_task_before_its_command_runs(tmp_path: Path, 
     # A log file written in the pod would never reach the driver.
     src = tmp_path / "in.txt"
     src.write_text("quiet", encoding="utf-8")
-    dest = tmp_path / "out.txt"
+    # The pod shares this filesystem, so a command that ran would leave it.
+    marker = tmp_path / "ran"
 
     with pytest.raises(ValueError, match="log='task.log'"):
-        evaluate_remotely(make(src=file(src), dest=str(dest)))
+        evaluate_remotely(make(src=file(src), marker=str(marker), dest=str(tmp_path / "out.txt")))
 
-    assert not dest.exists()
+    assert not marker.exists()
 
 
 def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> None:
