@@ -96,7 +96,8 @@ always runs. Job logs are retrieved from Cloud Logging.
 The worker entry point (`remote/worker.py`) runs as
 `python -m ginkgo.remote.worker` inside the container. It:
 
-1. Reads the task payload from `GINKGO_WORKER_PAYLOAD` (base64-encoded JSON)
+1. Reads the task payload from `GINKGO_WORKER_PAYLOAD` (base64-encoded JSON),
+   and removes it from its environment, since it holds the resolved secrets
 2. Optionally downloads and extracts a code bundle (code-sync mode)
 3. Downloads `file`/`folder` inputs and large values from the artifact store
    into its own scratch directory
@@ -116,7 +117,8 @@ The worker entry point (`remote/worker.py`) runs as
    task naming the env if they differ, and runs `prepare` (`pixi install`)
    before the command runs through the env's `exec_argv`. A task with a
    container `env=` runs its command in that image instead, as the next
-   section describes
+   section describes. A directive naming a `log=` file fails in the worker
+   before its command runs, since nothing would bring the file back
 5. Uploads outputs and large result values, then prints a JSON result line to
    stdout for the handle to parse. A result holding task expressions is
    pickled whole with its `file`/`folder` leaves uploaded beside it, and the

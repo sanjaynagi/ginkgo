@@ -83,6 +83,11 @@ wrote it, as it does on your machine. Pin a digest, `image@sha256:...`, to
 run the same image every time. Such a task's inputs are always downloaded,
 never streamed, and its command's memory and CPU use aren't measured.
 
+A remote task can't name a `log=` file in `shell(...)` or `script(...)`
+either, because the file would stay in the worker. The command's output
+reaches the task's log anyway, so drop `log=`, or give the task
+`executor="local"`. The worker fails such a task before its command runs.
+
 Cached tasks are never sent, and each retry submits a new job. A task's
 `threads`, `memory` and `gpu` become its job's resource request. See
 [Resources And Scheduling](/ginkgo/guide/resources/#where-a-task-runs).

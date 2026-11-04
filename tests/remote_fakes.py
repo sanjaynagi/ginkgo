@@ -3,12 +3,12 @@
 Every remote test uses these rather than its own copy, so they all exercise
 the same behaviour: a store that really moves bytes and reports S3-style
 ETags, and an executor that runs the real worker entry point in-process with
-the payload and result passed through JSON, as between a driver and a pod.
+the payload passed in its environment and the result read from its logs, as
+between a driver and a pod.
 """
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import hashlib
 import io
@@ -161,50 +161,64 @@ class _ImmediateHandle:
 
 
 class RoundTripExecutor(RemoteExecutor):
-    """Runs ``run_worker_payload`` synchronously, as if it were a pod.
+    """Runs the worker's entry point in-process, as if it were a pod.
 
-    The payload and result go through JSON exactly as they do between a
-    driver and a pod, and the driver's temporary directory is hidden while
-    the worker runs, so anything that only survives in-process fails here.
+    It keeps to the boundary between a driver and a pod as closely as one
+    process allows. ``main`` reads the payload from ``GINKGO_WORKER_PAYLOAD``,
+    in a working directory of its own and with an empty temporary directory
+    in place of the driver's. What it prints, stdout and stderr together, is
+    the job's logs, as a cluster's log API returns them, and the result is
+    parsed from those logs with ``parse_worker_output``, as executors do.
+
+    The pod still shares the driver's process: its imported modules, the
+    rest of its environment, and every absolute path on its filesystem. Its
+    output is captured as Python writes it, so anything written straight to
+    file descriptor 1 or 2 escapes the logs.
     """
 
     def submit(self, *, attempt: dict) -> RemoteJobHandle:
-        from ginkgo.remote.executor_support import encode_payload
+        from ginkgo.remote.executor_support import encode_payload, parse_worker_output
+        from ginkgo.remote.worker import main
 
-        payload = json.loads(base64.b64decode(encode_payload(attempt)))
-        with _driver_temp_hidden():
-            result = json.loads(json.dumps(self.run_pod(payload), default=str))
-        state = RemoteJobState.SUCCEEDED if result.get("ok") else RemoteJobState.FAILED
-        return _ImmediateHandle(
-            job_id="test-job", _result=RemoteJobResult(state=state, payload=result)
-        )
-
-    def run_pod(self, payload: dict) -> dict:
-        """Run the job's worker on *payload*, returning the result it prints."""
-        from ginkgo.remote.worker import run_worker_payload
-
-        result = run_worker_payload(payload)
-        assert result is not None
-        return result
-
-
-class LoggingRoundTripExecutor(RoundTripExecutor):
-    """A :class:`RoundTripExecutor` whose jobs' logs are what the pod printed.
-
-    As a cluster's log API returns a pod's output, so the driver copies it
-    into the task's log files; the test's own streams see none of it.
-    """
-
-    def submit(self, *, attempt: dict) -> RemoteJobHandle:
         output = io.StringIO()
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            handle = super().submit(attempt=attempt)
-        handle.logs = output.getvalue()
-        return handle
+        with (
+            _in_a_pod(payload=encode_payload(attempt)),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(output),
+        ):
+            try:
+                main()
+            except SystemExit as exc:
+                exit_code = exc.code
+            else:
+                raise AssertionError("the worker returned without exiting")
+        logs = output.getvalue()
+        result = RemoteJobResult(
+            state=RemoteJobState.SUCCEEDED if exit_code == 0 else RemoteJobState.FAILED,
+            payload=parse_worker_output(logs, source_label="pod logs"),
+            exit_code=exit_code,
+            logs=logs,
+        )
+        return _ImmediateHandle(job_id="test-job", _result=result, logs=logs)
 
 
-class ContainerRoundTripExecutor(LoggingRoundTripExecutor):
-    """A :class:`LoggingRoundTripExecutor` that runs a task's own image as its own step.
+@contextlib.contextmanager
+def _in_a_pod(*, payload: str) -> Iterator[None]:
+    """Give the worker a pod's surroundings: its payload, and its own directories."""
+    driver_cwd = Path.cwd()
+    with _driver_temp_hidden():
+        os.chdir(tempfile.mkdtemp(prefix="pod-cwd-"))
+        os.environ["GINKGO_WORKER_PAYLOAD"] = payload
+        try:
+            yield
+        finally:
+            # The driver never has the payload in its environment.
+            os.environ.pop("GINKGO_WORKER_PAYLOAD", None)
+            os.chdir(driver_cwd)
+
+
+class ContainerRoundTripExecutor(RoundTripExecutor):
+    """A :class:`RoundTripExecutor` that runs a task's own image as its own step.
 
     A task with an ``image`` runs as the steps
     :func:`~ginkgo.remote.executor_support.job_steps` lays out: stage-in and
@@ -216,23 +230,34 @@ class ContainerRoundTripExecutor(LoggingRoundTripExecutor):
     def __init__(self) -> None:
         self.images: list[str | None] = []
 
-    def run_pod(self, payload: dict) -> dict:
+    def submit(self, *, attempt: dict) -> RemoteJobHandle:
         from ginkgo.remote.executor_support import job_steps
         from ginkgo.remote.worker import _command_dir, run_worker_payload
 
-        self.images.append(payload.get("image"))
-        if payload.get("image") is None:
-            return super().run_pod(payload)
-        stage_in, _, stage_out = job_steps(payload)
-        assert run_worker_payload(payload, phase=stage_in.env["GINKGO_WORKER_PHASE"]) is None
-        subprocess.run(
-            ["sh", str(_command_dir() / "command.sh")],
-            env={"PATH": os.environ["PATH"]},
-            check=True,
-        )
-        result = run_worker_payload({}, phase=stage_out.env["GINKGO_WORKER_PHASE"])
+        self.images.append(attempt.get("image"))
+        if attempt.get("image") is None:
+            return super().submit(attempt=attempt)
+        stage_in, _, stage_out = job_steps(attempt)
+        output = io.StringIO()
+        with (
+            _driver_temp_hidden(),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(output),
+        ):
+            payload = json.loads(json.dumps(attempt, default=str))
+            assert run_worker_payload(payload, phase=stage_in.env["GINKGO_WORKER_PHASE"]) is None
+            subprocess.run(
+                ["sh", str(_command_dir() / "command.sh")],
+                env={"PATH": os.environ["PATH"]},
+                check=True,
+            )
+            result = run_worker_payload({}, phase=stage_out.env["GINKGO_WORKER_PHASE"])
         assert result is not None
-        return result
+        state = RemoteJobState.SUCCEEDED if result.get("ok") else RemoteJobState.FAILED
+        logs = output.getvalue()
+        return _ImmediateHandle(
+            job_id="test-job", _result=RemoteJobResult(state=state, payload=result), logs=logs
+        )
 
 
 @contextlib.contextmanager
@@ -272,7 +297,8 @@ def evaluate_remotely(
     """Evaluate *expr* with every remote task run by *executor*.
 
     The executor defaults to a :class:`RoundTripExecutor`. The run directory
-    gives tasks log files, as ``ginkgo run`` does.
+    gives tasks log files, as ``ginkgo run`` does; read them with
+    :func:`task_stdout_log`.
     """
     kwargs: dict[str, Any] = {
         "executor_registry": ExecutorRegistry.for_executor(
@@ -283,6 +309,16 @@ def evaluate_remotely(
     if event_bus is not None:
         kwargs["event_bus"] = event_bus
     return ConcurrentEvaluator(jobs=1, **kwargs).evaluate(expr)
+
+
+def task_stdout_log(runs: Path) -> str:
+    """Return the stdout log of the one task run under *runs*.
+
+    A remote task's log holds what its pod printed, which the driver copies
+    from the job's logs.
+    """
+    [log] = runs.rglob("*.stdout.log")
+    return log.read_text(encoding="utf-8")
 
 
 def set_up_round_trip(*, root: Path, monkeypatch: pytest.MonkeyPatch) -> RemoteRoundTrip:
@@ -307,7 +343,7 @@ def set_up_round_trip(*, root: Path, monkeypatch: pytest.MonkeyPatch) -> RemoteR
     monkeypatch.setattr(tempfile, "tempdir", str(driver_tmp))
     monkeypatch.setattr("ginkgo.remote.resolve.resolve_backend", lambda scheme, **kw: store)
     monkeypatch.setattr("ginkgo.remote.staging.resolve_backend", lambda scheme, **kw: store)
-    monkeypatch.setattr("ginkgo.remote.worker._scratch_root", lambda: pod_scratch)
+    monkeypatch.setenv("GINKGO_SCRATCH_ROOT", str(pod_scratch))
     return RemoteRoundTrip(store=store, pod_scratch=pod_scratch)
 
 
