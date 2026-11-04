@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -214,9 +215,9 @@ class ContainerRoundTripExecutor(RoundTripExecutor):
     job's filesystem. Records each attempt's image.
 
     What this cannot catch: the worker steps share one process, so its
-    imports, ``sys.path`` and the rest of its environment; the command runs
-    with this host's tools, user and shell rather than the image's, and
-    without its ``ENTRYPOINT``; and the path check reads ``command.sh`` as
+    imports and the rest of its environment; the command runs with this
+    host's tools, user and shell rather than the image's, and without its
+    ``ENTRYPOINT``; and the path check reads ``command.sh`` as
     text, so it misses a path the command builds at run time, a relative path
     that climbs out of its working directory, and any path the script a
     ``script`` task runs opens itself.
@@ -317,16 +318,22 @@ def _finished_job(*, logs: str, exit_code: int) -> _ImmediateHandle:
 def _in_a_pod(*, env: dict[str, str], workdir: Path | None) -> Iterator[None]:
     """Give the worker a pod's surroundings: its variables, and its own directories.
 
-    The driver's environment is restored afterwards, so it never holds the
-    payload.
+    The driver's environment, working directory, umask and ``sys.path`` are
+    restored afterwards, so it never holds the payload, and the rest of the
+    session runs as it would have.
     """
     driver_cwd = Path.cwd()
+    driver_path = list(sys.path)
+    driver_umask = os.umask(0o022)
+    os.umask(driver_umask)
     with _driver_temp_hidden(), mock.patch.dict(os.environ, env):
         os.chdir(workdir or tempfile.mkdtemp(prefix="pod-cwd-"))
         try:
             yield
         finally:
             os.chdir(driver_cwd)
+            os.umask(driver_umask)
+            sys.path[:] = driver_path
 
 
 @contextlib.contextmanager

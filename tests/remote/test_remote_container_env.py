@@ -7,6 +7,8 @@ place of the image, and the worker's stage-out.
 
 from __future__ import annotations
 
+import os
+import sys
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -134,6 +136,27 @@ def test_a_script_runs_in_its_image_from_the_code_bundle(tmp_path: Path) -> None
 
     assert Path(result) == dest
     assert dest.read_text(encoding="utf-8") == "QUIET"
+
+
+def test_a_job_leaves_the_drivers_process_as_it_found_it(tmp_path: Path) -> None:
+    # Stage-in sets the umask, and installing the code bundle prepends to
+    # sys.path, for the whole process the fake's steps share with the driver.
+    (tmp_path / "wf").mkdir()
+    registry = ExecutorRegistry.for_executor(ContainerRoundTripExecutor(), name="remote")
+    registry.specs["remote"] = replace(
+        registry.specs["remote"], code={"mode": "sync", "package": "wf"}
+    )
+    driver_umask = 0o027
+    session_umask = os.umask(driver_umask)
+    driver_path = list(sys.path)
+    try:
+        ConcurrentEvaluator(jobs=1, executor_registry=registry).evaluate(
+            writes(dest=str(tmp_path / "out.txt"))
+        )
+    finally:
+        umask = os.umask(session_umask)
+
+    assert (oct(umask), sys.path) == (oct(driver_umask), driver_path)
 
 
 def test_a_relative_output_is_written_where_stage_out_checks_it() -> None:
