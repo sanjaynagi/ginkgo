@@ -42,9 +42,10 @@ more GPUs than `--gpus` allows.
 
 A remote shell or script task's command runs in the worker, against the
 worker's copies of its inputs and outputs. So the worker image needs `bash` and
-every tool the command calls, and a script task's script must be in the image
-or the code bundle. Name the script by a path built from `Path(__file__)`, not
-one relative to the working directory, which differs in the worker.
+every tool the command calls, and a script task's script must be in the worker
+image or the code bundle. Name the script by a path built from `Path(__file__)`,
+not one relative to the working directory, which differs in the worker. A task
+with a container environment, below, is different.
 
 A remote shell or script task with a Pixi `env=` runs its command in that
 environment in the worker. The worker looks for the environment's `pixi.toml`
@@ -73,7 +74,15 @@ path in each:
    result.
 
 So the task's image needs only a shell and the command's tools, not Python or
-Ginkgo. The command runs under `bash` when the image has it, as a container
+Ginkgo. The image sees nothing of the worker's files but the volume. With
+[code sync](#code-sync) the code bundle is on it, and the command runs in the
+bundle's copy of your project, as a container task runs in your project on
+your machine, so a relative path means what it does there. Without code sync
+your code is only in the worker image, so the command runs in an empty
+directory on the volume: a relative output it writes there comes back, but
+nothing of your project is there to read. For the same reason a script task
+with a container environment needs code sync, and fails before the run starts
+without it. The command runs under `bash` when the image has it, as a container
 task does on your machine, and otherwise under `sh`, which must accept
 `-o pipefail`, as busybox's and Alpine's do.
 The executor pulls the image as it pulls the worker image, with the same pull

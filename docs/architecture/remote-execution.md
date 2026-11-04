@@ -141,7 +141,8 @@ command's paths are the same in each:
    worker pickles the prepared payload for stage-out. A task that fails, or
    returns no directive, before the command is finished here instead, and its
    result saved for stage-out to print.
-2. **Task** (the task's image) runs `sh command.sh`. It needs no Python, and
+2. **Task** (the task's image) runs `sh command.sh`, which first `cd`s into
+   that directory. It needs no Python, and
    gets neither the payload nor the executor's environment. The script always
    exits 0, recording the command's status instead, so the next step runs.
 3. **Stage-out** (worker image, `GINKGO_WORKER_PHASE=stage-out`) loads the
@@ -150,6 +151,14 @@ command's paths are the same in each:
    output and exit code through `ShellRunner.run_subprocess`. So the runner
    checks the outputs, raises `ShellTaskError` with the exit code, and redacts
    secrets into the log exactly as it does around a local command. Then step 5.
+
+Each step works in the same directory on the volume (`_enter_task_workdir`):
+the extracted code bundle, which stands in for the project root a local
+container task runs in, or, with no bundle, an empty `ginkgo-work` directory,
+since a baked project is only in the worker's image. So the body, the command
+and the output checks resolve a relative path alike. Placement rejects a
+script task in its own image on an executor that bakes its code, since that
+image could not see the script.
 
 A task without a container env runs the same phases in one worker container.
 The command ran in another container, so it has no measured usage, and its

@@ -74,9 +74,10 @@ def jq_version(*, out: Out[file]):
     return shell(cmd=f"jq --version > {out}")
 
 
+# Its command runs in the bundle's copy of the project, as it would locally.
 @task(kind="shell", env="docker://busybox:1.36", executor="kind")
 def shout_in_busybox(*, text: file, shouted: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {text} > {shouted}")
+    return shell(cmd=f"test -f kind_workflow/flow.py; tr a-z A-Z < {text} > {shouted}")
 
 
 @flow

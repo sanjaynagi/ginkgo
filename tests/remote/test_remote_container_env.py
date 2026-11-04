@@ -8,6 +8,7 @@ place of the image, and the worker's stage-out.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -47,7 +48,7 @@ def shout(src: file, dest: Out[file]):
 
 @task(kind="script", env=IMAGE)
 def shout_script(src: file, dest: Out[file]):
-    return script("upper.py")
+    return script("wf/upper.py")
 
 
 @task(kind="shell", env=IMAGE)
@@ -58,6 +59,11 @@ def writes(dest: Out[file]):
 @task(kind="shell", env=IMAGE, retries=1, retry_on_exit_codes=(7,))
 def fails_with_seven(dest: Out[file]):
     return shell(cmd=f"echo partial > {dest}; exit 7")
+
+
+@task(kind="shell", env=IMAGE)
+def writes_here() -> file:
+    return shell(cmd="echo here > here.txt", output="here.txt")
 
 
 @task(kind="shell", env=IMAGE)
@@ -103,19 +109,32 @@ def test_the_command_reads_an_input_and_writes_an_output_in_its_image(
     assert "measured" not in completed.resource_usage
 
 
-@pytest.mark.xfail(strict=True, reason="stage-in resolves the script in its own working directory")
-def test_a_script_runs_in_its_image(tmp_path: Path) -> None:
-    (tmp_path / "upper.py").write_text(UPPER_SCRIPT, encoding="utf-8")
+def test_a_script_runs_in_its_image_from_the_code_bundle(tmp_path: Path) -> None:
+    (tmp_path / "wf").mkdir()
+    (tmp_path / "wf" / "upper.py").write_text(UPPER_SCRIPT, encoding="utf-8")
     src = tmp_path / "in.txt"
     src.write_text("quiet", encoding="utf-8")
     dest = tmp_path / "out" / "loud.txt"
+    registry = ExecutorRegistry.for_executor(ContainerRoundTripExecutor(), name="remote")
+    registry.specs["remote"] = replace(
+        registry.specs["remote"], code={"mode": "sync", "package": "wf"}
+    )
 
-    result = evaluate_remotely(
-        shout_script(src=file(src), dest=str(dest)), executor=ContainerRoundTripExecutor()
+    # The script's path is relative to the project, as it would be locally.
+    result = ConcurrentEvaluator(jobs=1, executor_registry=registry).evaluate(
+        shout_script(src=file(src), dest=str(dest))
     )
 
     assert Path(result) == dest
     assert dest.read_text(encoding="utf-8") == "QUIET"
+
+
+def test_a_relative_output_is_written_where_stage_out_checks_it() -> None:
+    # Without a code bundle the command works in an empty directory on the
+    # scratch the steps share.
+    result = evaluate_remotely(writes_here(), executor=ContainerRoundTripExecutor())
+
+    assert Path(result).read_text(encoding="utf-8") == "here\n"
 
 
 def test_a_matching_exit_code_retries_the_task() -> None:

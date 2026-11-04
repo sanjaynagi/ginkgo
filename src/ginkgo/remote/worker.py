@@ -140,6 +140,8 @@ def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | Non
             dest_dir = _install_code_bundle(code_bundle)
             _rewrite_module_file(payload, code_bundle=code_bundle, dest_dir=dest_dir)
             project_root = dest_dir
+        if phase == "stage-in":
+            _enter_task_workdir(code_bundle_dir=dest_dir)
 
         # Hydrate file / folder inputs that were uploaded to the shared
         # remote artifact store on the client side.
@@ -220,6 +222,7 @@ def _stage_out() -> dict:
     try:
         if stage["code_bundle_dir"] is not None:
             sys.path.insert(0, str(stage["code_bundle_dir"]))
+        _enter_task_workdir(code_bundle_dir=stage["code_bundle_dir"])
         remote_store = None
         if stage["remote_artifact_store"] is not None:
             remote_store = _worker_remote_store(stage["remote_artifact_store"])
@@ -273,6 +276,21 @@ def _command_dir() -> Path:
     return _scratch_root() / COMMAND_DIR
 
 
+def _enter_task_workdir(*, code_bundle_dir: Path | None) -> None:
+    """Work in the directory the task's command runs in, on the shared scratch.
+
+    Locally a container task's command runs in the project root, mounted
+    into its image. Here the code bundle stands in for the project, and it is
+    on the scratch the task's image shares, so the body, the command and the
+    output checks all resolve a relative path against it, as they would
+    locally. Without a bundle the project is only in the worker's image, so
+    they work in an empty directory instead.
+    """
+    directory = code_bundle_dir or _scratch_root() / "ginkgo-work"
+    directory.mkdir(exist_ok=True)
+    os.chdir(directory)
+
+
 def _reset_command_dir() -> None:
     """Empty the command directory, leaving a ``command.sh`` that does nothing.
 
@@ -293,6 +311,7 @@ class _StageIn(ShellRunner):
     """Leave a task's command for its own image to run, instead of running it here.
 
     ``command.sh`` runs it as the local runner runs a container env's command:
+    in the working directory stage-in chose (see :func:`_enter_task_workdir`),
     in strict mode under ``bash`` (``sh`` when the image has no bash), with only
     the variables ginkgo computes for it. It records the command's output and exit status beside itself rather
     than exiting with it, so the job goes on to stage-out.
@@ -316,6 +335,7 @@ class _StageIn(ShellRunner):
         # shell; otherwise sh, which must accept -o pipefail (busybox, Alpine).
         strict_args = shlex.join(shell_argv(shell="sh", cmd=cmd)[1:])
         lines = [
+            f"cd {shlex.quote(os.getcwd())}",
             *(f"export {name}={shlex.quote(env[name])}" for name in names),
             "if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi",
             f'"$shell" {strict_args} > {recorded["stdout"]} 2> {recorded["stderr"]}',
