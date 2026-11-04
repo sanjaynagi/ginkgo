@@ -7,6 +7,10 @@ Usage::
 Reads a base64-encoded JSON worker payload from the ``GINKGO_WORKER_PAYLOAD``
 environment variable, executes the task via the standard ``run_task`` worker
 function, and prints the structured JSON result to stdout.
+
+A task whose command runs in an image of its own takes a worker either side
+of that image's container (see :func:`ginkgo.remote.executor_support.job_steps`),
+and ``GINKGO_WORKER_PHASE`` says which: ``stage-in`` or ``stage-out``.
 """
 
 from __future__ import annotations
@@ -14,17 +18,34 @@ from __future__ import annotations
 import base64
 import json
 import os
+import pickle
+import shlex
+import shutil
+import subprocess
 import sys
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from ginkgo.core.shell import shell_argv
+from ginkgo.remote.executor_support import COMMAND_DIR
+from ginkgo.runtime.task_runners.shell import (
+    ShellRunner,
+    build_shell_subprocess_env,
+    computed_env_var_names,
+)
+from ginkgo.runtime.worker import CommandHandedOff
 
 if TYPE_CHECKING:
+    from ginkgo.envs.mounts import Mount
+    from ginkgo.plugins.api import TaskInvocation
     from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
     from ginkgo.runtime.backend import EnvironmentRouter
 
 
 def main() -> None:
-    """Execute a task from a remote worker payload."""
+    """Execute a task, or one phase of it, from a remote worker payload."""
     from ginkgo.runtime.worker import error_response
 
     payload_b64 = os.environ.get("GINKGO_WORKER_PAYLOAD")
@@ -43,40 +64,71 @@ def main() -> None:
         print(json.dumps(error_response(exc)))
         sys.exit(1)
 
+    phase = os.environ.get("GINKGO_WORKER_PHASE")
+    if phase == "stage-in":
+        # The task's image may run as another user, and it writes its outputs
+        # into the directories this worker makes.
+        os.umask(0)
     try:
-        result = run_worker_payload(payload)
+        result = run_worker_payload(payload, phase=phase)
     except Exception as exc:
         print(json.dumps(error_response(exc)))
         sys.exit(1)
 
+    # Stage-in leaves the result for stage-out to print.
+    if result is None:
+        return
     # Print the result as a JSON line for the handle to parse.
     print(json.dumps(result, default=str))
     sys.exit(0 if result.get("ok", False) else 1)
 
 
-def run_worker_payload(payload: dict) -> dict:
+def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | None:
     """Execute one worker payload dict and return its result dict.
 
     The pure body of :func:`main`, split out so tests (and in-process fake
     executors) can drive a remote task end to end — code bundle install,
     input hydration, the task body, and output publishing — without the
     ``GINKGO_WORKER_PAYLOAD`` environment variable or process exit calls.
+
+    A task whose command runs in its own image is split around that image's
+    container, which shares this worker's scratch root. *phase*
+    ``"stage-in"`` installs the code and inputs, calls the body and leaves its
+    command in :func:`_command_dir`, and returns ``None``. ``"stage-out"``
+    takes the task up from the exit code and output the task's container
+    recorded there, and returns the result. With no phase, the whole task
+    runs here.
     """
-    from ginkgo.runtime.worker import error_response
+    if phase == "stage-out":
+        return _stage_out()
+
+    from ginkgo.runtime.worker import error_response, run_task
 
     # Remove remote-only keys that the local worker doesn't expect.
     payload.pop("resources", None)
+    image = payload.pop("image", None)
+    if image is not None and phase is None:
+        return error_response(
+            RuntimeError(
+                f"This executor ran the task in its worker image, not in {image!r}: "
+                "it does not support container envs."
+            )
+        )
     code_bundle = payload.pop("code_bundle", None)
     remote_artifact_config = payload.pop("remote_artifact_store", None)
     output_param_entries = payload.pop("output_param_entries", None)
     payload["transport_dir"] = str(_scratch_root() / "ginkgo-transport")
+    if phase == "stage-in":
+        _reset_command_dir()
 
     mounted_access = None
+    handed_off = False
     try:
         # Code-sync: download and extract the workflow package before import.
         # The bundle stands in for the driver's project root; without one,
         # the image's working directory does.
         project_root = Path.cwd()
+        dest_dir = None
         if code_bundle is not None:
             dest_dir = _install_code_bundle(code_bundle)
             _rewrite_module_file(payload, code_bundle=code_bundle, dest_dir=dest_dir)
@@ -98,51 +150,203 @@ def run_worker_payload(payload: dict) -> dict:
         hydration = _hydrate_remote_markers(payload)
         mounted_access = hydration.mounted_access if hydration is not None else None
 
+        stage = {
+            "payload": payload,
+            "code_bundle_dir": dest_dir,
+            "remote_artifact_store": remote_artifact_config,
+            "output_param_entries": output_param_entries,
+            "input_digests": hydration.digests if hydration is not None else {},
+        }
         backend = _prepare_task_env(payload, project_root=project_root)
-
-        from ginkgo.runtime.worker import run_task
-
         # Large values are read from and written to the shared store directly,
         # since nothing in the pod's transport directory reaches the client.
-        result = run_task(payload, artifact_store=remote_store, backend=backend)
-
-        # Fold remote-input-access stats into the envelope for provenance,
-        # with the digest of each input the worker downloaded.
-        if mounted_access is not None and result.get("ok"):
-            result["remote_input_access"] = mounted_access.stats().to_dict()
-        if hydration is not None and hydration.digests:
-            result["remote_input_digests"] = hydration.digests
-
-        # Publish declared Out[...] outputs the task body wrote back to the
-        # shared artifact store so the client can restore them at their
-        # declared driver paths.
-        if output_param_entries and result.get("ok") and remote_store is not None:
-            _stage_output_params(result, entries=output_param_entries, remote_store=remote_store)
-
-        # Publish produced file/folder outputs back to the shared artifact
-        # store so the client can hydrate them. Skipped for failures, which
-        # contain no encoded file/folder leaves.
-        if remote_store is not None and result.get("ok"):
-            _stage_remote_outputs(
-                result, remote_store=remote_store, output_param_entries=output_param_entries
-            )
+        result = run_task(
+            payload,
+            artifact_store=remote_store,
+            backend=backend,
+            shell_runner_type=_StageIn if phase == "stage-in" else None,
+        )
+        if result.get("handed_off"):
+            handed_off = True
+            # The payload holds the inputs' paths as file and folder values.
+            (_command_dir() / "stage.pickle").write_bytes(pickle.dumps(stage))
+            return None
+        result = _finish(
+            result,
+            stage=stage,
+            remote_store=remote_store,
+            input_access=mounted_access.stats().to_dict() if mounted_access is not None else None,
+        )
     except Exception as exc:
-        if mounted_access is not None:
-            try:
-                mounted_access.close()
-            except Exception:  # noqa: BLE001
-                pass
-        return error_response(exc)
+        result = error_response(exc)
     finally:
         if mounted_access is not None:
             try:
                 mounted_access.close()
             except Exception:  # noqa: BLE001
                 pass
-        if output_param_entries:
+        if output_param_entries and not handed_off:
             _remove_output_param_scratch(entries=output_param_entries)
 
+    if phase == "stage-in":
+        (_command_dir() / "result.json").write_text(json.dumps(result, default=str))
+        return None
     return result
+
+
+def _stage_out() -> dict:
+    """Finish a task whose command ran in its own image, from what stage-in left."""
+    from ginkgo.runtime.worker import error_response, run_task
+
+    directory = _command_dir()
+    # Stage-in finished the task itself when there was no command to hand off.
+    if (directory / "result.json").exists():
+        return json.loads((directory / "result.json").read_text())
+    if not (directory / "stage.pickle").exists():
+        return error_response(RuntimeError("Stage-in left no task for stage-out to finish."))
+
+    stage = pickle.loads((directory / "stage.pickle").read_bytes())
+    try:
+        if stage["code_bundle_dir"] is not None:
+            sys.path.insert(0, str(stage["code_bundle_dir"]))
+        remote_store = None
+        if stage["remote_artifact_store"] is not None:
+            remote_store = _worker_remote_store(stage["remote_artifact_store"])
+        result = run_task(
+            stage["payload"], artifact_store=remote_store, shell_runner_type=_StageOut
+        )
+        return _finish(result, stage=stage, remote_store=remote_store, input_access=None)
+    except Exception as exc:
+        return error_response(exc)
+    finally:
+        if stage["output_param_entries"]:
+            _remove_output_param_scratch(entries=stage["output_param_entries"])
+
+
+def _finish(
+    result: dict,
+    *,
+    stage: dict[str, Any],
+    remote_store: RemoteArtifactStore | None,
+    input_access: dict[str, Any] | None,
+) -> dict:
+    """Record how the inputs were read, and publish the outputs the task wrote."""
+    # Fold remote-input-access stats into the envelope for provenance,
+    # with the digest of each input the worker downloaded.
+    if input_access is not None and result.get("ok"):
+        result["remote_input_access"] = input_access
+    if stage["input_digests"]:
+        result["remote_input_digests"] = stage["input_digests"]
+
+    # Publish declared Out[...] outputs the task body wrote back to the
+    # shared artifact store so the client can restore them at their
+    # declared driver paths.
+    entries = stage["output_param_entries"]
+    if entries and result.get("ok") and remote_store is not None:
+        _stage_output_params(result, entries=entries, remote_store=remote_store)
+
+    # Publish produced file/folder outputs back to the shared artifact
+    # store so the client can hydrate them. Skipped for failures, which
+    # contain no encoded file/folder leaves.
+    if remote_store is not None and result.get("ok"):
+        _stage_remote_outputs(result, remote_store=remote_store, output_param_entries=entries)
+    return result
+
+
+def _command_dir() -> Path:
+    """Return where stage-in leaves the task's command, under the shared scratch root."""
+    return _scratch_root() / COMMAND_DIR
+
+
+def _reset_command_dir() -> None:
+    """Empty the command directory, leaving a ``command.sh`` that does nothing.
+
+    Stage-in replaces the script when the task has a command to run, so the
+    task's container always finds one.
+    """
+    shutil.rmtree(_command_dir(), ignore_errors=True)
+    _command_dir().mkdir(parents=True)
+    (_command_dir() / "command.sh").write_text("")
+
+
+_RECORDED = ("stdout", "stderr", "exit_code")
+"""What ``command.sh`` records of its command, each in a file of that name."""
+
+
+@dataclass(kw_only=True)
+class _StageIn(ShellRunner):
+    """Leave a task's command for its own image to run, instead of running it here.
+
+    ``command.sh`` runs it as the local runner runs a container env's command:
+    under ``sh`` in strict mode, with only the variables ginkgo computes for
+    it. It records the command's output and exit status beside itself rather
+    than exiting with it, so the job goes on to stage-out.
+    """
+
+    def run_logged_command(
+        self,
+        *,
+        node: TaskInvocation,
+        cmd: str,
+        user_log_path: Path | None = None,
+        extra_env: dict[str, str] | None = None,
+        mounts: Sequence[Mount] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        """Write *cmd* to ``command.sh``, and stop: this worker's part is done."""
+        env = build_shell_subprocess_env(task_def=node.task_def, threads=node.threads)
+        env.update(extra_env or {})
+        names = [*computed_env_var_names(task_def=node.task_def), *sorted(extra_env or {})]
+        recorded = {name: shlex.quote(str(_command_dir() / name)) for name in _RECORDED}
+        lines = [
+            *(f"export {name}={shlex.quote(env[name])}" for name in names),
+            f"{shlex.join(shell_argv(shell='sh', cmd=cmd))} "
+            f"> {recorded['stdout']} 2> {recorded['stderr']}",
+            f"echo $? > {recorded['exit_code']}",
+        ]
+        (_command_dir() / "command.sh").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        raise CommandHandedOff
+
+
+@dataclass(kw_only=True)
+class _StageOut(ShellRunner):
+    """Take a task up after its command ran in the task's own image.
+
+    The runner finishes the directive as it does around a local command, from
+    the output and exit status the task's container recorded.
+    """
+
+    def prepare_outputs(self, output: Any) -> None:
+        """Leave the declared outputs: the command has written them."""
+
+    def run_subprocess(
+        self,
+        *,
+        argv: list[str],
+        on_stdout: Any = None,
+        on_stderr: Any = None,
+        env: dict[str, str] | None = None,
+        usage_callback: Any = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Replay the command's recorded output, then exit with its exit status.
+
+        Replayed by a process of its own, so the runner reads the output, and
+        redacts it into the task's log, exactly as it reads a command's. The
+        command ran elsewhere, so it has no measured usage.
+        """
+        directory = _command_dir()
+        if not (directory / "exit_code").exists():
+            raise RuntimeError(
+                "The task's container recorded no exit code for its command: it did not "
+                "start, its image has no sh, or it was killed."
+            )
+        recorded = {name: shlex.quote(str(directory / name)) for name in _RECORDED}
+        replay = (
+            f"cat {recorded['stdout']}; cat {recorded['stderr']} >&2; "
+            f"exit $(cat {recorded['exit_code']})"
+        )
+        return super().run_subprocess(
+            argv=["sh", "-c", replay], on_stdout=on_stdout, on_stderr=on_stderr
+        )
 
 
 def _install_code_bundle(code_bundle: dict[str, str]):
@@ -179,8 +383,11 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
     RuntimeError
         If the env found here is not the one the driver named.
     """
+    from ginkgo.envs.container import is_container_env
+
     expected = payload.get("env_identity")
-    if expected is None:
+    # A container env's command runs in its own image, not in an env here.
+    if expected is None or is_container_env(payload["env"]):
         return None
 
     from ginkgo.cli.workspace import resolve_envs_workflow_root

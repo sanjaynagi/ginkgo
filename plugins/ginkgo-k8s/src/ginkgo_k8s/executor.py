@@ -13,8 +13,10 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from ginkgo.remote.executor_support import (
+    SHARED_SCRATCH,
     encode_payload,
     generate_job_name,
+    job_steps,
     parse_worker_output,
     payload_requires_fuse,
 )
@@ -71,7 +73,8 @@ class KubernetesExecutor:
     service_account : str | None
         Kubernetes service account for the pod.
     pull_policy : str
-        Image pull policy (``IfNotPresent``, ``Always``, ``Never``).
+        Image pull policy (``IfNotPresent``, ``Always``, ``Never``), for the
+        worker image and a container-env task's own image alike.
     gpu_type : str | None
         Accelerator type for GPU tasks (e.g. ``"nvidia-l4"``). When a task
         requests GPUs and this is set, the pod gets a node selector
@@ -94,7 +97,8 @@ class KubernetesExecutor:
         Default ephemeral-storage request/limit for worker pods (e.g.
         ``"10Gi"``). Must be large enough to hold the code bundle plus
         any ``file``/``folder`` inputs hydrated from the remote artifact
-        store into ``/tmp``. GKE Autopilot's general-purpose compute
+        store into ``/tmp``, or into the ``emptyDir`` the containers of a
+        container-env task share. GKE Autopilot's general-purpose compute
         class caps this at 10Gi per pod; workloads that need more must
         either raise it via a larger compute class (``balanced``,
         ``performance``) or mount a separate PVC for the scratch dir.
@@ -114,7 +118,8 @@ class KubernetesExecutor:
     pod_labels : dict[str, str] | None
         Labels for every worker pod and Job.
     image_pull_secrets : list[str] | None
-        Names of the Secrets used to pull a private worker image.
+        Names of the Secrets used to pull a private worker image, or a
+        container-env task's own image.
     """
 
     namespace: str = "default"
@@ -201,35 +206,64 @@ class KubernetesExecutor:
         if gpu > 0:
             resource_limits["nvidia.com/gpu"] = str(gpu)
 
-        container_kwargs: dict[str, Any] = {
-            "name": "ginkgo-worker",
-            "image": self.fuse_image if (fuse_required and self.fuse_image) else self.image,
-            "image_pull_policy": self.pull_policy,
-            "command": ["python", "-m", "ginkgo.remote.worker"],
-            "env": [
-                *(
-                    k8s_client.V1EnvVar(name=name, value=str(value))
-                    for name, value in (self.env or {}).items()
-                ),
-                k8s_client.V1EnvVar(
-                    name="GINKGO_WORKER_PAYLOAD",
-                    value=encode_payload(attempt),
-                ),
-            ],
-            "resources": k8s_client.V1ResourceRequirements(
-                requests=resource_requests,
-                limits=resource_limits,
+        # Several steps run one after another as init containers, then the
+        # last as the pod's one container, all mounting the scratch they
+        # share. Each holds the task's resources only while it runs.
+        steps = job_steps(attempt)
+        shared = len(steps) > 1
+        worker_env = [
+            *(
+                k8s_client.V1EnvVar(name=name, value=str(value))
+                for name, value in (self.env or {}).items()
             ),
-        }
-        if fuse_required and self.fuse_privileged:
-            container_kwargs["security_context"] = k8s_client.V1SecurityContext(privileged=True)
-        container = k8s_client.V1Container(**container_kwargs)
+            k8s_client.V1EnvVar(name="GINKGO_WORKER_PAYLOAD", value=encode_payload(attempt)),
+        ]
+        worker_image = self.fuse_image if (fuse_required and self.fuse_image) else self.image
+        privileged = (
+            k8s_client.V1SecurityContext(privileged=True)
+            if fuse_required and self.fuse_privileged
+            else None
+        )
+        volume_mounts = (
+            [k8s_client.V1VolumeMount(name="ginkgo-scratch", mount_path=SHARED_SCRATCH)]
+            if shared
+            else None
+        )
+        containers = []
+        for step in steps:
+            is_worker = step.image is None
+            env = [
+                *(worker_env if is_worker else ()),
+                *(k8s_client.V1EnvVar(name=name, value=value) for name, value in step.env.items()),
+            ]
+            containers.append(
+                k8s_client.V1Container(
+                    name=step.name,
+                    image=worker_image if is_worker else step.image,
+                    image_pull_policy=self.pull_policy,
+                    command=list(step.command),
+                    env=env or None,
+                    resources=k8s_client.V1ResourceRequirements(
+                        requests=resource_requests,
+                        limits=resource_limits,
+                    ),
+                    security_context=privileged if is_worker else None,
+                    volume_mounts=volume_mounts,
+                )
+            )
 
         job_name = generate_job_name(attempt)
         pod_spec_kwargs: dict[str, Any] = {
-            "containers": [container],
+            "init_containers": containers[:-1] or None,
+            "containers": containers[-1:],
             "restart_policy": "Never",
         }
+        if shared:
+            pod_spec_kwargs["volumes"] = [
+                k8s_client.V1Volume(
+                    name="ginkgo-scratch", empty_dir=k8s_client.V1EmptyDirVolumeSource()
+                )
+            ]
         if self.service_account is not None:
             pod_spec_kwargs["service_account_name"] = self.service_account
         if self.image_pull_secrets:
@@ -490,6 +524,9 @@ class KubernetesJobHandle:
         several pods (e.g. the first was preempted and retried). The
         worker output we care about lives on the most recent pod, so
         we sort by creation timestamp and read that one.
+
+        A pod with init containers gets each container's log in the order
+        they ran, so the worker's result line is still last.
         """
         pods = self._core_api.list_namespaced_pod(
             namespace=self.namespace,
@@ -502,11 +539,21 @@ class KubernetesJobHandle:
             pods.items,
             key=lambda p: p.metadata.creation_timestamp or 0,
         )
-        pod_name = latest_pod.metadata.name
+        spec = latest_pod.spec
+        containers = [*(spec.init_containers or []), *spec.containers]
+        logs = [
+            self._container_log(pod=latest_pod.metadata.name, container=c.name, lines=lines)
+            for c in containers
+        ]
+        return "".join(log if log.endswith("\n") else f"{log}\n" for log in logs if log)
+
+    def _container_log(self, *, pod: str, container: str, lines: int) -> str:
+        """Return the last *lines* lines of one container's log, or ``""`` if it has none."""
         try:
             resp = self._core_api.read_namespaced_pod_log(
-                name=pod_name,
+                name=pod,
                 namespace=self.namespace,
+                container=container,
                 tail_lines=lines,
                 _preload_content=False,
             )

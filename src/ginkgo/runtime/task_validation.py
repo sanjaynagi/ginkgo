@@ -13,7 +13,7 @@ import numbers
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Iterable, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Iterable, Literal, get_args, get_origin
 
 import numpy as np
 
@@ -47,6 +47,9 @@ from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.plugins.api import TaskKind
 from ginkgo.plugins.registry import plugin_registry
+
+if TYPE_CHECKING:
+    from ginkgo.runtime.placement import Placement
 
 
 class EnvNotAllowedError(GinkgoError, TypeError):
@@ -642,10 +645,14 @@ class TaskValidator:
 
     # Static graph validation -------------------------------------------------
 
-    def validate_declared_envs(self, *, nodes: Iterable[Any]) -> None:
+    def validate_declared_envs(
+        self, *, nodes: Iterable[Any], placement: Placement | None = None
+    ) -> None:
         """Raise before any work starts if a declared env cannot be resolved.
 
-        Only a kind whose spec ``allows_env`` may declare one.
+        Only a kind whose spec ``allows_env`` may declare one. A task that
+        *placement* runs in its image remotely needs nothing of the driver's
+        own container runtime, so its env is left to its executor.
         """
         node_list = list(nodes)
         for node in node_list:
@@ -656,7 +663,12 @@ class TaskValidator:
             return
 
         env_names: set[str] = {
-            node.task_def.env for node in node_list if node.task_def.env is not None
+            node.task_def.env
+            for node in node_list
+            if node.task_def.env is not None
+            and not (
+                placement is not None and placement.runs_in_remote_image(task_def=node.task_def)
+            )
         }
         if env_names:
             self.env_warnings = self.backend.validate_envs(env_names=env_names)

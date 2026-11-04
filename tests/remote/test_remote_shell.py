@@ -61,11 +61,6 @@ def echoes(token: str, dest: Out[file]):
     return shell(cmd=f"echo from-the-command {token}; echo err-line >&2; echo ok > {dest}")
 
 
-@task(kind="shell", env="docker://alpine:3.20")
-def in_a_container(dest: Out[file]):
-    return shell(cmd=f"echo hi > {dest}")
-
-
 def test_a_shell_command_reads_and_writes_pod_paths(
     tmp_path: Path, remote_round_trip: RemoteRoundTrip, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -146,12 +141,3 @@ def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> No
     assert "from-the-command [REDACTED]" in text
     assert "err-line" in text
     assert "super-secret" not in text
-
-
-def test_a_container_env_on_a_remote_executor_fails_before_the_run(tmp_path: Path) -> None:
-    collector = EventCollector()
-
-    with pytest.raises(ValueError, match="a remote worker cannot run a task in its own env"):
-        evaluate_remotely(in_a_container(dest=str(tmp_path / "x")), event_bus=collector.bus)
-
-    assert collector.started() == []

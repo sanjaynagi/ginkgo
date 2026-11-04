@@ -113,6 +113,8 @@ class TestKubernetesExecutor:
         pod_spec = job.spec.template.spec
         assert pod_spec.restart_policy == "Never"
         assert pod_spec.service_account_name == "ginkgo-worker"
+        assert pod_spec.init_containers is None
+        assert pod_spec.volumes is None
 
         container = pod_spec.containers[0]
         assert container.image == "my-image:latest"
@@ -202,10 +204,21 @@ class TestKubernetesJobHandle:
             handle.cancel()
             handle._batch_api.delete_namespaced_job.assert_called_once()
 
+    def _pod(self, *, init: list[str], main: list[str]) -> MagicMock:
+        pod = MagicMock()
+        pod.metadata.name = "ginkgo-test-001-xyz"
+        pod.spec.init_containers = [self._named(name) for name in init] or None
+        pod.spec.containers = [self._named(name) for name in main]
+        return pod
+
+    def _named(self, name: str) -> MagicMock:
+        container = MagicMock()
+        container.name = name
+        return container
+
     def test_logs_tail_reads_pod_log(self) -> None:
         handle = self._make_handle()
-        mock_pod = MagicMock()
-        mock_pod.metadata.name = "ginkgo-test-001-xyz"
+        mock_pod = self._pod(init=[], main=["ginkgo-worker"])
         handle._core_api.list_namespaced_pod.return_value.items = [mock_pod]
         mock_response = MagicMock()
         mock_response.read.return_value = b"line1\nline2\n"
@@ -217,9 +230,30 @@ class TestKubernetesJobHandle:
         handle._core_api.read_namespaced_pod_log.assert_called_once_with(
             name="ginkgo-test-001-xyz",
             namespace="ginkgo",
+            container="ginkgo-worker",
             tail_lines=50,
             _preload_content=False,
         )
+
+    def test_logs_tail_reads_every_container_in_the_order_they_ran(self) -> None:
+        handle = self._make_handle()
+        pod = self._pod(init=["stage-in", "task"], main=["stage-out"])
+        handle._core_api.list_namespaced_pod.return_value.items = [pod]
+        logs = {
+            "stage-in": b"staged",
+            "task": b"",
+            "stage-out": b'from the command\n{"ok": true}\n',
+        }
+
+        def read(*, container: str, **_: object) -> MagicMock:
+            response = MagicMock()
+            response.read.return_value = logs[container]
+            return response
+
+        handle._core_api.read_namespaced_pod_log.side_effect = read
+
+        assert handle.logs_tail() == 'staged\nfrom the command\n{"ok": true}\n'
+        assert parse_worker_output(handle.logs_tail()) == {"ok": True}
 
     def test_logs_tail_empty_when_no_pods(self) -> None:
         handle = self._make_handle()
@@ -347,6 +381,42 @@ class TestExecutorSettings:
         job = self._built_job(executor, attempt)
 
         assert job.spec.template.metadata.annotations is None
+
+    def test_a_container_task_runs_its_image_between_two_workers(self) -> None:
+        executor = KubernetesExecutor(
+            image="worker:1",
+            pull_policy="Always",
+            env={"GINKGO_REMOTE_OCI_AUTH": "oke_workload_identity"},
+            image_pull_secrets=["ocir-pull"],
+        )
+        attempt = {**self._attempt(threads=2), "image": "busybox:1.36"}
+
+        spec = self._built_job(executor, attempt).spec.template.spec
+
+        stage_in, task = spec.init_containers
+        [stage_out] = spec.containers
+        steps = (stage_in, task, stage_out)
+        assert [c.name for c in steps] == ["stage-in", "task", "stage-out"]
+        assert [c.image for c in steps] == ["worker:1", "busybox:1.36", "worker:1"]
+        assert {c.image_pull_policy for c in steps} == {"Always"}
+        assert [s.name for s in spec.image_pull_secrets] == ["ocir-pull"]
+        assert task.command == ["sh", "/ginkgo-scratch/ginkgo-command/command.sh"]
+        # The task's image gets neither the payload nor the executor's env.
+        assert task.env is None
+        for worker, phase in ((stage_in, "stage-in"), (stage_out, "stage-out")):
+            env = {item.name: item.value for item in worker.env}
+            assert worker.command == ["python", "-m", "ginkgo.remote.worker"]
+            assert env["GINKGO_WORKER_PHASE"] == phase
+            assert env["GINKGO_SCRATCH_ROOT"] == "/ginkgo-scratch"
+            assert env["GINKGO_REMOTE_OCI_AUTH"] == "oke_workload_identity"
+            assert "GINKGO_WORKER_PAYLOAD" in env
+        [volume] = spec.volumes
+        assert volume.empty_dir is not None
+        for container in steps:
+            assert [(m.name, m.mount_path) for m in container.volume_mounts] == [
+                (volume.name, "/ginkgo-scratch")
+            ]
+            assert container.resources.limits["cpu"] == "2"
 
 
 def test_an_unknown_setting_is_refused() -> None:

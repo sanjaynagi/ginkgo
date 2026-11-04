@@ -1,9 +1,10 @@
 """Helpers every remote executor plugin needs to speak the worker protocol.
 
 An executor ships an attempt payload to ``python -m ginkgo.remote.worker`` and
-reads back the JSON line the worker prints last. These helpers encode the
-payload, name the job, detect whether it needs FUSE, and parse the result, so
-each executor plugin implements only its own submission and polling.
+reads back the JSON line the worker prints last. These helpers lay out the
+job's containers, encode the payload, name the job, detect whether it needs
+FUSE, and parse the result, so each executor plugin implements only its own
+submission and polling.
 """
 
 from __future__ import annotations
@@ -11,7 +12,78 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import dataclass, field
 from typing import Any
+
+WORKER_COMMAND = ("python", "-m", "ginkgo.remote.worker")
+"""How a worker container runs the worker."""
+
+SHARED_SCRATCH = "/ginkgo-scratch"
+"""Where every container of a job with several steps mounts the volume they share.
+
+The worker steps use it as their scratch root, so the code, inputs and outputs
+a task's command names are at the same paths in the task's own image.
+"""
+
+COMMAND_DIR = "ginkgo-command"
+"""The directory, under the scratch root, holding a task's command for its image.
+
+Stage-in leaves the command there as ``command.sh``, which writes the
+command's ``stdout``, ``stderr`` and ``exit_code`` beside itself.
+"""
+
+
+@dataclass(frozen=True, kw_only=True)
+class JobStep:
+    """One container of a remote job, whose steps run one after another.
+
+    Parameters
+    ----------
+    name : str
+        The container's name.
+    image : str | None
+        The image to run, or ``None`` for the executor's worker image. Only a
+        worker step gets the attempt payload and the executor's own
+        environment variables.
+    command : tuple[str, ...]
+        The command to run, in place of the image's entrypoint.
+    env : dict[str, str]
+        Variables this step needs on top of those.
+    """
+
+    name: str
+    image: str | None
+    command: tuple[str, ...]
+    env: dict[str, str] = field(default_factory=dict)
+
+
+def job_steps(attempt: dict[str, Any]) -> list[JobStep]:
+    """Return the containers that run *attempt*, in the order they run.
+
+    A task runs in one worker container, unless its command runs in an image
+    of its own, the attempt's ``image``. That takes three containers sharing
+    a volume at :data:`SHARED_SCRATCH`: the worker stages the inputs in and
+    leaves the command there, the task's image runs it with ``sh``, and the
+    worker stages the outputs out and reports the result. Each runs once the
+    one before it has exited. Stage-in exits 0 even when the task fails, and
+    the task's step records its command's exit status rather than exiting
+    with it, so stage-out always runs to report the result.
+    """
+    image = attempt.get("image")
+    if image is None:
+        return [JobStep(name="ginkgo-worker", image=None, command=WORKER_COMMAND)]
+
+    def worker_step(phase: str) -> JobStep:
+        env = {"GINKGO_SCRATCH_ROOT": SHARED_SCRATCH, "GINKGO_WORKER_PHASE": phase}
+        return JobStep(name=phase, image=None, command=WORKER_COMMAND, env=env)
+
+    return [
+        worker_step("stage-in"),
+        JobStep(
+            name="task", image=image, command=("sh", f"{SHARED_SCRATCH}/{COMMAND_DIR}/command.sh")
+        ),
+        worker_step("stage-out"),
+    ]
 
 
 def encode_payload(attempt: dict[str, Any]) -> str:

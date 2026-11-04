@@ -46,6 +46,7 @@ from ginkgo.core.types import (
     plain_data_strings,
     rebuild_sequence,
 )
+from ginkgo.envs.container import is_container_env
 from ginkgo.remote.access.doctor import local_streaming_available
 from ginkgo.remote.access.protocol import encode_remote_input, is_fuse_policy, is_remote_input
 from ginkgo.remote.access.resolver import (
@@ -439,8 +440,12 @@ class RemoteStager:
         access_config = self._get_access_config()
         # A driver kind's body runs on the scheduler or in a driver
         # subprocess, not through ``run_task``, so it has no mount lifecycle:
-        # its inputs are downloaded here.
-        if not dispatches_remote and task_kind(task_def).execution_mode == "driver":
+        # its inputs are downloaded here. Remotely in a container env, its
+        # command runs in another container than the worker's mounts, so its
+        # worker downloads them.
+        driver_kind = task_kind(task_def).execution_mode == "driver"
+        in_own_image = driver_kind and task_def.env is not None and is_container_env(task_def.env)
+        if driver_kind and (not dispatches_remote or in_own_image):
             task_policy = TaskAccessPolicy(
                 remote_input_access="direct",
                 streaming_compatible=False,

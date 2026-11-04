@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ginkgo.envs.container import is_container_env, parse_container_uri
 from ginkgo.errors import GinkgoError
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.events import TaskRunning, task_id_for_node
@@ -87,6 +88,9 @@ class RemoteDispatchManager:
             "gpu": node.gpu,
             "gpu_type": gpu_type,
         }
+        env = node.task_def.env
+        if env is not None and is_container_env(env):
+            payload["image"] = parse_container_uri(env).image
         if code_bundle is not None:
             payload["code_bundle"] = code_bundle
         if self._artifact_store is not None:

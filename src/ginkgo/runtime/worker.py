@@ -21,8 +21,11 @@ from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_dynamic_value, encode_value
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
     from ginkgo.runtime.backend import ExecutionEnvironment
+    from ginkgo.runtime.task_runners.shell import ShellRunner
 
 _log_queue: Any = None
 """Queue this worker pushes task log chunks onto; ``None`` outside a local pool."""
@@ -38,6 +41,14 @@ def install_log_queue(log_queue: Any) -> None:
     # not the main thread, and the parent's handler stays put.)
     if current_thread() is main_thread():
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+class CommandHandedOff(Exception):
+    """Raised by a shell runner that leaves its command to another container to run.
+
+    The worker that raised it has done its part of the task, so
+    :func:`run_task` reports the attempt as handed off rather than failed.
+    """
 
 
 def error_response(exc: BaseException) -> dict[str, Any]:
@@ -228,6 +239,7 @@ def run_task(
     *,
     artifact_store: ArtifactStore | None = None,
     backend: ExecutionEnvironment | None = None,
+    shell_runner_type: Callable[..., ShellRunner] | None = None,
 ) -> dict[str, Any]:
     """Execute a task payload inside a process-pool or remote worker.
 
@@ -241,12 +253,17 @@ def run_task(
         transport directory.
     backend : ExecutionEnvironment | None
         The prepared environment a remote worker runs a shell or script
-        task's command in, for a task that declares ``env=``.
+        task's command in, for a task that declares a Pixi ``env=``.
+    shell_runner_type : Callable[..., ShellRunner] | None
+        Builds the shell runner that a remote driver-kind task's directive
+        runs on, in place of a :class:`ShellRunner`.
 
     Returns
     -------
     dict[str, Any]
-        The worker response: the encoded result, or the error.
+        The worker response: the encoded result, or the error. A runner that
+        raised :class:`CommandHandedOff` gives ``{"ok": True, "handed_off":
+        True}``.
     """
     base_dir = Path(payload["transport_dir"])
 
@@ -313,6 +330,7 @@ def run_task(
                         payload=payload,
                         usage=command_usage,
                         backend=backend,
+                        shell_runner_type=shell_runner_type,
                     )
                 finally:
                     # The command's own usage, not the body's that built it,
@@ -334,6 +352,8 @@ def run_task(
         # a local runner's, rather than treating it as the body's.
         if ran_directive:
             response["ran_directive"] = True
+    except CommandHandedOff:
+        return {"ok": True, "handed_off": True}
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
         # With no task log file (a remote worker, or a run without a run
         # directory) the traceback goes to the process's own stderr.
@@ -456,11 +476,13 @@ def _run_directive(
     payload: dict[str, Any],
     usage: dict[str, Any],
     backend: ExecutionEnvironment | None,
+    shell_runner_type: Callable[..., ShellRunner] | None = None,
 ) -> Any:
     """Run *directive* on its kind's runner, as the driver runs a local one.
 
-    The command runs in *backend*'s env when the task declares one. Returns
-    the runner's result, and records the command's measured usage in *usage*.
+    The command runs in *backend*'s env when the task declares a Pixi one, on
+    what *shell_runner_type* builds, or on a :class:`ShellRunner`. Returns the
+    runner's result, and records the command's measured usage in *usage*.
     """
     from ginkgo.plugins.api import RunnerContext
     from ginkgo.runtime.task_kinds import task_kind
@@ -474,7 +496,7 @@ def _run_directive(
     validator = TaskValidator()
     context = RunnerContext(
         validator=validator,
-        shell_runner=ShellRunner(
+        shell_runner=(shell_runner_type or ShellRunner)(
             backend=backend,
             validator=validator,
             log_emitter_factory=emitter,

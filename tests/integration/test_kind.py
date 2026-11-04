@@ -1,11 +1,12 @@
 """A run on a real Kubernetes cluster: kind, with an in-cluster S3 server.
 
-The driver runs here and dispatches tasks to pods. One pod reads its input
-straight from that server, and its output comes back through the artifact
-store. Another installs a Pixi env from the code bundle and runs a shell
-command in it. CI's ``kind`` job creates the cluster, loads the worker image and
-port-forwards the server (see ``.github/workflows/tests.yml``); elsewhere the
-test is skipped.
+The driver runs here and dispatches tasks to pods: a Python task, a shell
+task whose command runs in a busybox image beside the worker, and a shell task
+that installs a Pixi env from the code bundle and runs its command in it. The
+first two read their input straight from that server, and every output comes
+back through the artifact store. CI's ``kind`` job creates the cluster, loads
+the worker and busybox images and port-forwards the server (see
+``.github/workflows/tests.yml``); elsewhere the test is skipped.
 """
 
 from __future__ import annotations
@@ -52,6 +53,8 @@ from pathlib import Path
 
 from ginkgo import Out, file, flow, remote_file, shell, task
 
+GREETING = "s3://ginkgo/inputs/greeting.txt"
+
 
 @task(executor="kind")
 def shout(*, text: file) -> file:
@@ -71,10 +74,16 @@ def jq_version(*, out: Out[file]):
     return shell(cmd=f"jq --version > {out}")
 
 
+@task(kind="shell", env="docker://busybox:1.36", executor="kind")
+def shout_in_busybox(*, text: file, shouted: Out[file]):
+    return shell(cmd=f"tr a-z A-Z < {text} > {shouted}")
+
+
 @flow
 def main():
     return [
-        keep(shouted=shout(text=remote_file("s3://ginkgo/inputs/greeting.txt"))),
+        keep(shouted=shout(text=remote_file(GREETING))),
+        shout_in_busybox(text=remote_file(GREETING), shouted="busybox.txt"),
         jq_version(out="jq-version.txt"),
     ]
 """
@@ -130,10 +139,11 @@ def test_tasks_run_in_pods_and_their_outputs_come_back(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "result.txt").read_text() == "HELLO FROM S3"
     assert (tmp_path / "jq-version.txt").read_text().startswith("jq-")
+    assert (tmp_path / "busybox.txt").read_text() == "HELLO FROM S3"
     jobs = subprocess.run(
         ["kubectl", "get", "jobs", "-l", f"ginkgo/parent-run-id={run_id}", "-o", "name"],
         text=True,
         capture_output=True,
         check=True,
     )
-    assert jobs.stdout.strip(), "the task never ran as a Job"
+    assert len(jobs.stdout.split()) == 3, "the tasks never ran as Jobs"

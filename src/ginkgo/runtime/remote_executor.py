@@ -173,7 +173,8 @@ class RemoteExecutor(Protocol):
 
     Implementations receive a worker payload dictionary (same shape as
     the local ``run_task`` input) augmented with a ``resources`` key
-    containing scheduler resource declarations.
+    containing scheduler resource declarations, and an ``image`` key for a
+    task whose command runs in an image of its own.
     """
 
     def submit(self, *, attempt: dict[str, Any]) -> RemoteJobHandle:
@@ -183,7 +184,11 @@ class RemoteExecutor(Protocol):
         ----------
         attempt : dict[str, Any]
             Worker payload dictionary with an additional ``resources``
-            key mapping to ``{"threads": int, "memory_gb": int}``.
+            key mapping to ``{"threads": int, "memory_gb": int}``. A task
+            with a container env also has ``image``, the image its command
+            runs in: the job then runs the containers
+            :func:`ginkgo.remote.executor_support.job_steps` lays out, pulled
+            as the executor pulls its worker image.
 
         Returns
         -------

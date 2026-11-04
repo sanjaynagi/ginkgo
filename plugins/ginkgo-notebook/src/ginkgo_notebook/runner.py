@@ -29,8 +29,6 @@ from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.task_runners.driver import DriverTaskRunner
 from ginkgo.runtime.task_runners.shell import (
     declared_output_mounts,
-    iter_output_values,
-    remove_declared_output,
     remove_failed_outputs,
     render_repeated_cli_tokens,
     resolve_declared_output,
@@ -94,9 +92,7 @@ class NotebookRunner(DriverTaskRunner):
             task_def=node.task_def, resolved_args=node.resolved_args, given=directive.output
         )
         if output is not None:
-            for output_path in iter_output_values(output):
-                remove_declared_output(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.shell_runner.prepare_outputs(output)
 
         html_path = self._html_path(node=node)
         html_path.parent.mkdir(parents=True, exist_ok=True)

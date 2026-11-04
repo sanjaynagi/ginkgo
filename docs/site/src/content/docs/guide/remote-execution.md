@@ -61,13 +61,28 @@ pays that install time. If you bake your code into the image, install each
 environment when you build the image, and the worker's install becomes a
 quick check.
 
-A task with a container `env=` (`docker://` or `oci://`) can't run remotely
-yet, because the worker has no container runtime. It fails the run before any
-task starts; give it `executor="local"` to keep it on your machine.
+A shell or script task with a [container environment](/ginkgo/guide/environments/#container-environments),
+`env="docker://image:tag"`, runs its command in that image instead. Its job
+runs three containers in turn, which share a scratch volume mounted at the same
+path in each:
 
-Cached tasks are never sent, and each
-retry submits a new job. A task's `threads`, `memory` and `gpu` become its
-job's resource request. See
+1. The worker downloads the code and inputs and writes the command, with the
+   variables Ginkgo sets for it, as a script on the volume.
+2. The task's image runs the script with `sh` and records its exit code.
+3. The worker checks the declared outputs, uploads them and reports the
+   result.
+
+So the task's image needs only `sh` and the command's tools, not Python or
+Ginkgo. Its `sh` must accept `-o pipefail`, as busybox, Alpine and bash do.
+The executor pulls the image as it pulls the worker image, with the same pull
+policy and pull secrets on Kubernetes, so your machine needs no Docker. The
+cluster resolves a tag when it pulls, and the cache key names the image as you
+wrote it, as it does on your machine. Pin a digest, `image@sha256:...`, to
+run the same image every time. Such a task's inputs are always downloaded,
+never streamed, and its command's memory and CPU use aren't measured.
+
+Cached tasks are never sent, and each retry submits a new job. A task's
+`threads`, `memory` and `gpu` become its job's resource request. See
 [Resources And Scheduling](/ginkgo/guide/resources/#where-a-task-runs).
 
 ## Installing an Executor
@@ -206,8 +221,8 @@ error:
 | `gpu_type` | GPU kind a GPU task asks for, as a node label value | none |
 | `gpu_node_selector_key` | Node label that `gpu_type` sets | `"cloud.google.com/gke-accelerator"` |
 | `service_account` | Kubernetes service account for worker pods | none |
-| `pull_policy` | Image pull policy | `"IfNotPresent"` |
-| `image_pull_secrets` | Secrets for a private worker image | none |
+| `pull_policy` | Pull policy for the worker image and a container task's image | `"IfNotPresent"` |
+| `image_pull_secrets` | Secrets for a private worker image or container task image | none |
 | `node_selector` | Node labels a pod must match | none |
 | `tolerations` | Tolerations, as a list of tables | none |
 | `ephemeral_storage` | Scratch disk for each pod | `"10Gi"` |
@@ -262,7 +277,8 @@ Before you start:
 
 A worker image needs Python 3.12 or later, Ginkgo, and the plugin for each
 object store the worker reads. For tasks with a Pixi `env=`, it also needs the
-`pixi` binary and `ginkgo-pixi`. The repository's `Dockerfile` builds one:
+`pixi` binary and `ginkgo-pixi`. A container task's own image needs none of
+these. The repository's `Dockerfile` builds one:
 
 ```dockerfile
 FROM python:3.12-slim

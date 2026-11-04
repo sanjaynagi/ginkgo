@@ -103,13 +103,13 @@ def pinned_subworkflow() -> str:
     raise AssertionError("never runs")
 
 
-@task(kind="shell", env="docker://alpine:3.20", executor="gpu-k8s")
-def pinned_container_shell() -> str:
+@task(kind="shell", env="tools", executor="gpu-k8s")
+def pinned_pixi_shell() -> str:
     raise AssertionError("never runs")
 
 
-@task(kind="shell", env="tools", executor="gpu-k8s")
-def pinned_pixi_shell() -> str:
+@task(kind="shell", env="docker://alpine:3.20", executor="gpu-k8s")
+def pinned_container_shell() -> str:
     raise AssertionError("never runs")
 
 
@@ -243,10 +243,11 @@ class TestExecutorRouting:
         with pytest.raises(ValueError, match="cannot be dispatched remotely"):
             self._evaluator(default=None).placement.resolve(task_def=pinned_subworkflow)
 
-    def test_a_pinned_task_with_a_container_env_is_rejected(self) -> None:
-        # As doctor resolves it: pinned, with no run default.
-        with pytest.raises(ValueError, match="cannot run a task in its own env"):
-            self._evaluator(default=None).placement.resolve(task_def=pinned_container_shell)
+    def test_a_pinned_task_with_a_container_env_runs_in_its_image_there(self) -> None:
+        placement = self._evaluator(default=None).placement
+        assert placement.resolve(task_def=pinned_container_shell) == "gpu-k8s"
+        assert placement.runs_in_remote_image(task_def=pinned_container_shell)
+        assert not placement.runs_in_remote_image(task_def=plain_shell)
 
     def test_a_pinned_task_with_a_pixi_env_goes_to_its_executor(self) -> None:
         placement = self._evaluator(default=None).placement

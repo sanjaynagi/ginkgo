@@ -19,8 +19,6 @@ from ginkgo.runtime.task_runners.driver import DriverTaskRunner
 from ginkgo.runtime.task_runners.shell import (
     ShellTaskError,
     declared_output_mounts,
-    iter_output_values,
-    remove_declared_output,
     remove_failed_outputs,
     render_cli_tokens,
     resolve_declared_output,
@@ -44,9 +42,7 @@ class ScriptRunner(DriverTaskRunner):
             task_def=node.task_def, resolved_args=node.resolved_args, given=directive.output
         )
         if output is not None:
-            for output_path in iter_output_values(output):
-                remove_declared_output(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.shell_runner.prepare_outputs(output)
 
         # Resolve the interpreter. With no declared env, use sys.executable
         # directly to stay in the scheduler's own environment. With a

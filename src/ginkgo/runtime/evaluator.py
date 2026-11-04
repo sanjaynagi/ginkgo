@@ -610,7 +610,9 @@ class ConcurrentEvaluator:
             try:
                 # Validate all statically declared environments before any work
                 # starts. Inside the try, so a refusal closes the run's tasks too.
-                self._validator.validate_declared_envs(nodes=self.graph.nodes.values())
+                self._validator.validate_declared_envs(
+                    nodes=self.graph.nodes.values(), placement=self.placement
+                )
                 self._validator.validate_declared_secrets(nodes=self.graph.nodes.values())
                 while True:
                     if signals.exception is not None and self._failure is None:
@@ -903,6 +905,9 @@ class ConcurrentEvaluator:
     def _prepare_task_environment(self, *, node: NodeRun) -> None:
         """Materialize any external execution environment required by a task."""
         if node.task_def.env is None or self.backend is None:
+            return
+        # Its executor pulls the image, where the command runs.
+        if self.placement.runs_in_remote_image(task_def=node.task_def):
             return
 
         self._emit_task_event(
@@ -2138,6 +2143,9 @@ class ConcurrentEvaluator:
         if not include_env_metadata:
             return
         if node.task_def.env is None or self.backend is None:
+            return
+        # The image the driver holds, if any, is not the one the executor ran.
+        if self.placement.runs_in_remote_image(task_def=node.task_def):
             return
 
         fields = self.backend.provenance_fields(env=node.task_def.env)

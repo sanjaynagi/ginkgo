@@ -7,9 +7,9 @@ driver; otherwise every task whose kind is `remote_capable` (`python`, `shell`
 and `script`) goes to the run's *default* executor (`--executor`), and the rest
 run on the driver. Notebook and subworkflow tasks therefore run on the driver
 for now, even under `--executor`. Naming an executor on a kind that is not
-remote-capable is a build error, as is a remote task that declares a container
-`env=` and a locally placed task whose `gpu` requirement exceeds the local
-`--gpus` budget — a task never silently runs somewhere its requirement cannot be met. Cached tasks are never dispatched:
+remote-capable is a build error, as is a locally placed task whose `gpu`
+requirement exceeds the local `--gpus` budget — a task never silently runs
+somewhere its requirement cannot be met. Cached tasks are never dispatched:
 placement is resolved only after a cache miss. Remote-placed tasks consume a
 `--jobs` slot but no local core/memory/GPU budget; their resources are
 satisfied by the executor.
@@ -50,14 +50,19 @@ The evaluator dispatches remote work through a `RemoteExecutor` protocol
 - `RemoteJobHandle.result()` → `RemoteJobResult` (blocking wait + result)
 - `RemoteJobHandle.cancel()` / `RemoteJobHandle.logs_tail()`
 
+The attempt is the worker payload plus `resources` and, for a task with a
+container env, `image`: the image its command runs in, which the executor
+pulls with its own pull policy and credentials.
+
 This keeps executor implementations fully decoupled from the scheduling loop.
 The evaluator polls handles on dedicated watcher threads and processes results
 through the same code path as local worker completions.
 
 `remote/executor_support.py` holds the helpers an executor plugin uses to speak
-the worker protocol: `encode_payload` (the `GINKGO_WORKER_PAYLOAD` value),
-`generate_job_name`, `payload_requires_fuse`, and `parse_worker_output` (the
-worker's JSON result line, read from job logs).
+the worker protocol: `job_steps` (the containers a job runs, in order),
+`encode_payload` (the `GINKGO_WORKER_PAYLOAD` value), `generate_job_name`,
+`payload_requires_fuse`, and `parse_worker_output` (the worker's JSON result
+line, read from job logs).
 
 ## Executor Implementations
 
@@ -71,14 +76,20 @@ requests: `threads` → CPU, `memory` → memory, `gpu` → `nvidia.com/gpu`. GP
 tasks receive a `cloud.google.com/gke-accelerator` node selector when an
 accelerator type is available — `@task(gpu_type=...)` per task, falling back
 to the executor-level `gpu_type` — enabling automatic GPU node provisioning
-on GKE Autopilot.
+on GKE Autopilot. A job with several steps runs all but the last as init
+containers, which Kubernetes runs one at a time, and the last as the pod's one
+container; they share an `emptyDir`. `logs_tail` reads every container's log
+in that order, so the result line is still last.
 
 **GCPBatchExecutor** (`ginkgo_gcp/batch.py`, distribution ginkgo-gcp, type
 `batch`) submits jobs to GCP Batch, a
 serverless batch compute service. No cluster required — each job runs on
 Google-managed infrastructure. GPU tasks use the Batch accelerator allocation
 policy; a GPU task with no accelerator type (task-level or executor-level) is
-rejected at submit rather than silently scheduled without a GPU. Job logs are retrieved from Cloud Logging.
+rejected at submit rather than silently scheduled without a GPU. A job's steps
+are runnables in one task, which Batch runs in order on one VM and which share a
+host directory; the task's own image is `ignore_exit_status`, so stage-out
+always runs. Job logs are retrieved from Cloud Logging.
 
 ## Remote Worker
 
@@ -103,13 +114,46 @@ The worker entry point (`remote/worker.py`) runs as
    directories `resolve_envs_workflow_root` names there. It checks the env's
    `env_identity` against the one the driver sent in the payload, fails the
    task naming the env if they differ, and runs `prepare` (`pixi install`)
-   before the command runs through the env's `exec_argv`. A remote task with
-   a container `env=` is rejected at placement, since the worker has no
-   container runtime
+   before the command runs through the env's `exec_argv`. A task with a
+   container `env=` runs its command in that image instead, as the next
+   section describes
 5. Uploads outputs and large result values, then prints a JSON result line to
    stdout for the handle to parse. A result holding task expressions is
    pickled whole with its `file`/`folder` leaves uploaded beside it, and the
    driver expands it as it would a local task's
+
+A task with a container env cannot run its command in the worker's image, and a
+pod cannot start a container of its own, so its job splits around one
+(`executor_support.job_steps`). Every step mounts a shared scratch volume at
+`SHARED_SCRATCH`, which the worker steps use as their scratch root, so the
+command's paths are the same in each:
+
+1. **Stage-in** (worker image, `GINKGO_WORKER_PHASE=stage-in`) does steps 1-3,
+   then `run_task` calls the body and the kind's runner with `_StageIn` as its
+   shell runner. Where a local runner would start a subprocess, `_StageIn`
+   writes `ginkgo-command/command.sh`: the command under `sh -eo pipefail`,
+   with the variables the local runner exports (`GINKGO_THREADS` and the like),
+   redirecting its stdout, stderr and exit code to files beside it. It then
+   raises `CommandHandedOff`, which `run_task` reports as handed off, and the
+   worker pickles the prepared payload for stage-out. A task that fails, or
+   returns no directive, before the command is finished here instead, and its
+   result saved for stage-out to print.
+2. **Task** (the task's image) runs `sh command.sh`. It needs no Python, and
+   gets neither the payload nor the executor's environment. The script always
+   exits 0, recording the command's status instead, so the next step runs.
+3. **Stage-out** (worker image, `GINKGO_WORKER_PHASE=stage-out`) loads the
+   payload and runs the body and runner again with `_StageOut`, which leaves
+   the declared outputs in place and, for the command, replays the recorded
+   output and exit code through `ShellRunner.run_subprocess`. So the runner
+   checks the outputs, raises `ShellTaskError` with the exit code, and redacts
+   secrets into the log exactly as it does around a local command. Then step 5.
+
+A task without a container env runs the same phases in one worker container.
+The command ran in another container, so it has no measured usage, and its
+inputs are always downloaded rather than mounted, since a mount in the worker's
+container would not reach it. The driver neither validates nor pulls the image,
+and records no image digest for it: the cache key names the image as declared,
+as for a local container task.
 
 The same worker image serves both K8s and GCP Batch executors. It installs
 core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a

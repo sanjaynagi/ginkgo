@@ -13,7 +13,9 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -168,15 +170,22 @@ class RoundTripExecutor(RemoteExecutor):
 
     def submit(self, *, attempt: dict) -> RemoteJobHandle:
         from ginkgo.remote.executor_support import encode_payload
-        from ginkgo.remote.worker import run_worker_payload
 
         payload = json.loads(base64.b64decode(encode_payload(attempt)))
         with _driver_temp_hidden():
-            result = json.loads(json.dumps(run_worker_payload(payload), default=str))
+            result = json.loads(json.dumps(self.run_pod(payload), default=str))
         state = RemoteJobState.SUCCEEDED if result.get("ok") else RemoteJobState.FAILED
         return _ImmediateHandle(
             job_id="test-job", _result=RemoteJobResult(state=state, payload=result)
         )
+
+    def run_pod(self, payload: dict) -> dict:
+        """Run the job's worker on *payload*, returning the result it prints."""
+        from ginkgo.remote.worker import run_worker_payload
+
+        result = run_worker_payload(payload)
+        assert result is not None
+        return result
 
 
 class LoggingRoundTripExecutor(RoundTripExecutor):
@@ -192,6 +201,38 @@ class LoggingRoundTripExecutor(RoundTripExecutor):
             handle = super().submit(attempt=attempt)
         handle.logs = output.getvalue()
         return handle
+
+
+class ContainerRoundTripExecutor(LoggingRoundTripExecutor):
+    """A :class:`LoggingRoundTripExecutor` that runs a task's own image as its own step.
+
+    A task with an ``image`` runs as the steps
+    :func:`~ginkgo.remote.executor_support.job_steps` lays out: stage-in and
+    stage-out run in-process, and this host's ``sh`` stands in for the task's
+    image, running ``command.sh`` with none of the worker's environment, as
+    a container of its own would. Records each attempt's image.
+    """
+
+    def __init__(self) -> None:
+        self.images: list[str | None] = []
+
+    def run_pod(self, payload: dict) -> dict:
+        from ginkgo.remote.executor_support import job_steps
+        from ginkgo.remote.worker import _command_dir, run_worker_payload
+
+        self.images.append(payload.get("image"))
+        if payload.get("image") is None:
+            return super().run_pod(payload)
+        stage_in, _, stage_out = job_steps(payload)
+        assert run_worker_payload(payload, phase=stage_in.env["GINKGO_WORKER_PHASE"]) is None
+        subprocess.run(
+            ["sh", str(_command_dir() / "command.sh")],
+            env={"PATH": os.environ["PATH"]},
+            check=True,
+        )
+        result = run_worker_payload({}, phase=stage_out.env["GINKGO_WORKER_PHASE"])
+        assert result is not None
+        return result
 
 
 @contextlib.contextmanager
