@@ -29,7 +29,7 @@ from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.remote.staging import RemoteIdentityError
-from ginkgo.runtime.backend import ExecutionEnvironment
+from ginkgo.runtime.backend import EnvironmentRouter, ExecutionEnvironment
 from ginkgo.runtime.advisories import (
     access_fallback_notice,
     untracked_directory_notices,
@@ -1844,7 +1844,9 @@ class ConcurrentEvaluator:
             "display_label": node.display_label,
             "threads": node.threads,
             "env": node.task_def.env,
-            # A remote worker checks that the env it builds is this one.
+            # A remote worker searches for the env where the driver did, and
+            # checks that the env it finds is this one.
+            "env_workflow_root": self._env_workflow_root(),
             "env_identity": self._env_identity(env=node.task_def.env),
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
@@ -2202,6 +2204,24 @@ class ConcurrentEvaluator:
         if env is None or self.backend is None:
             return None
         return self.backend.env_identity(env=env) or None
+
+    def _env_workflow_root(self) -> str | None:
+        """Return where named envs are searched for, relative to the project root.
+
+        A remote worker roots its search there, in the code bundle or its
+        image's working directory, which stand in for the project root.
+        ``None`` when the backend names no such directory inside the project.
+        """
+        if not isinstance(self.backend, EnvironmentRouter):
+            return None
+        context = self.backend.context
+        if context.workflow_root is None:
+            return None
+        workflow_root = context.workflow_root.resolve()
+        project_root = context.project_root.resolve()
+        if not workflow_root.is_relative_to(project_root):
+            return None
+        return workflow_root.relative_to(project_root).as_posix()
 
     def _annotate_task(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None:
         """Attach open-ended facts to a task node."""

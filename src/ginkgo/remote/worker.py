@@ -178,9 +178,10 @@ def _install_code_bundle(code_bundle: dict[str, str]):
 def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter | None:
     """Install the env the driver's cache key names, and return its backend.
 
-    The env is found as the driver finds it, under *project_root*, which
-    carries each env's manifest and lock. Its first use in a worker installs
-    it, exactly as its lock pins it. Returns ``None`` when the driver named no
+    The env is searched for where the driver searched, relative to
+    *project_root*, which stands in for the driver's project root and carries
+    each env's manifest and lock. Its first use in a worker installs it,
+    exactly as its lock pins it. Returns ``None`` when the driver named no
     env: the task declares none, or the driver had no environment backend to
     run one in.
 
@@ -193,19 +194,15 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
     if expected is None:
         return None
 
-    from ginkgo.cli.workspace import resolve_envs_workflow_root
     from ginkgo.plugins.api import EnvironmentContext
     from ginkgo.runtime.backend import EnvironmentRouter
 
     env = payload["env"]
-    module_file = payload.get("module_file")
+    workflow_root = payload["env_workflow_root"]
     backend = EnvironmentRouter(
         context=EnvironmentContext(
             project_root=project_root,
-            workflow_root=resolve_envs_workflow_root(
-                project_root=project_root,
-                fallback=Path(module_file).parent if module_file else None,
-            ),
+            workflow_root=project_root / workflow_root if workflow_root is not None else None,
             config={},
             locked=True,
         )

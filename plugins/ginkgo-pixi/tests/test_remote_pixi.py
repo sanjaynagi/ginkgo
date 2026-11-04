@@ -7,6 +7,7 @@ is real: the env has no packages, so it installs without the network.
 from __future__ import annotations
 
 import shutil
+import sys
 import tarfile
 import uuid
 from dataclasses import replace
@@ -19,6 +20,7 @@ from ginkgo.plugins.api import EnvironmentContext
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
+from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.rundir import RunDir
 from tests.remote_fakes import (
     FakeObjectStore,
@@ -153,6 +155,43 @@ def test_a_task_locked_after_the_bundle_was_first_built_gets_its_lock(
     _assert_ran_in_the_bundles_lock(
         package=package, dest=dest, remote_round_trip=remote_round_trip
     )
+
+
+def test_the_worker_finds_an_env_where_the_driver_did(
+    tmp_path: Path, remote_round_trip: RemoteRoundTrip, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no flow.py, the driver searches the entry file's directory, wfx/,
+    # while the task lives a level down, in wfx/tasks/.
+    package = tmp_path / "wfx"
+    _declare_tools_env(package / "envs")
+    (package / "tasks").mkdir()
+    for init in (package / "__init__.py", package / "tasks" / "__init__.py"):
+        init.write_text("", encoding="utf-8")
+    (package / "main.py").write_text("", encoding="utf-8")
+    (package / "tasks" / "t.py").write_text(
+        "from ginkgo import Out, file, shell, task\n\n\n"
+        '@task(kind="shell", env="tools")\n'
+        "def in_a_pixi_env(dest: Out[file]):\n"
+        "    return shell(cmd=f'echo \"$CONDA_PREFIX\" > {dest}')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    dest = tmp_path / "prefix.txt"
+
+    try:
+        tasks = load_module_from_path(package / "tasks" / "t.py")
+        _evaluate(
+            tasks.in_a_pixi_env(dest=str(dest)),
+            context=EnvironmentContext(project_root=tmp_path, workflow_root=package, config={}),
+            code={"mode": "sync", "package": "wfx"},
+        )
+    finally:
+        for name in [name for name in sys.modules if name.split(".")[0] == "wfx"]:
+            del sys.modules[name]
+
+    pod_env = remote_round_trip.pod_scratch / "ginkgo-code-bundle/wfx/envs/tools"
+    prefix = Path(dest.read_text(encoding="utf-8").strip())
+    assert prefix.resolve() == (pod_env / ".pixi/envs/default").resolve()
 
 
 def test_a_worker_env_unlike_the_drivers_fails_the_task(
