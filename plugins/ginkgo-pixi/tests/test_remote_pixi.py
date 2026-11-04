@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from ginkgo import Out, file, shell, task
+from ginkgo_pixi.environment import PixiRegistry
 from ginkgo.plugins.api import EnvironmentContext
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -203,6 +204,29 @@ def test_a_worker_env_unlike_the_drivers_fails_the_task(
     _declare_tools_env(tmp_path / "image" / "envs", extra="description = 'an older copy'\n")
 
     with pytest.raises(RuntimeError, match="worker's env 'tools' is not the one the driver"):
+        _evaluate(
+            in_a_pixi_env(dest=str(tmp_path / "prefix.txt")),
+            context=EnvironmentContext(
+                project_root=tmp_path / "driver", workflow_root=None, config={}
+            ),
+            code=None,
+            image=tmp_path / "image",
+        )
+
+
+def test_a_worker_lock_unlike_the_drivers_fails_the_task(
+    tmp_path: Path, remote_round_trip: RemoteRoundTrip
+) -> None:
+    # The image installed the same manifest at build time, but its lock has
+    # since diverged from the driver's, as a local ``pixi update`` would make
+    # it. A comment stands in for a different solve: pixi still accepts it.
+    _declare_tools_env(tmp_path / "driver" / "envs")
+    _declare_tools_env(tmp_path / "image" / "envs")
+    PixiRegistry(project_root=tmp_path / "image").prepare(env="tools")
+    with (tmp_path / "image/envs/tools/pixi.lock").open("a", encoding="utf-8") as fh:
+        fh.write("# solved before the driver's\n")
+
+    with pytest.raises(RuntimeError, match="worker's env 'tools' is not locked as the driver"):
         _evaluate(
             in_a_pixi_env(dest=str(tmp_path / "prefix.txt")),
             context=EnvironmentContext(

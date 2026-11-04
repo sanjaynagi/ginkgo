@@ -1845,9 +1845,14 @@ class ConcurrentEvaluator:
             "threads": node.threads,
             "env": node.task_def.env,
             # A remote worker searches for the env where the driver did, and
-            # checks that the env it finds is this one.
+            # checks that the env it finds is this one, locked as it is here.
             "env_workflow_root": self._env_workflow_root(),
             "env_identity": self._env_identity(env=node.task_def.env),
+            "env_materialized_digest": (
+                self.backend.materialized_digest(env=node.task_def.env)
+                if node.task_def.env is not None and self.backend is not None
+                else None
+            ),
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
             "task_kind": node.task_def.kind,

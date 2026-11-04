@@ -188,7 +188,8 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
     Raises
     ------
     RuntimeError
-        If the env found here is not the one the driver named.
+        If the env found here is not the one the driver named, or is not
+        locked as the driver's is.
     """
     expected = payload.get("env_identity")
     if expected is None:
@@ -213,6 +214,13 @@ def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter
             f"The worker's env {env!r} is not the one the driver's cache key names "
             f"(its identity is {identity}, the driver's {expected}). Ship the "
             "driver's manifest in the code bundle, or rebuild the worker image."
+        )
+    lock = backend.materialized_digest(env=env)
+    if lock != payload["env_materialized_digest"]:
+        raise RuntimeError(
+            f"The worker's env {env!r} is not locked as the driver's is (its lock "
+            f"digest is {lock}, the driver's {payload['env_materialized_digest']}). "
+            "Ship the driver's lock in the code bundle, or rebuild the worker image."
         )
     backend.prepare(env=env)
     return backend
