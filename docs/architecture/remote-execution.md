@@ -3,13 +3,13 @@
 Ginkgo supports dispatching a workflow's tasks to cloud infrastructure while
 the driver runs locally. Placement is decided per task: `executor="name"` pins
 a task to one configured executor and `executor="local"` keeps it on the
-driver; otherwise every task whose kind is `remote_capable` (today only
-`python`) goes to the run's *default* executor (`--executor`), and the rest run
-on the driver. Shell, script, notebook and subworkflow tasks therefore run on
-the driver for now, even under `--executor`. Naming an executor on a kind that
-is not remote-capable is a build error, as is a locally placed task whose `gpu`
-requirement exceeds the local `--gpus` budget — a task never silently runs
-somewhere its requirement cannot be met. Cached tasks are never dispatched:
+driver; otherwise every task whose kind is `remote_capable` (`python`, `shell`
+and `script`) goes to the run's *default* executor (`--executor`), and the rest
+run on the driver. Notebook and subworkflow tasks therefore run on the driver
+for now, even under `--executor`. Naming an executor on a kind that is not
+remote-capable is a build error, as is a remote task that declares `env=` and a
+locally placed task whose `gpu` requirement exceeds the local `--gpus` budget —
+a task never silently runs somewhere its requirement cannot be met. Cached tasks are never dispatched:
 placement is resolved only after a cache miss. Remote-placed tasks consume a
 `--jobs` slot but no local core/memory/GPU budget; their resources are
 satisfied by the executor.
@@ -85,13 +85,23 @@ rejected at submit rather than silently scheduled without a GPU. Job logs are re
 The worker entry point (`remote/worker.py`) runs as
 `python -m ginkgo.remote.worker` inside the container. It:
 
-1. Reads the task payload from `GINKGO_WORKER_PAYLOAD` (base64-encoded JSON)
+1. Reads the task payload from `GINKGO_WORKER_PAYLOAD` (base64-encoded JSON),
+   and removes it from its environment, since it holds the resolved secrets
 2. Optionally downloads and extracts a code bundle (code-sync mode)
 3. Downloads `file`/`folder` inputs and large values from the artifact store
    into its own scratch directory
 4. Calls the standard `run_task()` worker function. The payload carries no
    driver-local paths (log files, transport directory), so task
-   output goes to the container's stdout/stderr and appears in the pod logs
+   output goes to the container's stdout/stderr and appears in the pod logs.
+   A driver kind's body (shell, script) returns its directive here, against
+   the pod's paths, and `run_task` runs it on the kind's own runner in a local
+   subprocess. The runner's result goes back as an ordinary encoded value,
+   marked `ran_directive` so the driver completes the task with it, and a
+   failed command's exit code travels in the error so `retry_on_exit_codes`
+   still applies. A remote task with `env=` is rejected at placement, since
+   the worker runs every command in its own image. A directive naming a
+   `log=` file fails in the worker before its command runs, since nothing
+   would bring the file back
 5. Uploads outputs and large result values, then prints a JSON result line to
    stdout for the handle to parse. A result holding task expressions is
    pickled whole with its `file`/`folder` leaves uploaded beside it, and the

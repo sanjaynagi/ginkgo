@@ -14,7 +14,7 @@ cluster or GCP Batch, that you name in `ginkgo.toml`. A **worker** runs one
 task on the executor, inside a Docker image you provide.
 
 Tasks run on your machine by default. `ginkgo run --executor <name>` sends
-every Python task to that executor instead:
+every Python, shell and script task to that executor instead:
 
 ```bash
 ginkgo run --executor gpu-k8s flow.py
@@ -35,10 +35,27 @@ def summarise(result: str) -> str:
     ...
 ```
 
-Shell, script, notebook and subworkflow tasks run on your machine for now, even
-under `--executor`. Naming an executor on one of them with `executor=` fails
-the run before any task starts. So does a task that runs on your machine but
-needs more GPUs than `--gpus` allows. Cached tasks are never sent, and each
+Notebook and subworkflow tasks run on your machine for now, even under
+`--executor`. Naming an executor on one of them with `executor=` fails the run
+before any task starts. So does a task that runs on your machine but needs
+more GPUs than `--gpus` allows.
+
+A remote shell or script task's command runs in the worker, against the
+worker's copies of its inputs and outputs. So the worker image needs `bash` and
+every tool the command calls, and a script task's script must be in the image
+or the code bundle. Name the script by a path built from `Path(__file__)`, not
+one relative to the working directory, which differs in the worker.
+
+A task with `env=` can't run remotely yet, because the worker would ignore its
+Pixi environment or container. It fails the run before any task starts; give it
+`executor="local"` to keep it on your machine.
+
+A remote task can't name a `log=` file in `shell(...)` or `script(...)`
+either, because the file would stay in the worker. The command's output
+reaches the task's log anyway, so drop `log=`, or give the task
+`executor="local"`. The worker fails such a task before its command runs.
+
+Cached tasks are never sent, and each
 retry submits a new job. A task's `threads`, `memory` and `gpu` become its
 job's resource request. See
 [Resources And Scheduling](/ginkgo/guide/resources/#where-a-task-runs).

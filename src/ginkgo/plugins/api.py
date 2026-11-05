@@ -527,7 +527,9 @@ class TaskKind:
         How the body builds its directive, for messages, e.g. ``"shell(...)"``.
         Empty exactly when ``directive`` is ``None``.
     execution_mode : {"driver", "worker"}
-        Whether the body runs on the scheduler or in a worker process.
+        Whether a local task's body runs on the scheduler or in a worker
+        process. A remote task's body runs in its remote worker, and so does a
+        driver kind's directive, on the kind's runner.
     allows_env : bool
         Whether the kind may declare ``env=``.
     remote_capable : bool

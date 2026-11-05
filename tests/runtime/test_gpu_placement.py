@@ -26,13 +26,14 @@ def local_gpu(x: int) -> int:
     return x
 
 
-@task(kind="shell", executor="remote")
-def pinned_shell() -> str:
-    raise AssertionError("never runs")
+@task(kind="subworkflow", executor="remote")
+def pinned_subworkflow() -> None:
+    # Evaluated as the task is prepared, before its placement fails it.
+    return None
 
 
-@task(kind="shell", gpu=1)
-def gpu_shell() -> str:
+@task(kind="subworkflow", gpu=1)
+def gpu_subworkflow() -> str:
     raise AssertionError("never runs")
 
 
@@ -51,7 +52,7 @@ class TestGpuPlacement:
         ("expr", "match"),
         [
             (lambda: needs_gpu(x=21), "requires 1 GPU"),
-            (lambda: pinned_shell(), "cannot be dispatched remotely"),
+            (lambda: pinned_subworkflow(), "cannot be dispatched remotely"),
         ],
     )
     def test_unplaceable_tasks_fail(self, expr, match: str) -> None:
@@ -64,9 +65,9 @@ class TestGpuPlacement:
             (needs_gpu, 0, "remote"),
             (needs_gpu, 1, "remote"),
             (local_gpu, 1, None),
-            (gpu_shell, 1, None),
+            (gpu_subworkflow, 1, None),
         ],
-        ids=["gpu-over-budget", "gpu-within-budget", "local-opt-out", "shell-stays-local"],
+        ids=["gpu-over-budget", "gpu-within-budget", "local-opt-out", "subworkflow-stays-local"],
     )
     def test_placement_with_an_executor(self, task_def, gpus: int, placed) -> None:
         evaluator = ConcurrentEvaluator(jobs=1, gpus=gpus, executor_registry=prebuilt_registry())
@@ -75,7 +76,7 @@ class TestGpuPlacement:
     @pytest.mark.parametrize(
         ("task_def", "match"),
         [
-            (gpu_shell, "kind='shell' cannot be dispatched remotely"),
+            (gpu_subworkflow, "kind='subworkflow' cannot be dispatched remotely"),
             (local_gpu, "declares executor='local'"),
         ],
     )

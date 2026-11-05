@@ -25,12 +25,12 @@ def main() -> None:
     """Execute a task from a remote worker payload."""
     from ginkgo.runtime.worker import error_response
 
-    payload_b64 = os.environ.get("GINKGO_WORKER_PAYLOAD")
+    # Taken out of the environment, so neither the task nor any command it
+    # runs sees the arguments and resolved secrets the payload holds.
+    payload_b64 = os.environ.pop("GINKGO_WORKER_PAYLOAD", None)
     if payload_b64 is None:
-        print(
-            json.dumps(
-                error_response(RuntimeError("GINKGO_WORKER_PAYLOAD environment variable not set"))
-            )
+        _print_result(
+            error_response(RuntimeError("GINKGO_WORKER_PAYLOAD environment variable not set"))
         )
         sys.exit(1)
 
@@ -38,27 +38,34 @@ def main() -> None:
         payload = json.loads(base64.b64decode(payload_b64))
     except Exception as exc:
         exc.args = (f"Failed to decode worker payload: {exc}",)
-        print(json.dumps(error_response(exc)))
+        _print_result(error_response(exc))
         sys.exit(1)
 
     try:
         result = run_worker_payload(payload)
     except Exception as exc:
-        print(json.dumps(error_response(exc)))
+        _print_result(error_response(exc))
         sys.exit(1)
 
-    # Print the result as a JSON line for the handle to parse.
-    print(json.dumps(result, default=str))
+    _print_result(result)
     sys.exit(0 if result.get("ok", False) else 1)
+
+
+def _print_result(result: dict) -> None:
+    """Print *result* as the JSON line the executor parses from the job's logs.
+
+    It starts a line of its own: the task's output, printed before it, may
+    not end in a newline, and the executor reads only whole lines.
+    """
+    print(f"\n{json.dumps(result, default=str)}")
 
 
 def run_worker_payload(payload: dict) -> dict:
     """Execute one worker payload dict and return its result dict.
 
-    The pure body of :func:`main`, split out so tests (and in-process fake
-    executors) can drive a remote task end to end — code bundle install,
-    input hydration, the task body, and output publishing — without the
-    ``GINKGO_WORKER_PAYLOAD`` environment variable or process exit calls.
+    The body of :func:`main`, which reads the payload and prints the result:
+    code bundle install, input hydration, the task body, and output
+    publishing.
     """
     from ginkgo.runtime.worker import error_response
 
@@ -124,7 +131,7 @@ def run_worker_payload(payload: dict) -> dict:
                 mounted_access.close()
             except Exception:  # noqa: BLE001
                 pass
-        return error_response(exc)
+        result = error_response(exc)
     finally:
         if mounted_access is not None:
             try:
@@ -134,6 +141,8 @@ def run_worker_payload(payload: dict) -> dict:
         if output_param_entries:
             _remove_output_param_scratch(entries=output_param_entries)
 
+    if output_param_entries and not result.get("ok"):
+        _name_output_params_by_driver_path(result, entries=output_param_entries)
     return result
 
 
@@ -226,6 +235,21 @@ def _stage_output_params(
     result["output_param_results"] = stage_output_param_results(
         entries=entries, remote_store=remote_store, scratch_dir=_scratch_root() / "ginkgo-outputs"
     )
+
+
+def _name_output_params_by_driver_path(result: dict, *, entries: list[dict[str, str]]) -> None:
+    """Name each ``Out[...]`` path in a failure's error by its declared driver path.
+
+    The task ran against scratch paths, which mean nothing on the driver. A
+    failure that names one, such as a runner's check that its command created
+    the output, names the declared path instead, as a local task's would.
+    """
+    scratch_dir = _scratch_root() / "ginkgo-outputs"
+    error = result["error"]
+    for entry in entries:
+        scratch, original = str(scratch_dir / entry["relative"]), entry["original"]
+        error["message"] = error["message"].replace(scratch, original)
+        error["args"] = [arg.replace(scratch, original) for arg in error["args"]]
 
 
 def _hydrate_remote_inputs(payload: dict, *, remote_store: RemoteArtifactStore) -> None:
