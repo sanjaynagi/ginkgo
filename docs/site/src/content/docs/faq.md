@@ -283,10 +283,10 @@ The full logs are in `.ginkgo/runs/<run_id>/logs/`. See [CLI](/ginkgo/guide/cli/
 
 ### How do I run a task remotely?
 
-Run `ginkgo run --executor <name>` to send every Python, shell and script task
-to that executor. A task can pick another with `executor="name"`, or stay on
-your machine with `executor="local"`. Notebook and subworkflow tasks run on
-your machine for now. Executors run on Kubernetes (including GKE, EKS and OKE)
+Run `ginkgo run --executor <name>` to send every Python, shell, script and
+notebook task to that executor. A task can pick another with `executor="name"`,
+or stay on your machine with `executor="local"`. Subworkflow tasks run on your
+machine. Executors run on Kubernetes (including GKE, EKS and OKE)
 or GCP Batch. See
 [Remote Execution](/ginkgo/guide/remote-execution/).
 

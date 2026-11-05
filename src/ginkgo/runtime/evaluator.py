@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 import time
 import builtins
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
-from ginkgo.errors import FailureKind, GinkgoError
+from ginkgo.errors import CommandExitError, FailureKind, GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.plugins.api import RunnerContext, TaskInvocation, TaskKind, TaskRunner
 from ginkgo.plugins.registry import plugin_registry
@@ -95,7 +96,6 @@ from ginkgo.runtime.display_labels import first_label_param_name, render_label_v
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
-    ShellTaskError,
     SignalMonitor,
     classify_failure,
     remove_declared_output,
@@ -151,9 +151,11 @@ def _reconstruct_worker_error(error_payload: dict[str, Any]) -> BaseException:
     if (module_name, type_name) == (RemoteIdentityError.__module__, RemoteIdentityError.__name__):
         return RemoteIdentityError(*args)
 
-    # Rebuilt with its exit code, which retry_on_exit_codes matches.
-    if (module_name, type_name) == (ShellTaskError.__module__, ShellTaskError.__name__):
-        return ShellTaskError.reported(
+    # A command's failure is rebuilt as its own type, with its exit code. Only
+    # a type already imported here, such as a task kind's runner error.
+    exc_type = getattr(sys.modules.get(module_name), type_name, None)
+    if isinstance(exc_type, type) and issubclass(exc_type, CommandExitError):
+        return exc_type.reported(
             message=error_payload["message"], exit_code=error_payload["exit_code"]
         )
 
@@ -1102,6 +1104,7 @@ class ConcurrentEvaluator:
                     node=node, measured=completed_value["measured_resources"]
                 )
             self._fold_remote_input_access(node=node, payload=completed_value)
+            self._take_runner_record(node=node, payload=completed_value)
             ran_directive = completed_value.get("ran_directive", False)
             completed_value = self._decode_worker_result(node=node, payload=completed_value)
         finally:
@@ -1788,6 +1791,32 @@ class ConcurrentEvaluator:
         self._annotate_task(
             node=node, fields={"remote_input_digests": dict(node.remote_input_digests)}
         )
+
+    def _take_runner_record(self, *, node: NodeRun, payload: Any) -> None:
+        """Take in what a remote task's runner wrote to and annotated in its run directory.
+
+        Its files go into this run's directory at the same relative paths, so
+        what it annotated relative to its directory holds here too, and a
+        failure that names one of them names it here.
+        """
+        record = payload.get("runner_record") if isinstance(payload, dict) else None
+        if record is None or self.run_dir is None:
+            return
+        if record["files"] is not None:
+            assert node.transport_path is not None
+            files = decode_value(
+                record["files"],
+                base_dir=node.transport_path,
+                artifact_store=self._value_store(node=node),
+            )
+            shutil.copytree(files, self.run_dir.path, dirs_exist_ok=True)
+        if not payload["ok"]:
+            error = payload["error"]
+            pod_dir, run_dir = record["run_dir"], str(self.run_dir.path)
+            error["message"] = error["message"].replace(pod_dir, run_dir)
+            error["args"] = [arg.replace(pod_dir, run_dir) for arg in error["args"]]
+        self._annotate_task(node=node, fields=record["fields"])
+        node.runner_extras = record["runner_extras"]
 
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.

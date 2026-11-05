@@ -35,19 +35,22 @@ def summarise(result: str) -> str:
     ...
 ```
 
-Notebook and subworkflow tasks run on your machine for now, even under
-`--executor`. Naming an executor on one of them with `executor=` fails the run
-before any task starts. So does a task that runs on your machine but needs
-more GPUs than `--gpus` allows.
+Subworkflow tasks run on your machine, even under `--executor`. Naming an
+executor on one with `executor=` fails the run before any task starts. So does
+a task that runs on your machine but needs more GPUs than `--gpus` allows.
 
-A remote shell or script task's command runs in the worker, against the
-worker's copies of its inputs and outputs. So the worker image needs `bash` and
-every tool the command calls, and a script task's script must be in the worker
-image or the code bundle. Name the script by a path built from `Path(__file__)`,
+A remote shell, script or notebook task's command runs in the worker, against
+the worker's copies of its inputs and outputs. So the worker image needs `bash`
+and every tool the command calls, and a script or notebook must be in the
+worker image or the code bundle. Name it by a path built from `Path(__file__)`,
 not one relative to the working directory, which differs in the worker. A task
 with a container environment, below, is different.
 
-A remote shell or script task with a Pixi `env=` runs its command in that
+The worker images Ginkgo builds include marimo, which a notebook task runs. A
+remote notebook's rendered page comes back to the run directory, as it would
+from your machine, and so does the page of a notebook whose cell failed.
+
+A remote shell, script or notebook task with a Pixi `env=` runs its command in that
 environment in the worker. The worker looks for the environment's `pixi.toml`
 and `pixi.lock` where your machine does, relative to the code bundle or the
 image's working directory. It installs exactly the packages that lock pins
@@ -65,8 +68,9 @@ pays that install time. If you bake your code into the image, install each
 environment from the lock you run with when you build the image, and the
 worker's install becomes a quick check.
 
-A shell or script task with a [container environment](/ginkgo/guide/environments/#container-environments),
-`env="docker://image:tag"`, runs its command in that image instead. Its job
+A shell, script or notebook task with a [container environment](/ginkgo/guide/environments/#container-environments),
+`env="docker://image:tag"`, runs its command in that image instead. A
+notebook's image needs Python with marimo. Its job
 runs three containers in turn, which share a scratch volume mounted at the same
 path in each:
 

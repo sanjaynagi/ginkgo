@@ -19,7 +19,7 @@ import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Literal, get_args
+from typing import Literal, Self, get_args
 
 __all__ = [
     "FAILURE_KINDS",
@@ -62,6 +62,25 @@ class GinkgoError(Exception):
     location and no traceback, because neither would tell the user anything the
     message does not.
     """
+
+
+class CommandExitError(GinkgoError, RuntimeError):
+    """A task's command exited non-zero, with its status in ``exit_code``.
+
+    A remote worker reports one by its message and exit code, and the driver
+    rebuilds it as its own type with :meth:`reported`: failure classification
+    reads the type, and ``retry_on_exit_codes`` the exit code.
+    """
+
+    exit_code: int
+
+    @classmethod
+    def reported(cls, *, message: str, exit_code: int) -> Self:
+        """Rebuild the error a remote worker reported, from its message and exit code."""
+        exc = cls.__new__(cls)
+        RuntimeError.__init__(exc, message)
+        exc.exit_code = exit_code
+        return exc
 
 
 def describe_exception(exc: BaseException) -> str:
