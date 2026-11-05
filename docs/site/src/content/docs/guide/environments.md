@@ -215,6 +215,14 @@ Ginkgo rejects an unknown key or value.
 - `user = "root"` suits an image that installs software as it runs. Its outputs
   are then owned by root.
 
+### On A Remote Executor
+
+A container task sent to an [executor](/ginkgo/guide/remote-execution/) runs in
+its image there, beside the worker. The `[container]` table applies only on
+your machine: the executor pulls the image with its own settings, and runs the
+command with `sh`. See
+[Remote Execution](/ginkgo/guide/remote-execution/#how-it-works).
+
 ## See Also
 
 - [Caching and Provenance](/ginkgo/guide/caching-and-provenance/) &mdash; how the

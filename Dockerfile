@@ -4,7 +4,7 @@
 #   docker build -t ginkgo-worker .
 #
 # By default it runs a worker: it reads a task payload from the
-# GINKGO_WORKER_PAYLOAD env var, executes it, and prints a JSON result line to
+# GINKGO_WORKER_PAYLOAD env var, executes it, and prints a result line to
 # stdout. Run with the command `ginkgo run <workflow>` instead, it is a driver
 # that dispatches tasks to Kubernetes (see deploy/oke/).
 

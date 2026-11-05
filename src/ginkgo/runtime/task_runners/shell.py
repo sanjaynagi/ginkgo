@@ -955,6 +955,12 @@ class ShellRunner:
 
     # Shell driver ----------------------------------------------------------
 
+    def prepare_outputs(self, output: Any) -> None:
+        """Clear what an earlier attempt left at the declared outputs, and make their parents."""
+        for output_path in iter_output_values(output):
+            remove_declared_output(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
     def failure_hint(self, *, node: TaskInvocation, exit_code: int, output: str) -> str | None:
         """Ask the execution environment to diagnose a failed command.
 
@@ -982,10 +988,7 @@ class ShellRunner:
                 "shell(...) must declare output=... naming at least one path."
             )
 
-        for output_path in iter_output_values(output):
-            remove_declared_output(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
+        self.prepare_outputs(output)
         completed = self.run_logged_command(
             node=node,
             cmd=directive.cmd,

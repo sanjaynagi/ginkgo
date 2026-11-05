@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from kubernetes import client as k8s
 
 from ginkgo_k8s.executor import (
     KubernetesExecutor,
@@ -15,6 +17,7 @@ from ginkgo_k8s.executor import (
     parse_worker_output,
     _RefreshingApi,
 )
+from ginkgo.remote.executor_support import format_worker_result
 from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobState
 
 
@@ -42,7 +45,9 @@ class TestHelpers:
         assert len(name) <= 63
 
     def test_parse_worker_output_valid(self) -> None:
-        logs = "Starting task...\nsome debug output\n" + json.dumps({"ok": True, "result": 42})
+        logs = "Starting task...\nsome debug output\n" + format_worker_result(
+            {"ok": True, "result": 42}
+        )
         result = parse_worker_output(logs)
         assert result == {"ok": True, "result": 42}
 
@@ -50,6 +55,13 @@ class TestHelpers:
         logs = "no json here\njust text"
         result = parse_worker_output(logs)
         assert result["ok"] is False
+
+    @pytest.mark.parametrize("printed", ['{"reads": 1200}', "42"])
+    def test_json_a_command_printed_is_not_the_result(self, printed: str) -> None:
+        # A command's output streams into the job's logs, and a job killed
+        # after it prints no result.
+        result = parse_worker_output(f"staged\n{printed}\n", source_label="pod logs")
+        assert result["error"]["message"] == "No worker output found in pod logs"
 
     def test_parse_worker_output_empty(self) -> None:
         result = parse_worker_output("")
@@ -113,6 +125,8 @@ class TestKubernetesExecutor:
         pod_spec = job.spec.template.spec
         assert pod_spec.restart_policy == "Never"
         assert pod_spec.service_account_name == "ginkgo-worker"
+        assert pod_spec.init_containers is None
+        assert pod_spec.volumes is None
 
         container = pod_spec.containers[0]
         assert container.image == "my-image:latest"
@@ -184,6 +198,7 @@ class TestKubernetesJobHandle:
     def test_state_running(self) -> None:
         handle = self._make_handle()
         handle._batch_api.read_namespaced_job.return_value.status = self._make_status(active=1)
+        handle._core_api.list_namespaced_pod.return_value.items = []
 
         assert handle.state() == RemoteJobState.RUNNING
 
@@ -202,10 +217,21 @@ class TestKubernetesJobHandle:
             handle.cancel()
             handle._batch_api.delete_namespaced_job.assert_called_once()
 
+    def _pod(self, *, init: list[str], main: list[str]) -> MagicMock:
+        pod = MagicMock()
+        pod.metadata.name = "ginkgo-test-001-xyz"
+        pod.spec.init_containers = [self._named(name) for name in init] or None
+        pod.spec.containers = [self._named(name) for name in main]
+        return pod
+
+    def _named(self, name: str) -> MagicMock:
+        container = MagicMock()
+        container.name = name
+        return container
+
     def test_logs_tail_reads_pod_log(self) -> None:
         handle = self._make_handle()
-        mock_pod = MagicMock()
-        mock_pod.metadata.name = "ginkgo-test-001-xyz"
+        mock_pod = self._pod(init=[], main=["ginkgo-worker"])
         handle._core_api.list_namespaced_pod.return_value.items = [mock_pod]
         mock_response = MagicMock()
         mock_response.read.return_value = b"line1\nline2\n"
@@ -217,9 +243,32 @@ class TestKubernetesJobHandle:
         handle._core_api.read_namespaced_pod_log.assert_called_once_with(
             name="ginkgo-test-001-xyz",
             namespace="ginkgo",
+            container="ginkgo-worker",
             tail_lines=50,
             _preload_content=False,
         )
+
+    def test_logs_tail_reads_every_container_in_the_order_they_ran(self) -> None:
+        handle = self._make_handle()
+        pod = self._pod(init=["stage-in", "task"], main=["stage-out"])
+        handle._core_api.list_namespaced_pod.return_value.items = [pod]
+        logs = {
+            "stage-in": b"staged",
+            "task": b"",
+            "stage-out": f"from the command\n{format_worker_result({'ok': True})}\n".encode(),
+        }
+
+        def read(*, container: str, **_: object) -> MagicMock:
+            response = MagicMock()
+            response.read.return_value = logs[container]
+            return response
+
+        handle._core_api.read_namespaced_pod_log.side_effect = read
+
+        assert handle.logs_tail() == (
+            f"staged\nfrom the command\n{format_worker_result({'ok': True})}\n"
+        )
+        assert parse_worker_output(handle.logs_tail()) == {"ok": True}
 
     def test_logs_tail_empty_when_no_pods(self) -> None:
         handle = self._make_handle()
@@ -347,6 +396,257 @@ class TestExecutorSettings:
         job = self._built_job(executor, attempt)
 
         assert job.spec.template.metadata.annotations is None
+
+    def test_a_container_task_runs_its_image_between_two_workers(self) -> None:
+        executor = KubernetesExecutor(
+            image="worker:1",
+            pull_policy="Always",
+            env={"GINKGO_REMOTE_OCI_AUTH": "oke_workload_identity"},
+            image_pull_secrets=["ocir-pull"],
+        )
+        attempt = {**self._attempt(threads=2), "image": "busybox:1.36"}
+
+        spec = self._built_job(executor, attempt).spec.template.spec
+
+        stage_in, task = spec.init_containers
+        [stage_out] = spec.containers
+        steps = (stage_in, task, stage_out)
+        assert [c.name for c in steps] == ["stage-in", "task", "stage-out"]
+        assert [c.image for c in steps] == ["worker:1", "busybox:1.36", "worker:1"]
+        assert {c.image_pull_policy for c in steps} == {"Always"}
+        assert [s.name for s in spec.image_pull_secrets] == ["ocir-pull"]
+        # The task's image keeps its ENTRYPOINT, as docker run keeps it locally,
+        # and gets the command as its arguments.
+        assert task.command is None
+        assert task.args == ["sh", "/ginkgo-scratch/ginkgo-command/command.sh"]
+        # The task's image gets neither the payload nor the executor's env.
+        assert task.env is None
+        for worker, phase in ((stage_in, "stage-in"), (stage_out, "stage-out")):
+            env = {item.name: item.value for item in worker.env}
+            assert worker.command == ["python", "-m", "ginkgo.remote.worker"]
+            assert env["GINKGO_WORKER_PHASE"] == phase
+            assert env["GINKGO_SCRATCH_ROOT"] == "/ginkgo-scratch"
+            assert env["GINKGO_REMOTE_OCI_AUTH"] == "oke_workload_identity"
+            assert "GINKGO_WORKER_PAYLOAD" in env
+        [volume] = spec.volumes
+        assert volume.empty_dir is not None
+        for container in steps:
+            assert [(m.name, m.mount_path) for m in container.volume_mounts] == [
+                (volume.name, "/ginkgo-scratch")
+            ]
+            assert container.resources.limits["cpu"] == "2"
+
+
+def _pod(*, scheduled: bool = True, waiting: dict[str, str] | None = None) -> k8s.V1Pod:
+    """A container task's pod, whose containers named in *waiting* wait for that reason.
+
+    Every container's image is named ``<container>:1``.
+    """
+    waiting = waiting or {}
+
+    def status(name: str) -> k8s.V1ContainerStatus:
+        reason = waiting.get(name)
+        state = (
+            k8s.V1ContainerState(waiting=k8s.V1ContainerStateWaiting(reason=reason, message="no"))
+            if reason is not None
+            else k8s.V1ContainerState(running=k8s.V1ContainerStateRunning())
+        )
+        return k8s.V1ContainerStatus(
+            name=name, image=f"{name}:1", image_id="", ready=False, restart_count=0, state=state
+        )
+
+    scheduled_condition = k8s.V1PodCondition(
+        type="PodScheduled",
+        status="True" if scheduled else "False",
+        reason=None if scheduled else "Unschedulable",
+        message=None if scheduled else "0/3 nodes are available",
+    )
+    return k8s.V1Pod(
+        metadata=k8s.V1ObjectMeta(name="ginkgo-test-001-xyz"),
+        spec=k8s.V1PodSpec(
+            init_containers=[k8s.V1Container(name="stage-in"), k8s.V1Container(name="task")],
+            containers=[k8s.V1Container(name="stage-out")],
+        ),
+        status=k8s.V1PodStatus(
+            phase="Pending",
+            conditions=[scheduled_condition],
+            init_container_statuses=[status("stage-in"), status("task")],
+            container_statuses=[status("stage-out")],
+        ),
+    )
+
+
+class TestAPodThatCannotStart:
+    """A Job counts a Pending pod as active, so its handle reads the pod itself."""
+
+    @pytest.fixture
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        now = [1000.0]
+        monkeypatch.setattr("ginkgo_k8s.executor.time", SimpleNamespace(monotonic=lambda: now[0]))
+        return now
+
+    def _handle(self, *pods: k8s.V1Pod, active: int = 1) -> KubernetesJobHandle:
+        """A handle to a Job with *active* pods, whose pod reads as each of *pods* in turn.
+
+        After the last, the pod keeps reading as the last, so a listing the
+        test did not count reads a real pod rather than raising.
+        """
+        handle = KubernetesJobHandle(
+            job_name="ginkgo-test-001",
+            namespace="ginkgo",
+            unschedulable_timeout=60.0,
+            image_pull_timeout=60.0,
+            _batch_api=MagicMock(),
+            _core_api=MagicMock(),
+        )
+        status = handle._batch_api.read_namespaced_job.return_value.status
+        status.succeeded, status.active, status.conditions = None, active, []
+        listed = iter(pods)
+        current = [pods[0]]
+
+        def list_pods(**_: object) -> k8s.V1PodList:
+            current[0] = next(listed, current[0])
+            return k8s.V1PodList(items=[current[0]])
+
+        handle._core_api.list_namespaced_pod.side_effect = list_pods
+        handle._core_api.read_namespaced_pod_log.side_effect = Exception("no logs")
+        return handle
+
+    @pytest.mark.parametrize(
+        ("pod", "reason"),
+        [
+            (
+                _pod(waiting={"task": "ErrImagePull"}),
+                "container 'task' cannot pull image 'task:1'",
+            ),
+            (
+                _pod(waiting={"stage-in": "ImagePullBackOff"}),
+                "container 'stage-in' cannot pull image 'stage-in:1'",
+            ),
+            (
+                _pod(waiting={"stage-out": "InvalidImageName"}),
+                "container 'stage-out' cannot pull image 'stage-out:1'",
+            ),
+        ],
+    )
+    def test_an_image_pull_failure_fails_once_the_timeout_passes(
+        self, clock: list[float], pod: k8s.V1Pod, reason: str
+    ) -> None:
+        handle = self._handle(pod, pod, pod)
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 59
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 1
+        assert handle.state() == RemoteJobState.FAILED
+
+        error = handle.result().payload["error"]
+        assert error["message"].startswith(f"Kubernetes pod could not start: {reason}")
+        # Deleted, since it would otherwise hold its node or quota for good.
+        handle._batch_api.delete_namespaced_job.assert_called_once()
+
+    def test_a_registry_error_that_clears_restarts_the_clock(self, clock: list[float]) -> None:
+        stuck = _pod(waiting={"task": "ErrImagePull"})
+        handle = self._handle(stuck, _pod(), stuck, stuck)
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 30
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 30
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 59
+        assert handle.state() == RemoteJobState.RUNNING
+        handle._batch_api.delete_namespaced_job.assert_not_called()
+
+    def test_a_job_that_fails_once_its_image_pulls_reports_its_own_error(
+        self, clock: list[float]
+    ) -> None:
+        handle = self._handle(_pod(waiting={"task": "ErrImagePull"}), _pod())
+        assert handle.state() == RemoteJobState.RUNNING
+
+        # The pull recovers, and the command then fails on its own.
+        error = {
+            "type": "ShellTaskError",
+            "module": "ginkgo.runtime.task_runners.shell",
+            "message": "Shell command failed with exit code 3",
+            "args": ["Shell command failed with exit code 3"],
+            "exit_code": 3,
+        }
+        result_line = format_worker_result({"ok": False, "error": error}).encode()
+        logs = {"stage-in": b"", "task": b"", "stage-out": result_line}
+
+        def read(*, container: str, **_: object) -> MagicMock:
+            return MagicMock(read=MagicMock(return_value=logs[container]))
+
+        handle._core_api.read_namespaced_pod_log.side_effect = read
+        status = handle._batch_api.read_namespaced_job.return_value.status
+        status.active, status.conditions = 0, [k8s.V1JobCondition(type="Failed", status="True")]
+
+        result = handle.result()
+
+        assert result.state == RemoteJobState.FAILED
+        assert result.payload["error"] == error
+
+    def test_an_image_pull_failure_waits_for_its_own_timeout(self, clock: list[float]) -> None:
+        stuck = _pod(waiting={"task": "ErrImagePull"})
+        handle = self._handle(stuck)
+        handle.unschedulable_timeout = 10_000.0
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 61
+        assert handle.state() == RemoteJobState.FAILED
+
+    def test_an_active_unschedulable_pod_waits_past_the_timeout(self, clock: list[float]) -> None:
+        # A fan-out larger than the cluster, or GPU nodes scaling up, leaves
+        # active pods unschedulable for as long as it takes.
+        unschedulable = _pod(scheduled=False)
+        handle = self._handle(unschedulable, unschedulable)
+
+        assert handle.state() == RemoteJobState.RUNNING
+        clock[0] += 3600
+        assert handle.state() == RemoteJobState.RUNNING
+        handle._batch_api.delete_namespaced_job.assert_not_called()
+
+    def test_a_pending_unschedulable_pod_fails_once_the_timeout_passes(
+        self, clock: list[float]
+    ) -> None:
+        unschedulable = _pod(scheduled=False)
+        handle = self._handle(unschedulable, unschedulable, active=0)
+
+        assert handle.state() == RemoteJobState.PENDING
+        clock[0] += 60
+        assert handle.state() == RemoteJobState.FAILED
+
+        error = handle.result().payload["error"]
+        assert error["message"] == (
+            "Kubernetes pod unschedulable: Unschedulable: 0/3 nodes are available"
+        )
+
+
+def test_a_task_container_killed_before_stage_out_reports_its_exit_code() -> None:
+    # An OOM kills the task's whole container, so its pod fails before
+    # stage-out can report anything.
+    pod = _pod()
+    pod.status.init_container_statuses[1].state = k8s.V1ContainerState(
+        terminated=k8s.V1ContainerStateTerminated(reason="OOMKilled", exit_code=137)
+    )
+    handle = KubernetesJobHandle(
+        job_name="ginkgo-test-001",
+        namespace="ginkgo",
+        _batch_api=MagicMock(),
+        _core_api=MagicMock(),
+    )
+    status = handle._batch_api.read_namespaced_job.return_value.status
+    status.succeeded, status.active = None, 0
+    status.conditions = [k8s.V1JobCondition(type="Failed", status="True")]
+    handle._core_api.list_namespaced_pod.return_value = k8s.V1PodList(items=[pod])
+    handle._core_api.read_namespaced_pod_log.return_value.read.return_value = b"staged\n"
+
+    error = handle.result().payload["error"]
+
+    # Rebuilt on the driver as a failed command, which retry_on_exit_codes matches.
+    assert (error["type"], error["exit_code"]) == ("ShellTaskError", 137)
+    assert "OOMKilled" in error["message"]
 
 
 def test_an_unknown_setting_is_refused() -> None:

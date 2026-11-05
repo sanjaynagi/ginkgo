@@ -223,6 +223,9 @@ class CacheStore:
     publisher : RemotePublisher | None
         Optional remote publisher for uploading artifacts after local storage.
         When set, artifacts are published to the remote store automatically.
+    placement : Placement | None
+        Where the run's tasks run. A task whose command runs remotely in its
+        own image has no environment materialised here to record or check.
     index : CacheIndex
         The database rows that index the entries. Required, and never opened
         here: which database this is, and whether it may be written, is the
@@ -234,6 +237,7 @@ class CacheStore:
     backend: Any | None = None  # ExecutionEnvironment; typed as Any to avoid circular import
     artifact_store: LocalArtifactStore | None = None
     publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
+    placement: Any | None = None  # Placement; typed as Any to avoid circular import
     hash_memo: HashMemo | None = None
     trust_mtimes: bool = False
     _root: Path = field(init=False, repr=False)
@@ -560,7 +564,7 @@ class CacheStore:
             record = self._artifact_store.load_record(artifact_id=artifact_id)
             size_bytes += record.size if record is not None else 0
 
-        materialized_digest = self._materialized_digest(task_def=task_def)
+        materialized_digest = self.materialized_digest(task_def=task_def)
         self._record_env_materialization(task_def=task_def, digest=materialized_digest)
 
         meta = {
@@ -1004,14 +1008,18 @@ class CacheStore:
             "pixi_lock": identity,
         }
 
-    def _materialized_digest(self, *, task_def: TaskDef) -> str | None:
+    def materialized_digest(self, *, task_def: TaskDef) -> str | None:
         """Return the digest of the task's environment as materialised here.
 
         A pure read. Every lookup path asks for this — ``load``, ``has_entry``,
         the ``--dry-run`` preview — and a read path must not open a write
-        transaction, so recording is :meth:`save`'s job.
+        transaction, so recording is :meth:`save`'s job. A remote worker
+        checks its own env against it too.
         """
         if task_def.env is None or self.backend is None:
+            return None
+        # Its executor pulls the image; a copy the driver holds is not that one.
+        if self.placement is not None and self.placement.runs_in_remote_image(task_def=task_def):
             return None
         return self.backend.materialized_digest(env=task_def.env)
 
@@ -1059,7 +1067,7 @@ class CacheStore:
         if recorded is None:
             return True
 
-        current = self._materialized_digest(task_def=task_def)
+        current = self.materialized_digest(task_def=task_def)
         if current is None:
             return True
 

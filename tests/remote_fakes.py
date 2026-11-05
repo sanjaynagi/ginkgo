@@ -13,7 +13,10 @@ import contextlib
 import hashlib
 import io
 import os
+import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -22,6 +25,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -184,44 +188,152 @@ class RoundTripExecutor(RemoteExecutor):
     workdir: Path | None = None
 
     def submit(self, *, attempt: dict) -> RemoteJobHandle:
-        from ginkgo.remote.executor_support import encode_payload, parse_worker_output
-        from ginkgo.remote.worker import main
+        from ginkgo.remote.executor_support import encode_payload
 
-        output = io.StringIO()
-        with (
-            _in_a_pod(payload=encode_payload(attempt), workdir=self.workdir),
-            contextlib.redirect_stdout(output),
-            contextlib.redirect_stderr(output),
-        ):
-            try:
-                main()
-            except SystemExit as exc:
-                exit_code = exc.code
-            else:
-                raise AssertionError("the worker returned without exiting")
-        logs = output.getvalue()
-        result = RemoteJobResult(
-            state=RemoteJobState.SUCCEEDED if exit_code == 0 else RemoteJobState.FAILED,
-            payload=parse_worker_output(logs, source_label="pod logs"),
-            exit_code=exit_code,
-            logs=logs,
+        logs, exit_code = _run_worker(
+            env={"GINKGO_WORKER_PAYLOAD": encode_payload(attempt)}, workdir=self.workdir
         )
-        return _ImmediateHandle(job_id="test-job", _result=result, logs=logs)
+        assert exit_code is not None, "the worker returned without exiting"
+        return _finished_job(logs=logs, exit_code=exit_code)
+
+
+class ContainerRoundTripExecutor(RoundTripExecutor):
+    """A :class:`RoundTripExecutor` that runs a task's own image as a step of its own.
+
+    A task with an ``image`` runs as the steps
+    :func:`~ginkgo.remote.executor_support.job_steps` lays out, in turn, and
+    a step that fails ends the job, as a failed init container fails a
+    Kubernetes pod. Each worker step goes through ``main`` as
+    :class:`RoundTripExecutor`'s pod does, with its own variables and
+    working directory. The steps share the scratch root, which stands in for
+    the volume at :data:`~ginkgo.remote.executor_support.SHARED_SCRATCH`.
+
+    This host's ``sh`` stands in for the task's image. It runs ``command.sh``
+    in an empty working directory with only ``PATH``, as a container of its
+    own would, once the fake has checked that every absolute path the script
+    names is on the shared scratch, since the image sees nothing else of the
+    job's filesystem. Records each attempt's image.
+
+    What this cannot catch: the worker steps share one process, so its
+    imports and the rest of its environment; the command runs with this
+    host's tools, user and shell rather than the image's, and without its
+    ``ENTRYPOINT``; and the path check reads ``command.sh`` as
+    text, so it misses a path the command builds at run time, a relative path
+    that climbs out of its working directory, and any path the script a
+    ``script`` task runs opens itself.
+    """
+
+    def __init__(self) -> None:
+        self.images: list[str | None] = []
+
+    def submit(self, *, attempt: dict) -> RemoteJobHandle:
+        from ginkgo.remote.executor_support import encode_payload, job_steps
+
+        self.images.append(attempt.get("image"))
+        if attempt.get("image") is None:
+            return super().submit(attempt=attempt)
+        scratch = os.environ["GINKGO_SCRATCH_ROOT"]
+        logs = ""
+        for step in job_steps(attempt):
+            if step.image is None:
+                env = {**step.env, "GINKGO_SCRATCH_ROOT": scratch}
+                output, exit_code = _run_worker(
+                    env={**env, "GINKGO_WORKER_PAYLOAD": encode_payload(attempt)},
+                    workdir=self.workdir,
+                )
+            else:
+                output, exit_code = _run_in_image(command=step.command, scratch=scratch)
+            logs += output
+            if exit_code:
+                break
+        return _finished_job(logs=logs, exit_code=exit_code or 0)
+
+
+def _run_worker(*, env: dict[str, str], workdir: Path | None) -> tuple[str, int | None]:
+    """Run the worker's entry point as a pod's container, with *env* set.
+
+    It works in *workdir*, the image's working directory, or an empty one.
+
+    Returns what it printed, stdout and stderr together, and its exit code,
+    or ``None`` if it returned without exiting.
+    """
+    from ginkgo.remote.worker import main
+
+    output = io.StringIO()
+    exit_code = None
+    with (
+        _in_a_pod(env=env, workdir=workdir),
+        contextlib.redirect_stdout(output),
+        contextlib.redirect_stderr(output),
+    ):
+        try:
+            main()
+        except SystemExit as exc:
+            exit_code = exc.code
+    return output.getvalue(), exit_code
+
+
+_ABSOLUTE_PATH = re.compile(r"(?<![\w.$])/[^\s'\"\\;|&<>()]+")
+
+
+def _run_in_image(*, command: tuple[str, ...], scratch: str) -> tuple[str, int]:
+    """Run a task step's *command* with this host's ``sh`` in place of its image.
+
+    Fails the test if ``command.sh`` names a path off the shared *scratch*,
+    other than a device, since the task's image would not have it.
+    """
+    from ginkgo.remote.executor_support import SHARED_SCRATCH
+
+    argv = [arg.replace(SHARED_SCRATCH, scratch, 1) for arg in command]
+    [script] = [arg for arg in argv if arg.endswith("command.sh")]
+    for path in _ABSOLUTE_PATH.findall(Path(script).read_text(encoding="utf-8")):
+        assert path.startswith((scratch, "/dev/")), (
+            f"command.sh names {path}, which is not on the scratch the task's image shares"
+        )
+    with _driver_temp_hidden():
+        completed = subprocess.run(
+            argv,
+            cwd=tempfile.mkdtemp(prefix="task-cwd-"),
+            env={"PATH": os.environ["PATH"]},
+            capture_output=True,
+            text=True,
+        )
+    return completed.stdout + completed.stderr, completed.returncode
+
+
+def _finished_job(*, logs: str, exit_code: int) -> _ImmediateHandle:
+    """Return the handle of a job that has exited, its result parsed from its *logs*."""
+    from ginkgo.remote.executor_support import parse_worker_output
+
+    result = RemoteJobResult(
+        state=RemoteJobState.SUCCEEDED if exit_code == 0 else RemoteJobState.FAILED,
+        payload=parse_worker_output(logs, source_label="pod logs"),
+        exit_code=exit_code,
+        logs=logs,
+    )
+    return _ImmediateHandle(job_id="test-job", _result=result, logs=logs)
 
 
 @contextlib.contextmanager
-def _in_a_pod(*, payload: str, workdir: Path | None) -> Iterator[None]:
-    """Give the worker a pod's surroundings: its payload, and its own directories."""
+def _in_a_pod(*, env: dict[str, str], workdir: Path | None) -> Iterator[None]:
+    """Give the worker a pod's surroundings: its variables, and its own directories.
+
+    The driver's environment, working directory, umask and ``sys.path`` are
+    restored afterwards, so it never holds the payload, and the rest of the
+    session runs as it would have.
+    """
     driver_cwd = Path.cwd()
-    with _driver_temp_hidden():
+    driver_path = list(sys.path)
+    driver_umask = os.umask(0o022)
+    os.umask(driver_umask)
+    with _driver_temp_hidden(), mock.patch.dict(os.environ, env):
         os.chdir(workdir or tempfile.mkdtemp(prefix="pod-cwd-"))
-        os.environ["GINKGO_WORKER_PAYLOAD"] = payload
         try:
             yield
         finally:
-            # The driver never has the payload in its environment.
-            os.environ.pop("GINKGO_WORKER_PAYLOAD", None)
             os.chdir(driver_cwd)
+            os.umask(driver_umask)
+            sys.path[:] = driver_path
 
 
 @contextlib.contextmanager
@@ -255,14 +367,19 @@ class RemoteRoundTrip:
     pod_scratch: Path
 
 
-def evaluate_remotely(expr: Any, *, event_bus: Any = None) -> Any:
-    """Evaluate *expr* with every remote task run by a :class:`RoundTripExecutor`.
+def evaluate_remotely(
+    expr: Any, *, event_bus: Any = None, executor: RemoteExecutor | None = None
+) -> Any:
+    """Evaluate *expr* with every remote task run by *executor*.
 
-    The run directory gives tasks log files, as ``ginkgo run`` does; read
-    them with :func:`task_stdout_log`.
+    The executor defaults to a :class:`RoundTripExecutor`. The run directory
+    gives tasks log files, as ``ginkgo run`` does; read them with
+    :func:`task_stdout_log`.
     """
     kwargs: dict[str, Any] = {
-        "executor_registry": ExecutorRegistry.for_executor(RoundTripExecutor(), name="remote"),
+        "executor_registry": ExecutorRegistry.for_executor(
+            executor or RoundTripExecutor(), name="remote"
+        ),
         "run_dir": RunDir.create(run_id=uuid.uuid4().hex, root=Path.cwd() / "runs"),
     }
     if event_bus is not None:

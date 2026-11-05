@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import suppress
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
 
 from ginkgo.remote.executor_support import (
+    SHARED_SCRATCH,
+    TASK_STEP,
     encode_payload,
     generate_job_name,
+    job_steps,
     parse_worker_output,
     payload_requires_fuse,
 )
@@ -71,7 +75,8 @@ class KubernetesExecutor:
     service_account : str | None
         Kubernetes service account for the pod.
     pull_policy : str
-        Image pull policy (``IfNotPresent``, ``Always``, ``Never``).
+        Image pull policy (``IfNotPresent``, ``Always``, ``Never``), for the
+        worker image and a container-env task's own image alike.
     gpu_type : str | None
         Accelerator type for GPU tasks (e.g. ``"nvidia-l4"``). When a task
         requests GPUs and this is set, the pod gets a node selector
@@ -90,11 +95,16 @@ class KubernetesExecutor:
         job as failed. Catches quota, capacity, and node-affinity issues
         (e.g. GPU stockouts) that would otherwise leave pods Pending
         indefinitely.
+    image_pull_timeout : float
+        Seconds a container may wait on an image it cannot pull (a bad tag,
+        missing pull credentials) before the job is treated as failed and
+        deleted. A registry error that clears within this time is tolerated.
     ephemeral_storage : str
         Default ephemeral-storage request/limit for worker pods (e.g.
         ``"10Gi"``). Must be large enough to hold the code bundle plus
         any ``file``/``folder`` inputs hydrated from the remote artifact
-        store into ``/tmp``. GKE Autopilot's general-purpose compute
+        store into ``/tmp``, or into the ``emptyDir`` the containers of a
+        container-env task share. GKE Autopilot's general-purpose compute
         class caps this at 10Gi per pod; workloads that need more must
         either raise it via a larger compute class (``balanced``,
         ``performance``) or mount a separate PVC for the scratch dir.
@@ -114,7 +124,8 @@ class KubernetesExecutor:
     pod_labels : dict[str, str] | None
         Labels for every worker pod and Job.
     image_pull_secrets : list[str] | None
-        Names of the Secrets used to pull a private worker image.
+        Names of the Secrets used to pull a private worker image, or a
+        container-env task's own image.
     """
 
     namespace: str = "default"
@@ -127,6 +138,7 @@ class KubernetesExecutor:
     tolerations: list[dict[str, Any]] | None = None
     ttl_seconds_after_finished: int = 3600
     unschedulable_timeout: float = 300.0
+    image_pull_timeout: float = 300.0
     ephemeral_storage: str = "10Gi"
     backoff_limit: int = 0
     fuse_image: str | None = None
@@ -201,35 +213,66 @@ class KubernetesExecutor:
         if gpu > 0:
             resource_limits["nvidia.com/gpu"] = str(gpu)
 
-        container_kwargs: dict[str, Any] = {
-            "name": "ginkgo-worker",
-            "image": self.fuse_image if (fuse_required and self.fuse_image) else self.image,
-            "image_pull_policy": self.pull_policy,
-            "command": ["python", "-m", "ginkgo.remote.worker"],
-            "env": [
-                *(
-                    k8s_client.V1EnvVar(name=name, value=str(value))
-                    for name, value in (self.env or {}).items()
-                ),
-                k8s_client.V1EnvVar(
-                    name="GINKGO_WORKER_PAYLOAD",
-                    value=encode_payload(attempt),
-                ),
-            ],
-            "resources": k8s_client.V1ResourceRequirements(
-                requests=resource_requests,
-                limits=resource_limits,
+        # Several steps run one after another as init containers, then the
+        # last as the pod's one container, all mounting the scratch they
+        # share. Each holds the task's resources only while it runs.
+        steps = job_steps(attempt)
+        shared = len(steps) > 1
+        worker_env = [
+            *(
+                k8s_client.V1EnvVar(name=name, value=str(value))
+                for name, value in (self.env or {}).items()
             ),
-        }
-        if fuse_required and self.fuse_privileged:
-            container_kwargs["security_context"] = k8s_client.V1SecurityContext(privileged=True)
-        container = k8s_client.V1Container(**container_kwargs)
+            k8s_client.V1EnvVar(name="GINKGO_WORKER_PAYLOAD", value=encode_payload(attempt)),
+        ]
+        worker_image = self.fuse_image if (fuse_required and self.fuse_image) else self.image
+        privileged = (
+            k8s_client.V1SecurityContext(privileged=True)
+            if fuse_required and self.fuse_privileged
+            else None
+        )
+        volume_mounts = (
+            [k8s_client.V1VolumeMount(name="ginkgo-scratch", mount_path=SHARED_SCRATCH)]
+            if shared
+            else None
+        )
+        containers = []
+        for step in steps:
+            is_worker = step.image is None
+            env = [
+                *(worker_env if is_worker else ()),
+                *(k8s_client.V1EnvVar(name=name, value=value) for name, value in step.env.items()),
+            ]
+            containers.append(
+                k8s_client.V1Container(
+                    name=step.name,
+                    image=worker_image if is_worker else step.image,
+                    image_pull_policy=self.pull_policy,
+                    # The task's image keeps its own entrypoint (see JobStep).
+                    command=list(step.command) if is_worker else None,
+                    args=None if is_worker else list(step.command),
+                    env=env or None,
+                    resources=k8s_client.V1ResourceRequirements(
+                        requests=resource_requests,
+                        limits=resource_limits,
+                    ),
+                    security_context=privileged if is_worker else None,
+                    volume_mounts=volume_mounts,
+                )
+            )
 
         job_name = generate_job_name(attempt)
         pod_spec_kwargs: dict[str, Any] = {
-            "containers": [container],
+            "init_containers": containers[:-1] or None,
+            "containers": containers[-1:],
             "restart_policy": "Never",
         }
+        if shared:
+            pod_spec_kwargs["volumes"] = [
+                k8s_client.V1Volume(
+                    name="ginkgo-scratch", empty_dir=k8s_client.V1EmptyDirVolumeSource()
+                )
+            ]
         if self.service_account is not None:
             pod_spec_kwargs["service_account_name"] = self.service_account
         if self.image_pull_secrets:
@@ -294,6 +337,7 @@ class KubernetesExecutor:
             job_name=created.metadata.name,
             namespace=self.namespace,
             unschedulable_timeout=self.unschedulable_timeout,
+            image_pull_timeout=self.image_pull_timeout,
             _batch_api=batch_api,
             _core_api=core_api,
         )
@@ -314,10 +358,14 @@ class KubernetesJobHandle:
     job_name: str
     namespace: str
     unschedulable_timeout: float = 300.0
+    image_pull_timeout: float = 300.0
     _batch_api: Any = field(repr=False)
     _core_api: Any = field(repr=False)
     _unschedulable_since: float | None = field(default=None, init=False, repr=False)
     _unschedulable_reason: str | None = field(default=None, init=False, repr=False)
+    _pull_failing_since: float | None = field(default=None, init=False, repr=False)
+    _pull_failure: str | None = field(default=None, init=False, repr=False)
+    _failure: Exception | None = field(default=None, init=False, repr=False)
     _job_observed: bool = field(default=False, init=False, repr=False)
     _terminal_state: Any = field(default=None, init=False, repr=False)
     _terminal_logs: str | None = field(default=None, init=False, repr=False)
@@ -368,6 +416,17 @@ class KubernetesJobHandle:
             if condition.type in {"Failed", "FailureTarget"} and condition.status == "True":
                 return self._mark_terminal(RemoteJobState.FAILED)
 
+        # A container that cannot pull its image is failed explicitly so
+        # ginkgo does not wait forever, and deleted, since its pod would hold
+        # its node or quota forever. ``status.active`` counts Pending pods
+        # too, so it is checked whatever the Job reports.
+        if self._check_image_pull_timeout():
+            self._failure = RuntimeError(f"Kubernetes pod could not start: {self._pull_failure}")
+            state = self._mark_terminal(RemoteJobState.FAILED)
+            with suppress(Exception):
+                self.cancel()
+            return state
+
         if status.active and status.active > 0:
             self._unschedulable_since = None
             self._unschedulable_reason = None
@@ -378,6 +437,8 @@ class KubernetesJobHandle:
         # or node-affinity failure) is failed explicitly so ginkgo does
         # not wait forever.
         if self._check_unschedulable_timeout():
+            reason = self._unschedulable_reason or "pod unschedulable"
+            self._failure = RuntimeError(f"Kubernetes pod unschedulable: {reason}")
             return self._mark_terminal(RemoteJobState.FAILED)
         return RemoteJobState.PENDING
 
@@ -392,12 +453,19 @@ class KubernetesJobHandle:
                 self._terminal_logs = self.logs_tail(lines=1000)
             except Exception:
                 self._terminal_logs = ""
+            if state == RemoteJobState.FAILED and self._failure is None:
+                with suppress(Exception):
+                    pods = self._core_api.list_namespaced_pod(
+                        namespace=self.namespace,
+                        label_selector=f"job-name={self.job_name}",
+                    )
+                    self._failure = _task_container_failure(_latest_pod(pods.items))
         return state
 
     _POD_CHECK_INTERVAL = 15.0
 
-    def _check_unschedulable_timeout(self) -> bool:
-        """Return True if the pod has been unschedulable for too long."""
+    def _pods(self) -> Any:
+        """Return the Job's pods, listed at most every ``_POD_CHECK_INTERVAL``."""
         now = time.monotonic()
         if now - self._last_pod_check >= self._POD_CHECK_INTERVAL or self._last_pod_list is None:
             self._last_pod_list = self._core_api.list_namespaced_pod(
@@ -405,7 +473,11 @@ class KubernetesJobHandle:
                 label_selector=f"job-name={self.job_name}",
             )
             self._last_pod_check = now
-        pods = self._last_pod_list
+        return self._last_pod_list
+
+    def _check_unschedulable_timeout(self) -> bool:
+        """Return True if the pod has been unschedulable for too long."""
+        pods = self._pods()
         if not pods.items:
             return False
         pod = pods.items[0]
@@ -421,6 +493,21 @@ class KubernetesJobHandle:
             self._unschedulable_since = now
         self._unschedulable_reason = f"{scheduled_condition.reason}: {scheduled_condition.message}"
         return now - self._unschedulable_since >= self.unschedulable_timeout
+
+    def _check_image_pull_timeout(self) -> bool:
+        """Return True once a container has been unable to pull its image for too long."""
+        pods = self._pods()
+        failure = _image_pull_failure(_latest_pod(pods.items)) if pods.items else None
+        if failure is None:
+            self._pull_failing_since = None
+            self._pull_failure = None
+            return False
+
+        now = time.monotonic()
+        if self._pull_failing_since is None:
+            self._pull_failing_since = now
+        self._pull_failure = failure
+        return now - self._pull_failing_since >= self.image_pull_timeout
 
     def result(self) -> RemoteJobResult:
         """Read the worker result from pod logs.
@@ -443,17 +530,12 @@ class KubernetesJobHandle:
             logs = self._terminal_logs
         else:
             logs = self.logs_tail(lines=1000)
-        if current == RemoteJobState.FAILED and self._unschedulable_since is not None:
-            reason = self._unschedulable_reason or "pod unschedulable"
-            payload = {
-                "ok": False,
-                "error": {
-                    "type": "RuntimeError",
-                    "module": "builtins",
-                    "message": f"Kubernetes pod unschedulable: {reason}",
-                    "args": [f"Kubernetes pod unschedulable: {reason}"],
-                },
-            }
+        # A job ginkgo failed itself, as stuck, or whose task container
+        # failed before stage-out, has no result of its own to report.
+        if self._failure is not None:
+            from ginkgo.runtime.worker import error_response
+
+            payload = error_response(self._failure)
         else:
             payload = parse_worker_output(logs, source_label="pod logs")
 
@@ -490,6 +572,9 @@ class KubernetesJobHandle:
         several pods (e.g. the first was preempted and retried). The
         worker output we care about lives on the most recent pod, so
         we sort by creation timestamp and read that one.
+
+        A pod with init containers gets each container's log in the order
+        they ran, so the worker's result line is still last.
         """
         pods = self._core_api.list_namespaced_pod(
             namespace=self.namespace,
@@ -498,21 +583,79 @@ class KubernetesJobHandle:
         if not pods.items:
             return ""
 
-        latest_pod = max(
-            pods.items,
-            key=lambda p: p.metadata.creation_timestamp or 0,
-        )
-        pod_name = latest_pod.metadata.name
+        latest_pod = _latest_pod(pods.items)
+        spec = latest_pod.spec
+        containers = [*(spec.init_containers or []), *spec.containers]
+        logs = [
+            self._container_log(pod=latest_pod.metadata.name, container=c.name, lines=lines)
+            for c in containers
+        ]
+        return "".join(log if log.endswith("\n") else f"{log}\n" for log in logs if log)
+
+    def _container_log(self, *, pod: str, container: str, lines: int) -> str:
+        """Return the last *lines* lines of one container's log, or ``""`` if it has none."""
         try:
             resp = self._core_api.read_namespaced_pod_log(
-                name=pod_name,
+                name=pod,
                 namespace=self.namespace,
+                container=container,
                 tail_lines=lines,
                 _preload_content=False,
             )
             return resp.read().decode("utf-8", errors="replace")
         except Exception:
             return ""
+
+
+def _latest_pod(pods: list[Any]) -> Any:
+    """Return the most recently created of a Job's *pods*, the one still running it."""
+    return max(pods, key=lambda p: p.metadata.creation_timestamp or 0)
+
+
+_IMAGE_PULL_FAILURES = frozenset(
+    {"ErrImagePull", "ImagePullBackOff", "ErrImageNeverPull", "InvalidImageName"}
+)
+"""The reasons a container waits because it cannot pull its image."""
+
+
+def _image_pull_failure(pod: Any) -> str | None:
+    """Return why a container of *pod*, init or main, cannot pull its image, if one cannot."""
+    statuses = [
+        *(pod.status.init_container_statuses or []),
+        *(pod.status.container_statuses or []),
+    ]
+    for status in statuses:
+        waiting = status.state.waiting if status.state is not None else None
+        if waiting is not None and waiting.reason in _IMAGE_PULL_FAILURES:
+            return (
+                f"container {status.name!r} cannot pull image {status.image!r}: "
+                f"{waiting.reason}: {waiting.message}"
+            )
+    return None
+
+
+def _task_container_failure(pod: Any) -> Exception | None:
+    """Return how a container task's own container in *pod* failed, if it did.
+
+    Its command records its exit status rather than exiting with it, so the
+    container fails only when it is killed, by an OOM say, or cannot run the
+    command. Either fails the pod before stage-out can report the result, so
+    the container's exit code is reported as a failed command's, which
+    ``retry_on_exit_codes`` matches: 137 for an OOM kill, as on your machine.
+    """
+    from ginkgo.runtime.task_runners.shell import ShellTaskError
+
+    for status in pod.status.init_container_statuses or []:
+        terminated = status.state.terminated if status.state is not None else None
+        if status.name == TASK_STEP and terminated is not None and terminated.exit_code != 0:
+            reason = f" ({terminated.reason})" if terminated.reason else ""
+            message = (
+                f"Kubernetes container {TASK_STEP!r} failed with exit code "
+                f"{terminated.exit_code}{reason} before stage-out could report the "
+                "result. Any outputs its command wrote were lost with the pod."
+            )
+            return ShellTaskError.reported(message=message, exit_code=terminated.exit_code)
+    return None
 
 
 def build_kubernetes_executor(settings: Mapping[str, Any]) -> KubernetesExecutor:

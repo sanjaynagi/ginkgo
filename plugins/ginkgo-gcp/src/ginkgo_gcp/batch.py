@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ginkgo.remote.executor_support import (
+    SHARED_SCRATCH,
     encode_payload,
     generate_job_name,
+    job_steps,
     parse_worker_output,
     payload_requires_fuse,
 )
@@ -26,6 +28,9 @@ from ginkgo.runtime.remote_executor import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SHARED_HOST_DIR = "/var/tmp/ginkgo-scratch"
+"""The directory on a task's VM its runnables share, on the boot disk."""
 
 
 @dataclass(kw_only=True)
@@ -106,21 +111,35 @@ class GCPBatchExecutor:
             )
         fuse_required = payload_requires_fuse(attempt)
 
-        # Container configuration.
-        container_kwargs: dict[str, Any] = {
-            "image_uri": self.fuse_image if (fuse_required and self.fuse_image) else self.image,
-            "commands": ["python", "-m", "ginkgo.remote.worker"],
-        }
-        if fuse_required and self.fuse_privileged:
-            container_kwargs["options"] = "--privileged"
-        container = batch_v1.Runnable.Container(**container_kwargs)
-
-        runnable = batch_v1.Runnable(
-            container=container,
-            environment=batch_v1.Environment(
-                variables={"GINKGO_WORKER_PAYLOAD": encode_payload(attempt)},
-            ),
-        )
+        # The task's runnables run in order on one VM, sharing a host
+        # directory. A task's own image may exit non-zero without stopping
+        # stage-out, which reports the result.
+        steps = job_steps(attempt)
+        worker_image = self.fuse_image if (fuse_required and self.fuse_image) else self.image
+        privileged = "--privileged" if fuse_required and self.fuse_privileged else ""
+        volumes = [f"{_SHARED_HOST_DIR}:{SHARED_SCRATCH}"] if len(steps) > 1 else []
+        payload = encode_payload(attempt)
+        runnables = []
+        for step in steps:
+            is_worker = step.image is None
+            # The task's image keeps its own entrypoint (see JobStep), and
+            # Batch passes it the commands; an empty entrypoint is unset.
+            entrypoint, *commands = step.command if is_worker else ("", *step.command)
+            container = batch_v1.Runnable.Container(
+                image_uri=worker_image if is_worker else step.image,
+                entrypoint=entrypoint,
+                commands=commands,
+                volumes=volumes,
+                options=privileged if is_worker else "",
+            )
+            env = {"GINKGO_WORKER_PAYLOAD": payload} if is_worker else {}
+            runnables.append(
+                batch_v1.Runnable(
+                    container=container,
+                    environment=batch_v1.Environment(variables={**env, **step.env}),
+                    ignore_exit_status=not is_worker,
+                )
+            )
 
         # Compute resources.
         compute = batch_v1.ComputeResource(
@@ -130,7 +149,7 @@ class GCPBatchExecutor:
             compute.memory_mib = memory_gb * 1024
 
         task_spec = batch_v1.TaskSpec(
-            runnables=[runnable],
+            runnables=runnables,
             compute_resource=compute,
             max_retry_count=0,
             max_run_duration=self.max_run_duration,
@@ -322,8 +341,8 @@ class GCPBatchJobHandle:
                 if isinstance(entry.payload, str):
                     log_lines.append(entry.payload)
                 elif isinstance(entry.payload, dict):
-                    # Cloud Logging stores structured output as jsonPayload;
-                    # serialize back to JSON so parse_worker_output can find it.
+                    # Cloud Logging stores a JSON line, such as one a task's
+                    # command printed, as jsonPayload; serialize it back.
                     log_lines.append(json.dumps(entry.payload))
                 else:
                     log_lines.append(str(entry.payload))

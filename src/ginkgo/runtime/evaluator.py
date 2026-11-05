@@ -434,6 +434,7 @@ class ConcurrentEvaluator:
             index=self._cache_index,
             backend=self.backend,
             publisher=load_remote_publisher(),
+            placement=self.placement,
             hash_memo=self._hash_memo,
             trust_mtimes=self.trust_mtimes,
         )
@@ -610,7 +611,9 @@ class ConcurrentEvaluator:
             try:
                 # Validate all statically declared environments before any work
                 # starts. Inside the try, so a refusal closes the run's tasks too.
-                self._validator.validate_declared_envs(nodes=self.graph.nodes.values())
+                self._validator.validate_declared_envs(
+                    nodes=self.graph.nodes.values(), placement=self.placement
+                )
                 self._validator.validate_declared_secrets(nodes=self.graph.nodes.values())
                 while True:
                     if signals.exception is not None and self._failure is None:
@@ -903,6 +906,9 @@ class ConcurrentEvaluator:
     def _prepare_task_environment(self, *, node: NodeRun) -> None:
         """Materialize any external execution environment required by a task."""
         if node.task_def.env is None or self.backend is None:
+            return
+        # Its executor pulls the image, where the command runs.
+        if self.placement.runs_in_remote_image(task_def=node.task_def):
             return
 
         self._emit_task_event(
@@ -1846,12 +1852,10 @@ class ConcurrentEvaluator:
             "env": node.task_def.env,
             # A remote worker searches for the env where the driver did, and
             # checks that the env it finds is this one, locked as it is here.
-            "env_workflow_root": self._env_workflow_root(),
+            "env_workflow_root": self._env_workflow_root(executor_name=node.executor_name),
             "env_identity": self._env_identity(env=node.task_def.env),
-            "env_materialized_digest": (
-                self.backend.materialized_digest(env=node.task_def.env)
-                if node.task_def.env is not None and self.backend is not None
-                else None
+            "env_materialized_digest": self._cache_store.materialized_digest(
+                task_def=node.task_def
             ),
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
@@ -2146,6 +2150,9 @@ class ConcurrentEvaluator:
             return
         if node.task_def.env is None or self.backend is None:
             return
+        # The image the driver holds, if any, is not the one the executor ran.
+        if self.placement.runs_in_remote_image(task_def=node.task_def):
+            return
 
         fields = self.backend.provenance_fields(env=node.task_def.env)
         lock_path = self.backend.env_lock_path(env=node.task_def.env)
@@ -2210,23 +2217,28 @@ class ConcurrentEvaluator:
             return None
         return self.backend.env_identity(env=env) or None
 
-    def _env_workflow_root(self) -> str | None:
-        """Return where named envs are searched for, relative to the project root.
+    def _env_workflow_root(self, *, executor_name: str | None) -> str | None:
+        """Return where named envs are searched for, relative to a remote worker's root.
 
-        A remote worker roots its search there, in the code bundle or its
-        image's working directory, which stand in for the project root.
-        ``None`` when the backend names no such directory inside the project.
+        A worker on *executor_name* roots its search in the code bundle, which
+        holds the code package's parent, when the executor syncs code, and
+        otherwise in its image's working directory, which stands in for the
+        project root. ``None`` when the backend names no such directory there.
         """
         if not isinstance(self.backend, EnvironmentRouter):
             return None
         context = self.backend.context
         if context.workflow_root is None:
             return None
+        root = context.project_root
+        code = self.executor_registry.code_config(executor_name) if executor_name else None
+        if code is not None and code.get("mode") == "sync" and code.get("package"):
+            root = (root / code["package"]).parent
         workflow_root = context.workflow_root.resolve()
-        project_root = context.project_root.resolve()
-        if not workflow_root.is_relative_to(project_root):
+        root = root.resolve()
+        if not workflow_root.is_relative_to(root):
             return None
-        return workflow_root.relative_to(project_root).as_posix()
+        return workflow_root.relative_to(root).as_posix()
 
     def _annotate_task(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None:
         """Attach open-ended facts to a task node."""

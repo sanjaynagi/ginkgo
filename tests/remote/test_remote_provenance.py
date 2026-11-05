@@ -201,7 +201,7 @@ class TestWorkerCodeBundle:
         captured: dict[str, Any] = {}
 
         def fake_run_task(
-            received: dict[str, Any], *, artifact_store: Any, backend: Any
+            received: dict[str, Any], *, artifact_store: Any, **_: Any
         ) -> dict[str, Any]:
             captured["payload"] = received
             return {"ok": True, "result_encoding": "inline", "result": None}

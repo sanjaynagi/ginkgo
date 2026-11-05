@@ -7,12 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import Out, file, script, secret, shell, task
+from ginkgo import Out, file, remote_file, script, secret, shell, task
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.task_runners.shell import ShellTaskError
+from ginkgo.runtime.task_validation import TaskValidator
 from tests.conftest import EventCollector
 from tests.remote_fakes import (
     RemoteRoundTrip,
@@ -74,11 +75,6 @@ def script_logs_to_a_file(src: file, dest: Out[file]):
 @task(kind="shell")
 def echoes(token: str, dest: Out[file]):
     return shell(cmd=f"echo from-the-command {token}; echo err-line >&2; echo ok > {dest}")
-
-
-@task(kind="shell", env="docker://alpine:3.20")
-def in_a_container(dest: Out[file]):
-    return shell(cmd=f"echo hi > {dest}")
 
 
 def test_a_shell_command_reads_and_writes_pod_paths(
@@ -198,10 +194,10 @@ def test_the_commands_output_reaches_the_task_log_redacted(tmp_path: Path) -> No
     assert "super-secret" not in text
 
 
-def test_a_container_env_on_a_remote_executor_fails_before_the_run(tmp_path: Path) -> None:
-    collector = EventCollector()
-
-    with pytest.raises(ValueError, match="a remote worker cannot run a task in its own env"):
-        evaluate_remotely(in_a_container(dest=str(tmp_path / "x")), event_bus=collector.bus)
-
-    assert collector.started() == []
+def test_a_remote_input_passes_the_command_path_check() -> None:
+    # Its path exists only once the worker has fetched it, so the driver
+    # cannot check it for spaces.
+    TaskValidator().validate_command_paths(
+        task_def=shout,
+        args={"src": remote_file("s3://bucket/in.txt"), "dest": "out.txt"},
+    )

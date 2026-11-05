@@ -7,9 +7,9 @@ driver; otherwise every task whose kind is `remote_capable` (`python`, `shell`
 and `script`) goes to the run's *default* executor (`--executor`), and the rest
 run on the driver. Notebook and subworkflow tasks therefore run on the driver
 for now, even under `--executor`. Naming an executor on a kind that is not
-remote-capable is a build error, as is a remote task that declares a container
-`env=` and a locally placed task whose `gpu` requirement exceeds the local
-`--gpus` budget — a task never silently runs somewhere its requirement cannot be met. Cached tasks are never dispatched:
+remote-capable is a build error, as is a locally placed task whose `gpu`
+requirement exceeds the local `--gpus` budget — a task never silently runs
+somewhere its requirement cannot be met. Cached tasks are never dispatched:
 placement is resolved only after a cache miss. Remote-placed tasks consume a
 `--jobs` slot but no local core/memory/GPU budget; their resources are
 satisfied by the executor.
@@ -50,14 +50,21 @@ The evaluator dispatches remote work through a `RemoteExecutor` protocol
 - `RemoteJobHandle.result()` → `RemoteJobResult` (blocking wait + result)
 - `RemoteJobHandle.cancel()` / `RemoteJobHandle.logs_tail()`
 
+The attempt is the worker payload plus `resources` and, for a task with a
+container env, `image`: the image its command runs in, which the executor
+pulls with its own pull policy and credentials.
+
 This keeps executor implementations fully decoupled from the scheduling loop.
 The evaluator polls handles on dedicated watcher threads and processes results
 through the same code path as local worker completions.
 
 `remote/executor_support.py` holds the helpers an executor plugin uses to speak
-the worker protocol: `encode_payload` (the `GINKGO_WORKER_PAYLOAD` value),
-`generate_job_name`, `payload_requires_fuse`, and `parse_worker_output` (the
-worker's JSON result line, read from job logs).
+the worker protocol: `job_steps` (the containers a job runs, in order),
+`encode_payload` (the `GINKGO_WORKER_PAYLOAD` value), `generate_job_name`,
+`payload_requires_fuse`, and `parse_worker_output` (the worker's result line,
+read from job logs). The worker prints that line with `format_worker_result`:
+its JSON after `RESULT_PREFIX`, so that nothing a task's command prints into
+the same logs, JSON or not, is taken for it.
 
 ## Executor Implementations
 
@@ -71,14 +78,21 @@ requests: `threads` → CPU, `memory` → memory, `gpu` → `nvidia.com/gpu`. GP
 tasks receive a `cloud.google.com/gke-accelerator` node selector when an
 accelerator type is available — `@task(gpu_type=...)` per task, falling back
 to the executor-level `gpu_type` — enabling automatic GPU node provisioning
-on GKE Autopilot.
+on GKE Autopilot. A job with several steps runs all but the last as init
+containers, which Kubernetes runs one at a time, and the last as the pod's one
+container; they share an `emptyDir`. `logs_tail` reads every container's log
+in that order, so the result line is still last.
 
 **GCPBatchExecutor** (`ginkgo_gcp/batch.py`, distribution ginkgo-gcp, type
 `batch`) submits jobs to GCP Batch, a
 serverless batch compute service. No cluster required — each job runs on
 Google-managed infrastructure. GPU tasks use the Batch accelerator allocation
 policy; a GPU task with no accelerator type (task-level or executor-level) is
-rejected at submit rather than silently scheduled without a GPU. Job logs are retrieved from Cloud Logging.
+rejected at submit rather than silently scheduled without a GPU. A job's steps
+are runnables in one task, which Batch runs in order on one VM and which share a
+host directory; the task's own image is `ignore_exit_status`, so stage-out
+runs even when that image's container fails. Job logs are retrieved from Cloud
+Logging.
 
 ## Remote Worker
 
@@ -99,30 +113,90 @@ The worker entry point (`remote/worker.py`) runs as
    marked `ran_directive` so the driver completes the task with it, and a
    failed command's exit code travels in the error so `retry_on_exit_codes`
    still applies. For a task with a Pixi `env=`, the worker first builds an
-   `EnvironmentRouter` rooted at the extracted code bundle (or its working
-   directory without one), which stands in for the driver's project root.
-   It searches the env directory the driver searched, which the payload
-   names relative to that root, rather than discovering one. It checks the
+   `EnvironmentRouter` rooted at the extracted code bundle, which stands in
+   for the code package's parent directory, or without one at its working
+   directory, which stands in for the driver's project root. It searches the
+   env directory the driver searched, which the payload names relative to
+   that root, rather than discovering one. It checks the
    env's `env_identity` (its manifest) and `materialized_digest` (its lock)
    against the driver's, sent in the payload, and fails the task naming the
    env if either differs. Then it runs `prepare` with the context's `locked`
    set, so `pixi install --locked` installs that lock or fails, never
    solving the env, before the command runs through the env's `exec_argv`.
-   A remote task with a container `env=` is rejected at placement, since the
-   worker has no container runtime. A directive naming a `log=` file fails
-   in the worker before its command runs, since nothing would bring the file
-   back
-5. Uploads outputs and large result values, then prints a JSON result line to
+   A task with a container `env=` runs its command in that image instead, as
+   the next section describes. A directive naming a `log=` file fails in the
+   worker before its command runs, since nothing would bring the file back
+5. Uploads outputs and large result values, then prints its result line to
    stdout for the handle to parse. A result holding task expressions is
    pickled whole with its `file`/`folder` leaves uploaded beside it, and the
    driver expands it as it would a local task's
+
+A task with a container env cannot run its command in the worker's image, and a
+pod cannot start a container of its own, so its job splits around one
+(`executor_support.job_steps`). Every step mounts a shared scratch volume at
+`SHARED_SCRATCH`, which the worker steps use as their scratch root, so the
+command's paths are the same in each:
+
+1. **Stage-in** (worker image, `GINKGO_WORKER_PHASE=stage-in`) does steps 1-3,
+   then `run_task` calls the body and the kind's runner with `_StageIn` as its
+   shell runner. Where a local runner would start a subprocess, `_StageIn`
+   writes `ginkgo-command/command.sh`: the command in strict mode under `bash`
+   when the image has it, else `sh`,
+   with the variables the local runner exports (`GINKGO_THREADS` and the like),
+   redirecting its stdout, stderr and exit code to files beside it. It then
+   raises `CommandHandedOff`, which `run_task` reports as handed off, and the
+   worker pickles the prepared payload for stage-out. A task that fails, or
+   returns no directive, before the command is finished here instead, and its
+   result saved for stage-out to print.
+2. **Task** (the task's image) runs `sh command.sh`, which first `cd`s into
+   that directory. The executor passes `sh command.sh` to the image's own
+   `ENTRYPOINT`, as `docker run` does for a local container task, and replaces
+   only the worker steps' entrypoints. It needs no Python, and
+   gets neither the payload nor the executor's environment. The script
+   exits 0, recording the command's status instead, so the next step runs.
+   The container fails only when it is killed (an OOM kills the whole
+   container) or cannot run the script (no `sh`, an `ENTRYPOINT` that does
+   not run its arguments), and then the command's outputs are lost. On
+   Kubernetes that fails the pod before stage-out, so `KubernetesJobHandle`
+   reports the `task` container's exit code and reason as a `ShellTaskError`,
+   which `retry_on_exit_codes` matches (137 for an OOM kill). On Batch,
+   stage-out runs and fails the task for the missing exit code, since Batch
+   does not report a runnable's exit status to the next one.
+3. **Stage-out** (worker image, `GINKGO_WORKER_PHASE=stage-out`) loads the
+   payload and runs the body and runner again with `_StageOut`, which leaves
+   the declared outputs in place and, for the command, replays the recorded
+   output and exit code through `ShellRunner.run_subprocess`. So the runner
+   checks the outputs, raises `ShellTaskError` with the exit code, and redacts
+   secrets into the log exactly as it does around a local command. Then step 5.
+
+Each step works in the same directory on the volume (`_enter_task_workdir`):
+the extracted code bundle, which stands in for the code package's parent
+directory, or, with no bundle, an empty `ginkgo-work` directory, since a baked
+project is only in the worker's image. That parent is the project root a local
+container task runs in only when the package sits at the project root: for a
+nested package, `package = "src/wf"`, it is `src/`, and nothing beside the
+package is in the bundle. So the body, the command
+and the output checks resolve a relative path alike. Placement rejects a
+script task in its own image on an executor that bakes its code, since that
+image could not see the script.
+
+A task without a container env runs the same phases in one worker container.
+The command ran in another container, so it has no measured usage, and its
+inputs are always downloaded rather than mounted, since a mount in the worker's
+container would not reach it. The driver neither validates nor pulls the image,
+and records no image digest for it, even when it holds a copy: the cache key
+names the image as declared, as for a local container task, and its cache
+entry is never checked against the driver's copy.
 
 The same worker image serves both K8s and GCP Batch executors. It installs
 core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a
 worker can stage and publish to any supported store, and the `pixi` binary
 with ginkgo-pixi, so it can install a task's Pixi env. It needs no executor
 plugin, since it runs tasks and never submits them; ginkgo-gcp brings the Batch
-client libraries along with its `gs://` store regardless.
+client libraries along with its `gs://` store regardless. A task that streams
+an input runs in the executor's `fuse_image` instead, whatever its env, so
+`Dockerfile.worker-fuse` installs the same plugins and `pixi` beside the FUSE
+drivers.
 
 ## Code Sync
 

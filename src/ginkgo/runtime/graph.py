@@ -229,7 +229,7 @@ class TaskGraph:
             raises it.
         """
         nodes = list(self.nodes.values())
-        validator.validate_declared_envs(nodes=nodes)
+        validator.validate_declared_envs(nodes=nodes, placement=placement)
         validator.validate_declared_secrets(nodes=nodes)
 
         # A `file`/`folder` input that does not exist yet is normally a static

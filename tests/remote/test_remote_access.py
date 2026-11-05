@@ -614,6 +614,7 @@ class _MockTaskDef:
     executor: str | None = "remote"
     gpu: int = 0
     kind: str = "python"
+    env: str | None = None
     remote_input_access: str | None = None
     streaming_compatible: bool = True
     fuse_prefetch: tuple = ()

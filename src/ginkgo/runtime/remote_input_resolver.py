@@ -55,6 +55,7 @@ from ginkgo.remote.access.resolver import (
     resolve_access,
 )
 from ginkgo.remote.staging import DEFAULT_STAGING_JOBS, StagingCache, resolve_identities
+from ginkgo.runtime.placement import remote_image
 from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -439,8 +440,11 @@ class RemoteStager:
         access_config = self._get_access_config()
         # A driver kind's body runs on the scheduler or in a driver
         # subprocess, not through ``run_task``, so it has no mount lifecycle:
-        # its inputs are downloaded here.
-        if not dispatches_remote and task_kind(task_def).execution_mode == "driver":
+        # its inputs are downloaded here. Remotely in a container env, its
+        # command runs in another container than the worker's mounts, so its
+        # worker downloads them.
+        driver_kind = task_kind(task_def).execution_mode == "driver"
+        if driver_kind and (not dispatches_remote or remote_image(task_def=task_def) is not None):
             task_policy = TaskAccessPolicy(
                 remote_input_access="direct",
                 streaming_compatible=False,
