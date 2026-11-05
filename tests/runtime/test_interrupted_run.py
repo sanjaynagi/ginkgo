@@ -16,6 +16,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -244,6 +245,36 @@ def test_the_exit_guard_tells_an_interrupt_from_a_failure(
     assert [event.status for event in emitted] == [status]
 
 
+@pytest.mark.parametrize(
+    "interrupt",
+    [KeyboardInterrupt(), ImportError("partially initialised")],
+    ids=["interrupt", "import-error-from-interrupt"],
+)
+def test_an_interrupt_while_the_cli_imports_exits_130(monkeypatch, interrupt) -> None:
+    # An extension module interrupted mid-initialisation raises an ImportError
+    # caused by the interrupt rather than the interrupt itself.
+    from ginkgo.cli import INTERRUPT_EXIT_CODE, main
+
+    def importing(name: str):
+        # Only `main`: pytest probes every loaded module while reporting.
+        if name != "main":
+            raise AttributeError(name)
+        if isinstance(interrupt, ImportError):
+            raise interrupt from KeyboardInterrupt()
+        raise interrupt
+
+    app = types.ModuleType("ginkgo.cli.app")
+    app.__getattr__ = importing
+    monkeypatch.setitem(sys.modules, "ginkgo.cli.app", app)
+
+    # An escaped interrupt would stop the whole test session, not fail this test.
+    try:
+        exit_code = main(["run"])
+    except KeyboardInterrupt:
+        exit_code = None
+    assert exit_code == INTERRUPT_EXIT_CODE
+
+
 def test_a_cancelled_run_is_listed_by_its_status(tmp_path: Path) -> None:
     from tests.conftest import Ledger, run_cli
 
@@ -304,14 +335,16 @@ class TestInterruptedRunEndToEnd:
             (task.skipped_because or {}).get("reason") == "interrupted" for task in summary.tasks
         )
 
-    @pytest.mark.parametrize("delay", [0.1, 1.6, 4.0])
-    def test_ctrl_c_at_any_moment_exits_promptly_with_130(
+    @pytest.mark.parametrize("delay", [1.6, 4.0])
+    def test_ctrl_c_while_running_exits_promptly_with_130(
         self, tmp_path: Path, delay: float
     ) -> None:
-        # The delays land the signal while the CLI imports, while the run
-        # starts its pools, and while tasks run. Only the parent is signalled,
-        # as `kill -INT` would: the run must stop its minute-long tasks rather
-        # than wait for them.
+        # The delays land the signal while the run starts its pools and while
+        # tasks run. Only the parent is signalled, as `kill -INT` would: the
+        # run must stop its minute-long tasks rather than wait for them. An
+        # earlier signal can reach a CI runner's interpreter before Python
+        # installs its own handler, and the process then dies of it; the
+        # interrupt while the CLI imports is covered without a race above.
         _write_project(tmp_path, sleep_seconds=60)
 
         process = subprocess.Popen(
