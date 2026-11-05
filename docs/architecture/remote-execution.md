@@ -7,9 +7,9 @@ driver; otherwise every task whose kind is `remote_capable` (`python`, `shell`
 and `script`) goes to the run's *default* executor (`--executor`), and the rest
 run on the driver. Notebook and subworkflow tasks therefore run on the driver
 for now, even under `--executor`. Naming an executor on a kind that is not
-remote-capable is a build error, as is a remote task that declares `env=` and a
-locally placed task whose `gpu` requirement exceeds the local `--gpus` budget —
-a task never silently runs somewhere its requirement cannot be met. Cached tasks are never dispatched:
+remote-capable is a build error, as is a remote task that declares a container
+`env=` and a locally placed task whose `gpu` requirement exceeds the local
+`--gpus` budget — a task never silently runs somewhere its requirement cannot be met. Cached tasks are never dispatched:
 placement is resolved only after a cache miss. Remote-placed tasks consume a
 `--jobs` slot but no local core/memory/GPU budget; their resources are
 satisfied by the executor.
@@ -98,10 +98,20 @@ The worker entry point (`remote/worker.py`) runs as
    subprocess. The runner's result goes back as an ordinary encoded value,
    marked `ran_directive` so the driver completes the task with it, and a
    failed command's exit code travels in the error so `retry_on_exit_codes`
-   still applies. A remote task with `env=` is rejected at placement, since
-   the worker runs every command in its own image. A directive naming a
-   `log=` file fails in the worker before its command runs, since nothing
-   would bring the file back
+   still applies. For a task with a Pixi `env=`, the worker first builds an
+   `EnvironmentRouter` rooted at the extracted code bundle (or its working
+   directory without one), which stands in for the driver's project root.
+   It searches the env directory the driver searched, which the payload
+   names relative to that root, rather than discovering one. It checks the
+   env's `env_identity` (its manifest) and `materialized_digest` (its lock)
+   against the driver's, sent in the payload, and fails the task naming the
+   env if either differs. Then it runs `prepare` with the context's `locked`
+   set, so `pixi install --locked` installs that lock or fails, never
+   solving the env, before the command runs through the env's `exec_argv`.
+   A remote task with a container `env=` is rejected at placement, since the
+   worker has no container runtime. A directive naming a `log=` file fails
+   in the worker before its command runs, since nothing would bring the file
+   back
 5. Uploads outputs and large result values, then prints a JSON result line to
    stdout for the handle to parse. A result holding task expressions is
    pickled whole with its `file`/`folder` leaves uploaded beside it, and the
@@ -109,7 +119,8 @@ The worker entry point (`remote/worker.py`) runs as
 
 The same worker image serves both K8s and GCP Batch executors. It installs
 core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a
-worker can stage and publish to any supported store. It needs no executor
+worker can stage and publish to any supported store, and the `pixi` binary
+with ginkgo-pixi, so it can install a task's Pixi env. It needs no executor
 plugin, since it runs tasks and never submits them; ginkgo-gcp brings the Batch
 client libraries along with its `gs://` store regardless.
 
@@ -117,11 +128,21 @@ client libraries along with its `gs://` store regardless.
 
 Two modes for making workflow code available to remote workers:
 
-- **Baked** (default): the worker image already contains the code.
+- **Baked** (default): the worker image already contains the code, and its
+  working directory stands in for the project root. An env the image
+  installed at build time, from the driver's lock, makes the worker's
+  `pixi install` a quick check.
 - **Sync**: the evaluator creates a tarball of the workflow package, uploads
   it to cloud storage (content-addressed by SHA-256), and includes the bundle
   coordinates in the task payload. Workers download and extract the bundle
-  before importing task functions.
+  before importing task functions. The bundle carries each env's manifest
+  and lock but leaves out `.pixi/`, the driver's install, so a worker
+  installs its own copy of an env in the bundle's scratch directory the
+  first time it runs a task in it. The driver writes an env's lock when it
+  prepares the env's first task, so each env gets a bundle of its own,
+  built at that task's dispatch, after the lock; tasks with no env share
+  one more. A bundle of unchanged files has the same digest, so it is not
+  uploaded again.
 
 Code sync is configured per executor via `[remote.executors.<name>.code]`
 with `mode = "sync"` and `package = "<dir>"`. The bundle is published to the

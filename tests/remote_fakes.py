@@ -158,6 +158,7 @@ class _ImmediateHandle:
         return self.logs
 
 
+@dataclass
 class RoundTripExecutor(RemoteExecutor):
     """Runs the worker's entry point in-process, as if it were a pod.
 
@@ -172,7 +173,15 @@ class RoundTripExecutor(RemoteExecutor):
     rest of its environment, and every absolute path on its filesystem. Its
     output is captured as Python writes it, so anything written straight to
     file descriptor 1 or 2 escapes the logs.
+
+    Parameters
+    ----------
+    workdir : Path | None
+        The image's working directory, holding what a baked image would.
+        ``None`` gives each pod an empty one.
     """
+
+    workdir: Path | None = None
 
     def submit(self, *, attempt: dict) -> RemoteJobHandle:
         from ginkgo.remote.executor_support import encode_payload, parse_worker_output
@@ -180,7 +189,7 @@ class RoundTripExecutor(RemoteExecutor):
 
         output = io.StringIO()
         with (
-            _in_a_pod(payload=encode_payload(attempt)),
+            _in_a_pod(payload=encode_payload(attempt), workdir=self.workdir),
             contextlib.redirect_stdout(output),
             contextlib.redirect_stderr(output),
         ):
@@ -201,11 +210,11 @@ class RoundTripExecutor(RemoteExecutor):
 
 
 @contextlib.contextmanager
-def _in_a_pod(*, payload: str) -> Iterator[None]:
+def _in_a_pod(*, payload: str, workdir: Path | None) -> Iterator[None]:
     """Give the worker a pod's surroundings: its payload, and its own directories."""
     driver_cwd = Path.cwd()
     with _driver_temp_hidden():
-        os.chdir(tempfile.mkdtemp(prefix="pod-cwd-"))
+        os.chdir(workdir or tempfile.mkdtemp(prefix="pod-cwd-"))
         os.environ["GINKGO_WORKER_PAYLOAD"] = payload
         try:
             yield

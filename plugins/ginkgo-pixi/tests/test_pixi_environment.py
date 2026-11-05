@@ -259,6 +259,29 @@ def _backend() -> PixiEnvironment:
     return PixiEnvironment(pixi_registry=PixiRegistry(project_root=_TESTS_DIR))
 
 
+@pixi_required
+@pytest.mark.parametrize("lock", [None, "stale"])
+def test_a_locked_registry_never_writes_the_lock(tmp_path: Path, lock: str | None) -> None:
+    manifest = tmp_path / "envs" / "tools" / "pixi.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        "[workspace]\nname = 'tools'\nchannels = []\n"
+        "platforms = ['linux-64', 'linux-aarch64', 'osx-64', 'osx-arm64']\n"
+    )
+    if lock == "stale":
+        # Locked before the manifest gained a feature.
+        PixiRegistry(project_root=tmp_path).prepare(env="tools")
+        with manifest.open("a") as fh:
+            fh.write("[feature.x.dependencies]\n\n[environments]\nx = ['x']\n")
+    before = (manifest.parent / "pixi.lock").read_bytes() if lock else None
+
+    with pytest.raises(PixiEnvPrepareError, match="not up-to-date"):
+        PixiRegistry(project_root=tmp_path, locked=True).prepare(env="tools")
+
+    lock_path = manifest.parent / "pixi.lock"
+    assert (lock_path.read_bytes() if lock_path.exists() else None) == before
+
+
 @task(env=_TEST_ENV_NAME, kind="shell")
 def shell_touch(output_path: Out[file]) -> file:
     return shell(cmd=f"echo pixi_ran > {output_path}", output=output_path)

@@ -15,10 +15,12 @@ import base64
 import json
 import os
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
+    from ginkgo.runtime.backend import EnvironmentRouter
 
 
 def main() -> None:
@@ -79,9 +81,13 @@ def run_worker_payload(payload: dict) -> dict:
     mounted_access = None
     try:
         # Code-sync: download and extract the workflow package before import.
+        # The bundle stands in for the driver's project root; without one,
+        # the image's working directory does.
+        project_root = Path.cwd()
         if code_bundle is not None:
             dest_dir = _install_code_bundle(code_bundle)
             _rewrite_module_file(payload, code_bundle=code_bundle, dest_dir=dest_dir)
+            project_root = dest_dir
 
         # Hydrate file / folder inputs that were uploaded to the shared
         # remote artifact store on the client side.
@@ -99,11 +105,13 @@ def run_worker_payload(payload: dict) -> dict:
         hydration = _hydrate_remote_markers(payload)
         mounted_access = hydration.mounted_access if hydration is not None else None
 
+        backend = _prepare_task_env(payload, project_root=project_root)
+
         from ginkgo.runtime.worker import run_task
 
         # Large values are read from and written to the shared store directly,
         # since nothing in the pod's transport directory reaches the client.
-        result = run_task(payload, artifact_store=remote_store)
+        result = run_task(payload, artifact_store=remote_store, backend=backend)
 
         # Fold remote-input-access stats into the envelope for provenance,
         # with the digest of each input the worker downloaded.
@@ -165,6 +173,57 @@ def _install_code_bundle(code_bundle: dict[str, str]):
     )
     sys.path.insert(0, str(dest_dir))
     return dest_dir
+
+
+def _prepare_task_env(payload: dict, *, project_root: Path) -> EnvironmentRouter | None:
+    """Install the env the driver's cache key names, and return its backend.
+
+    The env is searched for where the driver searched, relative to
+    *project_root*, which stands in for the driver's project root and carries
+    each env's manifest and lock. Its first use in a worker installs it,
+    exactly as its lock pins it. Returns ``None`` when the driver named no
+    env: the task declares none, or the driver had no environment backend to
+    run one in.
+
+    Raises
+    ------
+    RuntimeError
+        If the env found here is not the one the driver named, or is not
+        locked as the driver's is.
+    """
+    expected = payload.get("env_identity")
+    if expected is None:
+        return None
+
+    from ginkgo.plugins.api import EnvironmentContext
+    from ginkgo.runtime.backend import EnvironmentRouter
+
+    env = payload["env"]
+    workflow_root = payload["env_workflow_root"]
+    backend = EnvironmentRouter(
+        context=EnvironmentContext(
+            project_root=project_root,
+            workflow_root=project_root / workflow_root if workflow_root is not None else None,
+            config={},
+            locked=True,
+        )
+    )
+    identity = backend.env_identity(env=env)
+    if identity != expected:
+        raise RuntimeError(
+            f"The worker's env {env!r} is not the one the driver's cache key names "
+            f"(its identity is {identity}, the driver's {expected}). Ship the "
+            "driver's manifest in the code bundle, or rebuild the worker image."
+        )
+    lock = backend.materialized_digest(env=env)
+    if lock != payload["env_materialized_digest"]:
+        raise RuntimeError(
+            f"The worker's env {env!r} is not locked as the driver's is (its lock "
+            f"digest is {lock}, the driver's {payload['env_materialized_digest']}). "
+            "Ship the driver's lock in the code bundle, or rebuild the worker image."
+        )
+    backend.prepare(env=env)
+    return backend
 
 
 def _scratch_root():

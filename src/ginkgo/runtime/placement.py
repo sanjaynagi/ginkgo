@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
+from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.task_kinds import task_kind
 
@@ -58,20 +59,20 @@ class Placement:
         is, and ``executor="local"`` keeps it on the driver. Otherwise a task
         whose kind is remote-capable goes to the run's default executor
         (``--executor``) when there is one, and any other task runs locally.
-        A remote task declaring ``env=``, which its worker cannot provide, and
-        a local task whose GPU requirement the ``--gpus`` budget cannot
-        satisfy are errors rather than runs that go wrong later.
+        A remote task declaring a container ``env=``, which its worker cannot
+        provide, and a local task whose GPU requirement the ``--gpus`` budget
+        cannot satisfy are errors rather than runs that go wrong later.
         """
         registry = self.executor_registry
         if task_def.executor not in (None, LOCAL):
             _require_remote_capable_kind(task_def=task_def)
-            return _require_no_env(
+            return _require_no_container_env(
                 task_def=task_def,
                 executor=registry.resolve(task_def.executor, task_name=task_def.base_name),
             )
         remote_capable = task_kind(task_def).remote_capable
         if task_def.executor is None and remote_capable and registry.has_default:
-            return _require_no_env(task_def=task_def, executor=registry.default_name)
+            return _require_no_container_env(task_def=task_def, executor=registry.default_name)
         gpu = self.effective_resources(task_def=task_def).gpu
         if gpu > self.gpus:
             if task_def.executor == LOCAL:
@@ -109,13 +110,13 @@ def _require_remote_capable_kind(*, task_def: TaskDef) -> None:
         )
 
 
-def _require_no_env(*, task_def: TaskDef, executor: str) -> str:
-    """Return *executor*, unless the task declares an ``env=`` a worker cannot provide.
+def _require_no_container_env(*, task_def: TaskDef, executor: str) -> str:
+    """Return *executor*, unless the task declares a container ``env=``.
 
-    A remote worker runs a command in its own image, so a pixi or container
-    env would be silently ignored there.
+    A remote worker installs a task's Pixi env itself, but has no container
+    runtime to run a container env's command in.
     """
-    if task_def.env is not None:
+    if task_def.env is not None and is_container_env(task_def.env):
         raise ValueError(
             f"{task_def.base_name} declares env={task_def.env!r} and runs on executor "
             f"{executor!r}, but a remote worker cannot run a task in its own env yet. "

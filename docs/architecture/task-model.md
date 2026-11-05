@@ -19,9 +19,9 @@
 - `executor="name"` to pin a task to a specific configured executor, or
   `executor="local"` to keep it on the driver. Otherwise a remote-capable task
   follows the run's default executor (`--executor`), and runs locally without
-  one. A remote task that declares `env=`, and a locally placed task whose
-  `gpu` requirement exceeds the local `--gpus` budget, are build errors (see
-  [remote execution](remote-execution.md)).
+  one. A remote task that declares a container `env=`, and a locally placed
+  task whose `gpu` requirement exceeds the local `--gpus` budget, are build
+  errors (see [remote execution](remote-execution.md)).
 
 Python tasks execute in a spawned subprocess worker pool (`ProcessPoolExecutor`,
 spawn context). A `ThreadPoolExecutor` fallback is used when the OS disallows

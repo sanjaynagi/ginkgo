@@ -22,6 +22,7 @@ from ginkgo.runtime.artifacts.value_codec import decode_value, encode_dynamic_va
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
+    from ginkgo.runtime.backend import ExecutionEnvironment
 
 _log_queue: Any = None
 """Queue this worker pushes task log chunks onto; ``None`` outside a local pool."""
@@ -223,7 +224,10 @@ def _traceback_from_task(*, exc: BaseException, fn: Any) -> TracebackType | None
 
 
 def run_task(
-    payload: dict[str, Any], *, artifact_store: ArtifactStore | None = None
+    payload: dict[str, Any],
+    *,
+    artifact_store: ArtifactStore | None = None,
+    backend: ExecutionEnvironment | None = None,
 ) -> dict[str, Any]:
     """Execute a task payload inside a process-pool or remote worker.
 
@@ -235,6 +239,9 @@ def run_task(
         Store that carries large values, for a remote worker whose transport
         directory the driver cannot read. ``None`` keeps them in the
         transport directory.
+    backend : ExecutionEnvironment | None
+        The prepared environment a remote worker runs a shell or script
+        task's command in, for a task that declares ``env=``.
 
     Returns
     -------
@@ -305,6 +312,7 @@ def run_task(
                         args=decoded_args,
                         payload=payload,
                         usage=command_usage,
+                        backend=backend,
                     )
                 finally:
                     # The command's own usage, not the body's that built it,
@@ -449,11 +457,12 @@ def _run_directive(
     args: dict[str, Any],
     payload: dict[str, Any],
     usage: dict[str, Any],
+    backend: ExecutionEnvironment | None,
 ) -> Any:
     """Run *directive* on its kind's runner, as the driver runs a local one.
 
-    Returns the runner's result, and records the command's measured usage in
-    *usage*.
+    The command runs in *backend*'s env when the task declares one. Returns
+    the runner's result, and records the command's measured usage in *usage*.
     """
     from ginkgo.plugins.api import RunnerContext
     from ginkgo.runtime.executor_registry import LOCAL
@@ -479,7 +488,7 @@ def _run_directive(
     context = RunnerContext(
         validator=validator,
         shell_runner=ShellRunner(
-            backend=None,
+            backend=backend,
             validator=validator,
             log_emitter_factory=emitter,
             usage_recorder=lambda *, node, measured: usage.update(measured),

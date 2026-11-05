@@ -46,9 +46,27 @@ every tool the command calls, and a script task's script must be in the image
 or the code bundle. Name the script by a path built from `Path(__file__)`, not
 one relative to the working directory, which differs in the worker.
 
-A task with `env=` can't run remotely yet, because the worker would ignore its
-Pixi environment or container. It fails the run before any task starts; give it
-`executor="local"` to keep it on your machine.
+A remote shell or script task with a Pixi `env=` runs its command in that
+environment in the worker. The worker looks for the environment's `pixi.toml`
+and `pixi.lock` where your machine does, relative to the code bundle or the
+image's working directory. It installs exactly the packages that lock pins
+before the command runs, and never solves the environment itself. With
+[code sync](#code-sync), keep the environment in the package's `envs/`
+directory. The bundle carries it with the lock your machine writes or updates
+for the run, so don't exclude `pixi.lock` with `.gitignore` or `exclude`. The
+lock must list the worker's platform, usually `linux-64`. If the worker's
+`pixi.toml` or `pixi.lock` differs from your machine's, or it has no lock, the
+task fails, because its result would not match what the run records.
+
+The first task to use an environment in a worker installs it, downloads
+included, before its command starts. A pod runs one task, so every such task
+pays that install time. If you bake your code into the image, install each
+environment from the lock you run with when you build the image, and the
+worker's install becomes a quick check.
+
+A task with a container `env=` (`docker://` or `oci://`) can't run remotely
+yet, because the worker has no container runtime. It fails the run before any
+task starts; give it `executor="local"` to keep it on your machine.
 
 A remote task can't name a `log=` file in `shell(...)` or `script(...)`
 either, because the file would stay in the worker. The command's output
@@ -251,13 +269,15 @@ Before you start:
 ## Worker Docker Image
 
 A worker image needs Python 3.12 or later, Ginkgo, and the plugin for each
-object store the worker reads. The repository's `Dockerfile` builds one:
+object store the worker reads. For tasks with a Pixi `env=`, it also needs the
+`pixi` binary and `ginkgo-pixi`. The repository's `Dockerfile` builds one:
 
 ```dockerfile
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/prefix-dev/pixi:0.82.1 /usr/local/bin/pixi /usr/local/bin/pixi
 
 WORKDIR /app
 COPY pyproject.toml .
@@ -265,9 +285,10 @@ COPY src/ginkgo/ src/ginkgo/
 COPY plugins/ginkgo-aws/ plugins/ginkgo-aws/
 COPY plugins/ginkgo-gcp/ plugins/ginkgo-gcp/
 COPY plugins/ginkgo-oci/ plugins/ginkgo-oci/
+COPY plugins/ginkgo-pixi/ plugins/ginkgo-pixi/
 COPY plugins/ginkgo-k8s/ plugins/ginkgo-k8s/
 RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci \
-    ./plugins/ginkgo-k8s
+    ./plugins/ginkgo-pixi ./plugins/ginkgo-k8s
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]
 ```
 
@@ -323,9 +344,11 @@ package = "my_workflow"  # directory name of your Python package
 exclude = ["*.ipynb_checkpoints", "notebooks/scratch/"]  # optional extra excludes
 ```
 
-Unchanged code is not uploaded again. Give each executor that needs code sync
-its own `code` table. If one executor syncs and another the run uses doesn't,
-Ginkgo warns, because tasks on the second would use the code baked into its
+Unchanged code is not uploaded again. The bundle carries each Pixi
+environment's `pixi.toml` and `pixi.lock`, but not its installed `.pixi/`
+directory, so a worker installs its own copy. Give each executor that needs
+code sync its own `code` table. If one executor syncs and another the run uses
+doesn't, Ginkgo warns, because tasks on the second would use the code baked into its
 image.
 
 ## Remote Inputs

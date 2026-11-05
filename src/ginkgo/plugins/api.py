@@ -349,12 +349,17 @@ class EnvironmentContext:
         Whether validation may make probes a real run skips: asking the
         container daemon whether it is reachable, and image registries about
         missing images. Only a dry run and ``ginkgo doctor`` set it.
+    locked : bool
+        Whether ``prepare`` must install an env exactly as its lock file
+        pins it, failing rather than writing a lock. A remote worker sets it,
+        so it installs the lock the driver recorded.
     """
 
     project_root: Path
     workflow_root: Path | None
     config: Mapping[str, Any]
     probe_registry: bool = False
+    locked: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
