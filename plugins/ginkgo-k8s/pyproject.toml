@@ -7,8 +7,9 @@ readme = { text = "# ginkgo-k8s\n\nKubernetes executor for ginkgo: run tasks as 
 license = "Apache-2.0"
 dependencies = [
     "ginkgo-workflow==0.4.0",
-    # 37.0.2 needs python-dateutil>=3, which the OCI SDK (oci, through ginkgo-oci)
-    # caps below 3, so the worker image, which installs both, cannot resolve.
+    # 37.0.2 needs python-dateutil>=3, which botocore (through ginkgo-aws) and the
+    # OCI SDK (through ginkgo-oci) cap below 3, so no install with either of them,
+    # such as the worker image or the `all` extra, can resolve.
     "kubernetes>=28.1,<37.0.2",
 ]
 
