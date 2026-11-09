@@ -341,13 +341,42 @@ class TestCliRunAndCache:
         assert "matches 2 entries: abc123, abd456" in unwrapped(result.stderr)
         assert first.exists() and second.exists()
 
-    def test_cache_ls_groups_entries_by_task(self) -> None:
-        # In key order a beta entry would sit between the two alphas.
-        for key, function in (("key_a", "m.alpha"), ("key_b", "m.beta"), ("key_c", "m.alpha")):
-            _seed_cache_entry(key, age_days=1, function=function)
+    @pytest.mark.parametrize("key", ["", "../ca", "abc123/"])
+    def test_cache_clear_finds_no_entry_for_an_empty_or_path_like_key(self, key: str) -> None:
+        # An empty key once named the cache directory itself.
+        entry = _seed_cache_entry("abc123", age_days=1)
+
+        result = run_cli("cache", "clear", key)
+        assert result.returncode == 1
+        assert "Cache entry not found" in result.stdout + result.stderr
+        assert entry.exists()
+
+    def test_cache_ls_groups_entries_by_task_then_branch(self) -> None:
+        write(
+            "workflow.py",
+            """
+            from ginkgo import flow, task
+
+            @task()
+            def sq(i: int) -> int:
+                return i * i
+
+            @task()
+            def total(values: list[int]) -> int:
+                return sum(values)
+
+            @flow
+            def main():
+                return total(values=sq().map(i=list(range(11))))
+            """,
+        )
+        run_ok("run", "workflow.py")
 
         listed = run_ok("cache", "ls").stdout
-        assert listed.index("key_a") < listed.index("key_c") < listed.index("key_b")
+        labels = re.findall(r"sq\[(\d+)\]", listed)
+        # By number, not text, which would put sq[10] before sq[2].
+        assert labels == [str(i) for i in range(11)]
+        assert listed.index("total") > listed.rindex("sq[")
 
     def test_cache_clear_task_removes_only_that_tasks_entries(self) -> None:
         first = _seed_cache_entry("a1", age_days=1, function="m.a", payload="x" * 2048)

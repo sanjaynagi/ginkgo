@@ -21,8 +21,8 @@ ginkgo cache ls --task align --json   # one task's entries, as JSON
 ginkgo cache stats                    # totals: entries, size, hits, entries never reused
 ```
 
-`cache ls` lists entries grouped by task, then branch, and prints each full
-cache key on one line. `cache clear` takes the full key or any start of it
+`cache ls` groups its table by task, then branch, and prints each full cache
+key on one line. `cache clear` takes the full key or any start of it
 that matches only one entry. `--task` takes a task name or a branch label, as
 described in [Task Names](/ginkgo/guide/cli/#task-names).
 

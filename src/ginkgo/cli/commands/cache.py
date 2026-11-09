@@ -16,7 +16,6 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from glob import escape as glob_escape
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,7 @@ from ginkgo.store.maintenance import disk_usage
 from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.query import CacheEntryRow, CacheStats, Query
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
-from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.cache import CacheStore, entry_dirs
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -53,7 +52,7 @@ def command_cache(args) -> int:
         # Grouped by task, then branch, so one task's entries read together.
         entries = sorted(
             (_cache_entry_row(row) for row in rows),
-            key=lambda e: (e.task, e.label, e.created, e.cache_key),
+            key=lambda e: (e.function, _natural_key(e.label), e.created, e.cache_key),
         )
         if not entries:
             rich_console.print("[dim]No cache entries found.[/]")
@@ -250,20 +249,22 @@ def _resolve_cache_key(prefix: str) -> str:
     UsageError
         When more than one does.
     """
-    # A save in flight writes beside its entry, as ``<key>.tmp-...``.
-    matches = sorted(
-        path.name
-        for path in CACHE_ROOT.glob(f"{glob_escape(prefix)}*")
-        if path.is_dir() and ".tmp-" not in path.name
-    )
+    matches = [entry.name for entry in entry_dirs(CACHE_ROOT) if entry.name.startswith(prefix)]
     if not prefix or not matches:
         raise FileNotFoundError(f"Cache entry not found: {prefix}")
     if len(matches) > 1:
+        shown = ", ".join(matches[:_AMBIGUOUS_SHOWN])
+        if len(matches) > _AMBIGUOUS_SHOWN:
+            shown += f" and {len(matches) - _AMBIGUOUS_SHOWN} more"
         raise UsageError(
-            f"Cache key prefix {prefix!r} matches {len(matches)} entries: "
-            f"{', '.join(matches)}. Give more of the key."
+            f"Cache key prefix {prefix!r} matches {len(matches)} entries: {shown}. "
+            "Give more of the key."
         )
     return matches[0]
+
+
+_AMBIGUOUS_SHOWN = 5
+"""How many matching keys an ambiguous prefix's error names."""
 
 
 _LEDGER_SPACE_NOTE = (
@@ -435,6 +436,11 @@ def list_cache_entries(reader: Query) -> list[CacheEntryDisplay]:
         (_cache_entry_row(row) for row in reader.cache_entries()),
         key=lambda entry: entry.cache_key,
     )
+
+
+def _natural_key(label: str) -> list[str | int]:
+    """Return a sort key that puts ``sq[2]`` before ``sq[10]``."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", label)]
 
 
 def _cache_entry_row(row: CacheEntryRow) -> CacheEntryDisplay:
