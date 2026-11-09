@@ -16,6 +16,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from glob import escape as glob_escape
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,11 @@ def command_cache(args) -> int:
             return 0
 
         rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
-        entries = sorted((_cache_entry_row(row) for row in rows), key=lambda e: e.cache_key)
+        # Grouped by task, then branch, so one task's entries read together.
+        entries = sorted(
+            (_cache_entry_row(row) for row in rows),
+            key=lambda e: (e.task, e.label, e.created, e.cache_key),
+        )
         if not entries:
             rich_console.print("[dim]No cache entries found.[/]")
             return 0
@@ -181,16 +186,15 @@ def _clear(args, rich_console) -> int:
         )
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
     if args.cache_key is not None:
-        if not (CACHE_ROOT / args.cache_key).is_dir():
-            raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
+        cache_key = _resolve_cache_key(args.cache_key)
         with _cache_store() as cache_store:
-            freed_bytes = remove_entry(cache_store, args.cache_key)
+            freed_bytes = remove_entry(cache_store, cache_key)
             freed_bytes += gc_orphan_artifacts(cache_store)
 
         message = Text()
         message.append("✓ ", style="green")
         message.append("Removed cache entry ")
-        message.append(args.cache_key, style="bold")
+        message.append(cache_key, style="bold")
         message.append(f" ({format_bytes(freed_bytes)} freed on disk).")
         message.no_wrap = True
         rich_console.print(message)
@@ -231,6 +235,35 @@ def _clear(args, rich_console) -> int:
     if rows:
         rich_console.print(_LEDGER_SPACE_NOTE)
     return 0
+
+
+def _resolve_cache_key(prefix: str) -> str:
+    """Return the one cache key that starts with *prefix*.
+
+    A key is long, so `cache clear` takes as much of one as tells it apart,
+    as git does with a commit hash.
+
+    Raises
+    ------
+    FileNotFoundError
+        When no entry's key starts with *prefix*.
+    UsageError
+        When more than one does.
+    """
+    # A save in flight writes beside its entry, as ``<key>.tmp-...``.
+    matches = sorted(
+        path.name
+        for path in CACHE_ROOT.glob(f"{glob_escape(prefix)}*")
+        if path.is_dir() and ".tmp-" not in path.name
+    )
+    if not prefix or not matches:
+        raise FileNotFoundError(f"Cache entry not found: {prefix}")
+    if len(matches) > 1:
+        raise UsageError(
+            f"Cache key prefix {prefix!r} matches {len(matches)} entries: "
+            f"{', '.join(matches)}. Give more of the key."
+        )
+    return matches[0]
 
 
 _LEDGER_SPACE_NOTE = (
