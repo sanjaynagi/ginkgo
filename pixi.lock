@@ -6749,7 +6749,7 @@ packages:
   name: ginkgo-k8s
   requires_dist:
   - ginkgo-workflow==0.4.0
-  - kubernetes>=28.1
+  - kubernetes>=28.1,<37.0.2
   requires_python: '>=3.12'
 - pypi: plugins/ginkgo-notebook
   name: ginkgo-notebook
