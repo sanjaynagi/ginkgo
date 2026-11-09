@@ -1809,7 +1809,11 @@ class ConcurrentEvaluator:
                 base_dir=node.transport_path,
                 artifact_store=self._value_store(node=node),
             )
-            shutil.copytree(files, self.run_dir.path, dirs_exist_ok=True)
+            # Their content only: what the store hands back is read-only, and
+            # a retry, or a fan-out's next branch, writes the same paths again.
+            shutil.copytree(
+                files, self.run_dir.path, dirs_exist_ok=True, copy_function=shutil.copyfile
+            )
         if not payload["ok"]:
             error = payload["error"]
             pod_dir, run_dir = record["run_dir"], str(self.run_dir.path)

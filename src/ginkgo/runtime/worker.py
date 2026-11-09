@@ -379,9 +379,13 @@ def run_task(
         if measured is not None:
             response["measured_resources"] = measured
         if runner_record:
-            response["runner_record"] = _encoded_runner_record(
-                runner_record, base_dir=base_dir, artifact_store=artifact_store
-            )
+            try:
+                response["runner_record"] = _encoded_runner_record(
+                    runner_record, base_dir=base_dir, artifact_store=artifact_store
+                )
+            except Exception:
+                # The task's own failure is the one to report.
+                traceback.print_exc()
         return response
     finally:
         if mounted_access is not None:
@@ -561,7 +565,7 @@ def _run_directive(
     finally:
         if annotated or run_dir.path.exists():
             record.update(
-                run_dir=run_dir.path,
+                run_dir=run_dir,
                 fields=annotated,
                 runner_extras=invocation.runner_extras,
             )
@@ -570,12 +574,17 @@ def _run_directive(
 def _encoded_runner_record(
     record: dict[str, Any], *, base_dir: Path, artifact_store: ArtifactStore | None
 ) -> dict[str, Any]:
-    """Encode what :func:`_run_directive` recorded, its run directory as a folder value."""
+    """Encode what :func:`_run_directive` recorded, its run directory as a folder value.
+
+    ``attempt_dir`` holds the run directory and nothing else of this attempt's,
+    for the worker to remove once the files are on their way.
+    """
     from ginkgo.core.types import folder
 
-    run_dir = record["run_dir"]
+    run_dir = record["run_dir"].path
     return {
         "run_dir": str(run_dir),
+        "attempt_dir": str(record["run_dir"].root),
         "fields": record["fields"],
         "runner_extras": record["runner_extras"],
         "files": (

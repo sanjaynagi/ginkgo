@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from ginkgo import Out, file, task
+from ginkgo.core.expr import ExprList
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
@@ -72,6 +73,11 @@ def render(notebook_path: str, sample_id: str) -> file:
 
 @task("notebook")
 def render_failing(notebook_path: str, fail: bool) -> file:
+    return notebook(notebook_path)
+
+
+@task("notebook", retries=1, retry_on=NotebookTaskError, retry_backoff=0)
+def render_failing_twice(notebook_path: str, fail: bool) -> file:
     return notebook(notebook_path)
 
 
@@ -256,6 +262,8 @@ class TestRemoteNotebook:
             "rendered_html_run_id": run_dir.run_id,
         }
         assert Path(str(result)).read_bytes() == html.read_bytes()
+        # The pod's run directory, one per attempt, is gone once it is sent.
+        assert not any((remote_round_trip.pod_scratch / "ginkgo-runs").iterdir())
 
     def test_a_read_only_working_directory_is_enough(
         self, tmp_path: Path, notebook_path: Path, remote_round_trip: RemoteRoundTrip
@@ -328,6 +336,30 @@ class TestRemoteNotebook:
         assert f"The rendered notebook at {html} shows the failing cell" in str(raised.value)
         # Nor anywhere else: the pod's run directory is one per attempt.
         assert "task_0000_attempt_1" not in str(raised.value)
+
+    def test_every_branch_of_a_fan_out_brings_its_page_back(
+        self, tmp_path: Path, notebook_path: Path, remote_round_trip: RemoteRoundTrip
+    ) -> None:
+        # The branches write the same marimo session cache path into the run.
+        expr = ExprList([render(notebook_path=str(notebook_path), sample_id=s) for s in "ab"])
+
+        result, run_dir, _ = _evaluate(expr, root=tmp_path, executor=ContainerRoundTripExecutor())
+
+        pages = sorted((run_dir.path / "notebooks").glob("task_*.html"))
+        assert [Path(str(page)).read_bytes() for page in result] == [
+            page.read_bytes() for page in pages
+        ]
+
+    def test_a_retried_failure_still_fails_as_the_notebook(
+        self, tmp_path: Path, notebook_path: Path, remote_round_trip: RemoteRoundTrip
+    ) -> None:
+        # The second attempt writes its page where the first one's is.
+        with pytest.raises(NotebookTaskError, match="shows the failing cell"):
+            _evaluate(
+                render_failing_twice(notebook_path=str(notebook_path), fail=True),
+                root=tmp_path,
+                executor=ContainerRoundTripExecutor(),
+            )
 
     def test_a_notebook_in_an_image_keeps_the_page_it_rendered(
         self, tmp_path: Path, remote_round_trip: RemoteRoundTrip

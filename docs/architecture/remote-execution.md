@@ -111,9 +111,10 @@ The worker entry point (`remote/worker.py`) runs as
    against the pod's paths, and `run_task` runs it on the kind's own runner in
    a local subprocess. The runner's result goes back as an ordinary encoded
    value, marked `ran_directive` so the driver completes the task with it. A
-   failed command's error is rebuilt on the driver as its own type when the
-   type defines `reported`, with its exit code, so failure classification and
-   `retry_on_exit_codes` still apply. The runner gets a run directory of the
+   failed command's error is rebuilt on the driver as its own type, with its
+   exit code, when that type is a `CommandExitError` from a module the driver
+   has imported, so failure classification, `retry_on` and, for shell and
+   script tasks, `retry_on_exit_codes` still apply. The runner gets a run directory of the
    pod's own, one per attempt, with the driver's run id. What it writes there,
    such as a notebook's rendered page, goes back as a `folder` value in the
    response's `runner_record`, with what it annotated and its `runner_extras`,

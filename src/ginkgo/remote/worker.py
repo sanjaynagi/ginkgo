@@ -276,7 +276,7 @@ def _finish(
         record["files"] = stage_result_for_remote(
             result=record["files"], remote_store=remote_store
         )
-        shutil.rmtree(Path(record["run_dir"]).parent)
+        shutil.rmtree(record["attempt_dir"])
     return result
 
 
