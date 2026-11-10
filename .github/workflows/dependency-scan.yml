@@ -1,0 +1,75 @@
+name: Dependency Scan
+
+# Fails on a fixable critical or high vulnerability in what ginkgo runs on:
+# the locked environment and the two worker images. Security's Trivy scan
+# reads no pixi.lock, so it never sees ginkgo's Python dependencies.
+#
+# Weekly, so an advisory published against a dependency nobody has changed
+# still fails a run, and GitHub emails about it. On a pull request it runs
+# only when the dependencies change. An upstream finding ginkgo cannot fix
+# yet goes in .trivyignore, with a date it expires.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - pixi.lock
+      - pyproject.toml
+      - plugins/*/pyproject.toml
+      - Dockerfile
+      - Dockerfile.worker-fuse
+      - .trivyignore
+      - .github/workflows/dependency-scan.yml
+
+jobs:
+  python-environment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.8
+        with:
+          cache: true
+          locked: true
+
+      - name: Scan the locked default environment
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: rootfs
+          scan-ref: .pixi/envs/default
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          # npm's own dependencies, bundled with the nodejs that builds the
+          # docs site. Security's scan covers the site's own packages.
+          skip-dirs: lib/node_modules
+
+  worker-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile: [Dockerfile, Dockerfile.worker-fuse]
+    name: worker-image (${{ matrix.dockerfile }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --pull: the base image as a release would build it, not a cached one.
+      - name: Build the image
+        run: docker build --pull -f ${{ matrix.dockerfile }} -t ginkgo-scan .
+
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ginkgo-scan
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

@@ -21,8 +21,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# Base system packages plus fuse.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Base system packages plus fuse, upgraded so the image carries Debian's
+# security fixes, not only the base's.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         fuse3 \

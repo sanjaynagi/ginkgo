@@ -1,0 +1,20 @@
+# Version updates for what Dependabot can update here. It cannot read
+# pixi.lock, so ginkgo's Python dependencies are refreshed with `pixi update`,
+# and the Dependency Scan workflow says when one is due.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /docs/site
+    schedule:
+      interval: monthly
+    groups:
+      docs-site:
+        patterns: ["*"]
