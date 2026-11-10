@@ -219,7 +219,7 @@ bump its `version=`. See [CLI](/ginkgo/guide/cli/).
 
 ```bash
 ginkgo cache ls                                  # list entries with size and age
-ginkgo cache clear <cache-key>                   # remove one entry
+ginkgo cache clear <cache-key>                   # remove one entry; a unique prefix will do
 ginkgo cache prune --older-than 30d --dry-run    # preview an age-based prune
 ginkgo cache prune --max-size 5GB                # keep the cache under a size budget
 ```
