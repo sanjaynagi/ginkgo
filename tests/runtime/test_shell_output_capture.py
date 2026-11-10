@@ -15,9 +15,11 @@ from tests.conftest import Ledger
 
 @task(kind="shell")
 def print_binary(dest: Out[file], log_path: str) -> file:
-    # More than a pipe buffer of undecodable bytes, then text after them.
+    # More than a pipe buffer of undecodable bytes, then text after them. The C
+    # locale makes tr write the byte 0xff: in a UTF-8 locale, BSD tr (macOS)
+    # writes the character U+00FF instead, as valid UTF-8.
     return shell(
-        cmd=f"head -c 200000 /dev/zero | tr '\\0' '\\377'; echo; echo after; touch {dest}",
+        cmd=f"head -c 200000 /dev/zero | LC_ALL=C tr '\\0' '\\377'; echo; echo after; touch {dest}",
         output=dest,
         log=log_path,
     )
