@@ -1,0 +1,10 @@
+# Findings the dependency scan skips until the date each one expires. Each is
+# upstream and has no fix ginkgo can apply; on its date it fails the scan
+# again, to be dropped if fixed or dated forward if not.
+
+# gcsfuse 3.13.0, in Dockerfile.worker-fuse: Go libraries its binary is built
+# with. Fixed by a gcsfuse release built with go-jose 4.1.6, x/net 0.62.0 and
+# Go 1.27.3.
+CVE-2026-116587 exp:2027-01-31
+CVE-2026-78661 exp:2027-01-31
+CVE-2026-111943 exp:2027-01-31
