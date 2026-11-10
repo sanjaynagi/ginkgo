@@ -17,7 +17,7 @@ jobs:
     name: tests (${{ matrix.environment }})
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: test_fallback_pin_can_still_run_the_scaffold_it_pins
           # reads the pinned commit out of the local object database, and skips
@@ -25,7 +25,7 @@ jobs:
           # scaffold's staleness guard pass by never running.
           fetch-depth: 0
 
-      - uses: prefix-dev/setup-pixi@v0.8.8
+      - uses: prefix-dev/setup-pixi@v0.11.3
         with:
           cache: true
           locked: true
@@ -39,11 +39,11 @@ jobs:
     # never depends on a plugin it does not ship.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: prefix-dev/setup-pixi@v0.8.8
+      - uses: prefix-dev/setup-pixi@v0.11.3
         with:
           cache: true
           locked: true
@@ -58,14 +58,14 @@ jobs:
     # tests/integration/test_kind.py.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: prefix-dev/setup-pixi@v0.8.8
+      - uses: prefix-dev/setup-pixi@v0.11.3
         with:
           cache: true
           locked: true
 
-      - uses: helm/kind-action@v1.12.0
+      - uses: helm/kind-action@v1.15.2
         with:
           cluster_name: ginkgo
 

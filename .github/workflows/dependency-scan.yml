@@ -30,9 +30,9 @@ jobs:
   python-environment:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: prefix-dev/setup-pixi@v0.8.8
+      - uses: prefix-dev/setup-pixi@v0.11.3
         with:
           cache: true
           locked: true
@@ -58,7 +58,7 @@ jobs:
     name: worker-image (${{ matrix.dockerfile }})
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # --pull: the base image as a release would build it, not a cached one.
       - name: Build the image
