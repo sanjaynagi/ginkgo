@@ -1,0 +1,55 @@
+name: Unlocked Dependencies
+
+# The other workflows test pixi.lock, but `pip install ginkgo-workflow` resolves
+# the ranges in each pyproject.toml afresh. This runs the suite at both ends of
+# those ranges: the newest release of everything on the newest Python, which
+# catches an upstream release that breaks ginkgo, and the lowest version each
+# package declares on the oldest Python, which catches a floor that no longer
+# holds. Wheels only, as users install.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "plugins/*/pyproject.toml"
+      - ".github/workflows/unlocked-dependencies.yml"
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - resolution: highest
+            python: "3.14"
+          - resolution: lowest-direct
+            python: "3.12"
+    name: tests (${{ matrix.resolution }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history, for the same reason as in tests.yml.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v7
+
+      # The pixi binary only, for the ginkgo-pixi tests; no environment.
+      - uses: prefix-dev/setup-pixi@v0.11.3
+        with:
+          run-install: false
+
+      - name: Install core and every plugin from their pyproject.toml
+        run: |
+          uv venv --python ${{ matrix.python }}
+          uv pip install --resolution ${{ matrix.resolution }} --only-binary :all: \
+            -e . $(printf -- '-e %s ' plugins/*/)
+          # The suite's own needs, from the dev feature in pyproject.toml.
+          uv pip install pytest scikit-learn
+          uv pip list
+
+      - name: Run test suite
+        run: .venv/bin/python -m pytest tests/ plugins/ -v
