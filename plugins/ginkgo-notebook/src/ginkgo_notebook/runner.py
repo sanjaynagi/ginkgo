@@ -7,10 +7,10 @@ task is one subprocess, and either succeeds with its rendered page or fails
 pointing at it.
 
 The page's path is recorded against the task as ``rendered_html``, the
-annotation core lists in run summaries and the report. It is also left in
-``node.runner_extras``, which the evaluator saves with the cache entry and
-records again on a cache hit, so a hit points at the page the producing run
-rendered.
+annotation core lists in run summaries and the report, relative to the run
+that rendered it. It is also left in ``node.runner_extras``, which the
+evaluator saves with the cache entry and records again on a cache hit, so a
+hit points at the page the producing run rendered.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
-from ginkgo.errors import FailureKind, GinkgoError
+from ginkgo.errors import CommandExitError, FailureKind
 from ginkgo.plugins.api import RunnerContext
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.task_runners.driver import DriverTaskRunner
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from ginkgo.plugins.api import TaskInvocation
 
 
-class NotebookTaskError(GinkgoError, RuntimeError):
+class NotebookTaskError(CommandExitError):
     """A notebook cell failed, or marimo could not run the notebook.
 
     Reported as ``user_code_error``, like a refused ``.ipynb`` notebook: the
@@ -95,8 +95,9 @@ class NotebookRunner(DriverTaskRunner):
             self.shell_runner.prepare_outputs(output)
 
         html_path = self._html_path(node=node)
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        html_path.unlink(missing_ok=True)
+        # Through the shell runner, which a remote worker's leaves alone once
+        # the task's own image has rendered the page.
+        self.shell_runner.prepare_outputs(str(html_path))
 
         self._check_cli_args(node=node, notebook_path=directive.path)
         cmd = self._export_command(node=node, notebook_path=directive.path, html_path=html_path)
@@ -204,24 +205,17 @@ class NotebookRunner(DriverTaskRunner):
     def _record_rendered_html(self, *, node: TaskInvocation, html_path: Path) -> None:
         """Record the rendered page against the task, and leave it for the cache entry.
 
-        The run's own record holds the page relative to its run directory. The
-        cache entry holds it absolute, with the producing run's id, so a later
-        cache hit links the page this run rendered.
+        The page is recorded relative to the directory of the run that rendered
+        it, with that run's id, so a later cache hit links the same page.
         """
         if self.run_dir is None:
             return
-        try:
-            relative = str(html_path.relative_to(self.run_dir.path))
-        except ValueError:
-            relative = str(html_path)
-        self.annotate(
-            node=node,
-            fields={"rendered_html": relative, "rendered_html_run_id": self.run_dir.run_id},
-        )
-        node.runner_extras = {
-            "rendered_html": str(html_path.resolve()),
+        fields = {
+            "rendered_html": self.run_dir.relative(html_path),
             "rendered_html_run_id": self.run_dir.run_id,
         }
+        self.annotate(node=node, fields=fields)
+        node.runner_extras = fields
 
 
 @contextmanager

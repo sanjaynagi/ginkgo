@@ -34,7 +34,12 @@ from ginkgo.core.types import (
     unwrap_optional_annotation,
 )
 from ginkgo.envs.mounts import Mount, MountMode, mount
-from ginkgo.errors import FAILURE_KINDS, FailureKind, GinkgoError, describe_exception
+from ginkgo.errors import (
+    FAILURE_KINDS,
+    CommandExitError,
+    FailureKind,
+    describe_exception,
+)
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
@@ -50,7 +55,7 @@ logger = logging.getLogger(__name__)
 # ----- Exceptions -----------------------------------------------------------
 
 
-class ShellTaskError(GinkgoError, RuntimeError):
+class ShellTaskError(CommandExitError):
     """A shell or script task's command exited non-zero.
 
     Parameters
@@ -98,14 +103,6 @@ class ShellTaskError(GinkgoError, RuntimeError):
             details = f"{details}\n{hint}"
 
         super().__init__(details)
-
-    @classmethod
-    def reported(cls, *, message: str, exit_code: int) -> ShellTaskError:
-        """Rebuild the error a remote worker reported, from its message and exit code."""
-        exc = cls.__new__(cls)
-        RuntimeError.__init__(exc, message)
-        exc.exit_code = exit_code
-        return exc
 
 
 # ----- Helpers --------------------------------------------------------------

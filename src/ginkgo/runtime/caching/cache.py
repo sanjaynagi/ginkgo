@@ -829,19 +829,17 @@ class CacheStore:
                 )
             return
 
+        # A link is stored by what it points at. A remote task's returned
+        # output reaches the driver as a link into this store, which is then
+        # recorded without copying anything.
         if annotation is file or isinstance(value, file):
             path = Path(str(value))
-            if path.is_symlink():
-                # Already a symlink (e.g. from a previous run) — skip.
-                return
             if path.is_file():
                 records[str(path)] = self._artifact_store.store(src_path=path)
             return
 
         if annotation is folder or isinstance(value, folder):
             path = Path(str(value))
-            if path.is_symlink():
-                return
             if path.is_dir():
                 records[str(path)] = self._artifact_store.store(src_path=path)
             return

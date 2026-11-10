@@ -125,6 +125,9 @@ def run_worker_payload(payload: dict, *, phase: str | None = None) -> dict | Non
     remote_artifact_config = payload.pop("remote_artifact_store", None)
     output_param_entries = payload.pop("output_param_entries", None)
     payload["transport_dir"] = str(_scratch_root() / "ginkgo-transport")
+    # Where a driver kind's runner gets its run directory, on the scratch a
+    # container task's image shares.
+    payload["run_dir_root"] = str(_scratch_root() / "ginkgo-runs")
     if phase == "stage-in":
         _reset_command_dir()
 
@@ -262,6 +265,18 @@ def _finish(
     # contain no encoded file/folder leaves.
     if remote_store is not None and result.get("ok"):
         _stage_remote_outputs(result, remote_store=remote_store, output_param_entries=entries)
+
+    # What a runner wrote to its run directory goes back failed or not: a
+    # failed notebook's page shows the failing cell. The directory, one per
+    # attempt, then goes, as a declared output's scratch does.
+    record = result.get("runner_record")
+    if remote_store is not None and record is not None and record["files"] is not None:
+        from ginkgo.runtime.artifacts.remote_arg_transfer import stage_result_for_remote
+
+        record["files"] = stage_result_for_remote(
+            result=record["files"], remote_store=remote_store
+        )
+        shutil.rmtree(record["attempt_dir"])
     return result
 
 
