@@ -204,6 +204,19 @@ class UnresolvedEnvIdentityError(GinkgoError, RuntimeError):
         )
 
 
+def entry_dirs(root: Path) -> list[Path]:
+    """Return the cache entry directories under *root*, sorted by key.
+
+    A save in flight is not an entry yet. It writes into a temporary
+    ``<key>.tmp-...`` directory beside the entries and renames it into place.
+    """
+    if not root.exists():
+        return []
+    return sorted(
+        entry for entry in root.iterdir() if entry.is_dir() and ".tmp-" not in entry.name
+    )
+
+
 @dataclass(kw_only=True)
 class CacheStore:
     """Persistent on-disk cache for resolved task results.
@@ -829,19 +842,17 @@ class CacheStore:
                 )
             return
 
+        # A link is stored by what it points at. A remote task's returned
+        # output reaches the driver as a link into this store, which is then
+        # recorded without copying anything.
         if annotation is file or isinstance(value, file):
             path = Path(str(value))
-            if path.is_symlink():
-                # Already a symlink (e.g. from a previous run) — skip.
-                return
             if path.is_file():
                 records[str(path)] = self._artifact_store.store(src_path=path)
             return
 
         if annotation is folder or isinstance(value, folder):
             path = Path(str(value))
-            if path.is_symlink():
-                return
             if path.is_dir():
                 records[str(path)] = self._artifact_store.store(src_path=path)
             return
@@ -880,14 +891,8 @@ class CacheStore:
         beside the entries and renames it into place, so a concurrent
         ``--orphans`` would otherwise delete the bytes out from under it.
         """
-        if not self._root.exists():
-            return []
         known = set(self.index.cache_keys())
-        return sorted(
-            entry
-            for entry in self._root.iterdir()
-            if entry.is_dir() and entry.name not in known and ".tmp-" not in entry.name
-        )
+        return [entry for entry in entry_dirs(self._root) if entry.name not in known]
 
     def value_artifact_ids(self) -> set[str]:
         """Return every artifact an entry's encoded value names.

@@ -31,7 +31,7 @@ from ginkgo.store.maintenance import disk_usage
 from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.query import CacheEntryRow, CacheStats, Query
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
-from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.cache import CacheStore, entry_dirs
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -49,7 +49,11 @@ def command_cache(args) -> int:
             return 0
 
         rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
-        entries = sorted((_cache_entry_row(row) for row in rows), key=lambda e: e.cache_key)
+        # Grouped by task, then branch, so one task's entries read together.
+        entries = sorted(
+            (_cache_entry_row(row) for row in rows),
+            key=lambda e: (e.function, _natural_key(e.label), e.created, e.cache_key),
+        )
         if not entries:
             rich_console.print("[dim]No cache entries found.[/]")
             return 0
@@ -181,16 +185,15 @@ def _clear(args, rich_console) -> int:
         )
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
     if args.cache_key is not None:
-        if not (CACHE_ROOT / args.cache_key).is_dir():
-            raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
+        cache_key = _resolve_cache_key(args.cache_key)
         with _cache_store() as cache_store:
-            freed_bytes = remove_entry(cache_store, args.cache_key)
+            freed_bytes = remove_entry(cache_store, cache_key)
             freed_bytes += gc_orphan_artifacts(cache_store)
 
         message = Text()
         message.append("✓ ", style="green")
         message.append("Removed cache entry ")
-        message.append(args.cache_key, style="bold")
+        message.append(cache_key, style="bold")
         message.append(f" ({format_bytes(freed_bytes)} freed on disk).")
         message.no_wrap = True
         rich_console.print(message)
@@ -231,6 +234,37 @@ def _clear(args, rich_console) -> int:
     if rows:
         rich_console.print(_LEDGER_SPACE_NOTE)
     return 0
+
+
+def _resolve_cache_key(prefix: str) -> str:
+    """Return the one cache key that starts with *prefix*.
+
+    A key is long, so `cache clear` takes as much of one as tells it apart,
+    as git does with a commit hash.
+
+    Raises
+    ------
+    FileNotFoundError
+        When no entry's key starts with *prefix*.
+    UsageError
+        When more than one does.
+    """
+    matches = [entry.name for entry in entry_dirs(CACHE_ROOT) if entry.name.startswith(prefix)]
+    if not prefix or not matches:
+        raise FileNotFoundError(f"Cache entry not found: {prefix}")
+    if len(matches) > 1:
+        shown = ", ".join(matches[:_AMBIGUOUS_SHOWN])
+        if len(matches) > _AMBIGUOUS_SHOWN:
+            shown += f" and {len(matches) - _AMBIGUOUS_SHOWN} more"
+        raise UsageError(
+            f"Cache key prefix {prefix!r} matches {len(matches)} entries: {shown}. "
+            "Give more of the key."
+        )
+    return matches[0]
+
+
+_AMBIGUOUS_SHOWN = 5
+"""How many matching keys an ambiguous prefix's error names."""
 
 
 _LEDGER_SPACE_NOTE = (
@@ -402,6 +436,11 @@ def list_cache_entries(reader: Query) -> list[CacheEntryDisplay]:
         (_cache_entry_row(row) for row in reader.cache_entries()),
         key=lambda entry: entry.cache_key,
     )
+
+
+def _natural_key(label: str) -> list[str | int]:
+    """Return a sort key that puts ``sq[2]`` before ``sq[10]``."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", label)]
 
 
 def _cache_entry_row(row: CacheEntryRow) -> CacheEntryDisplay:

@@ -113,11 +113,11 @@ failing cell. The runner raises `NotebookTaskError`, whose message points at
 that page, so the task fails and nothing is cached.
 
 The runner records the page against the task as the generic `rendered_html`
-annotation (relative to the run directory) with `rendered_html_run_id`, and
-stores an absolute pointer plus the run id in `node.runner_extras`, which the
-evaluator saves with the cache entry and records against the task again on a
-cache hit, so the run lists the page the producing run rendered and names that
-run. Core treats `rendered_html` as a convention any task kind may use; it
+annotation, relative to the run directory, with `rendered_html_run_id`. It
+leaves the same fields in `node.runner_extras`, which the evaluator saves with
+the cache entry and records against the task again on a cache hit, so the run
+lists the page the producing run rendered and names that run; a reader resolves
+the page against that run's directory. Core treats `rendered_html` as a convention any task kind may use; it
 knows nothing about notebooks.
 
 Notebook tasks run on the same driver-side execution path as shell tasks,

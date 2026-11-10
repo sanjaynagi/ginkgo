@@ -26,16 +26,18 @@ COPY --from=ghcr.io/prefix-dev/pixi:0.82.1 /usr/local/bin/pixi /usr/local/bin/pi
 WORKDIR /app
 
 # Install ginkgo, the object-store plugins (s3://, gs://, oci://), Pixi envs,
-# and the Kubernetes executor, which only a driver uses. ginkgo-gcp brings the
-# Batch client libraries along with the gs:// store.
+# notebook tasks (with marimo), and the Kubernetes executor, which only a
+# driver uses. ginkgo-gcp brings the Batch client libraries along with the
+# gs:// store.
 COPY pyproject.toml README.md ./
 COPY src/ginkgo/ src/ginkgo/
 COPY plugins/ginkgo-aws/ plugins/ginkgo-aws/
 COPY plugins/ginkgo-gcp/ plugins/ginkgo-gcp/
 COPY plugins/ginkgo-oci/ plugins/ginkgo-oci/
 COPY plugins/ginkgo-pixi/ plugins/ginkgo-pixi/
+COPY plugins/ginkgo-notebook/ plugins/ginkgo-notebook/
 COPY plugins/ginkgo-k8s/ plugins/ginkgo-k8s/
 RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci \
-    ./plugins/ginkgo-pixi ./plugins/ginkgo-k8s
+    ./plugins/ginkgo-pixi ./plugins/ginkgo-notebook ./plugins/ginkgo-k8s
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]

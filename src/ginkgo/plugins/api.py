@@ -538,7 +538,11 @@ class TaskKind:
     allows_env : bool
         Whether the kind may declare ``env=``.
     remote_capable : bool
-        Whether the kind can be dispatched to a remote executor.
+        Whether the kind can be dispatched to a remote executor. A driver
+        kind's runner then runs in the remote worker, with a run directory of
+        the worker's own: what it writes there comes back to the same relative
+        paths in the run's directory, and what it annotates and leaves in
+        ``runner_extras`` comes back with it.
     eager_source_hash : bool
         Whether the body is evaluated while the task is prepared, so the
         directive's ``source_hash`` (a notebook or script file) joins the cache

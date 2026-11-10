@@ -226,14 +226,7 @@ class RemoteDispatchManager:
             and payload.get("ok")
             and "result" in payload
         ):
-            from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote
-
-            scratch_dir = self._artifact_store.local._root / "remote-outputs"
-            payload["result"] = hydrate_result_from_remote(
-                result=payload["result"],
-                remote_store=self._artifact_store,
-                scratch_dir=scratch_dir,
-            )
+            payload["result"] = self._hydrate(payload["result"])
 
         if (
             self._artifact_store is not None
@@ -249,7 +242,23 @@ class RemoteDispatchManager:
                 entries=payload["output_param_results"], remote_store=self._artifact_store
             )
 
+        # Failed or not, as the worker sent it.
+        record = payload.get("runner_record") if isinstance(payload, dict) else None
+        if self._artifact_store is not None and record is not None and record["files"] is not None:
+            record["files"] = self._hydrate(record["files"])
+
         return payload
+
+    def _hydrate(self, encoded: Any) -> Any:
+        """Download the file and folder values in a worker's *encoded* value."""
+        from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote
+
+        assert self._artifact_store is not None
+        return hydrate_result_from_remote(
+            result=encoded,
+            remote_store=self._artifact_store,
+            scratch_dir=self._artifact_store.local._root / "remote-outputs",
+        )
 
     def _ensure_code_bundle(self, *, executor_name: str, env: str | None) -> dict[str, str] | None:
         """Create and publish an executor's code bundle for a task in *env*.

@@ -252,8 +252,8 @@ def run_task(
         directory the driver cannot read. ``None`` keeps them in the
         transport directory.
     backend : ExecutionEnvironment | None
-        The prepared environment a remote worker runs a shell or script
-        task's command in, for a task that declares a Pixi ``env=``.
+        The prepared environment a remote worker runs a driver-kind task's
+        command in, for a task that declares a Pixi ``env=``.
     shell_runner_type : Callable[..., ShellRunner] | None
         Builds the shell runner that a remote driver-kind task's directive
         runs on, in place of a :class:`ShellRunner`.
@@ -287,6 +287,7 @@ def run_task(
     fn = None
     measured: dict[str, Any] | None = None
     input_digests: dict[str, str] = {}
+    runner_record: dict[str, Any] = {}
     try:
         with (
             _task_log_context(
@@ -329,6 +330,7 @@ def run_task(
                         args=decoded_args,
                         payload=payload,
                         usage=command_usage,
+                        record=runner_record,
                         backend=backend,
                         shell_runner_type=shell_runner_type,
                     )
@@ -376,6 +378,14 @@ def run_task(
         response = error_response(exc)
         if measured is not None:
             response["measured_resources"] = measured
+        if runner_record:
+            try:
+                response["runner_record"] = _encoded_runner_record(
+                    runner_record, base_dir=base_dir, artifact_store=artifact_store
+                )
+            except Exception:
+                # The task's own failure is the one to report.
+                traceback.print_exc()
         return response
     finally:
         if mounted_access is not None:
@@ -383,6 +393,10 @@ def run_task(
 
     if measured is not None:
         response["measured_resources"] = measured
+    if runner_record:
+        response["runner_record"] = _encoded_runner_record(
+            runner_record, base_dir=base_dir, artifact_store=artifact_store
+        )
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()
     # A mount that fell back to a download leaves that input's digest.
@@ -477,6 +491,7 @@ def _run_directive(
     args: dict[str, Any],
     payload: dict[str, Any],
     usage: dict[str, Any],
+    record: dict[str, Any],
     backend: ExecutionEnvironment | None,
     shell_runner_type: Callable[..., ShellRunner] | None = None,
 ) -> Any:
@@ -485,9 +500,15 @@ def _run_directive(
     The command runs in *backend*'s env when the task declares a Pixi one, on
     what *shell_runner_type* builds, or on a :class:`ShellRunner`. Returns the
     runner's result, and records the command's measured usage in *usage*.
+
+    The runner gets a run directory of this worker's own, one per attempt,
+    under the payload's ``run_dir_root``. What it writes there and what it
+    annotates go in *record*, whether or not it succeeds, for the driver to
+    take into its run directory.
     """
     from ginkgo.plugins.api import RunnerContext
     from ginkgo.runtime.executor_registry import LOCAL
+    from ginkgo.runtime.rundir import RunDir
     from ginkgo.runtime.task_kinds import task_kind
     from ginkgo.runtime.task_runners.shell import ShellRunner
     from ginkgo.runtime.task_validation import TaskValidator
@@ -506,6 +527,12 @@ def _run_directive(
     def emitter(*, node: Any, stream: str) -> Any:
         return lambda chunk: getattr(sys, stream).write(chunk)
 
+    run_dir = RunDir(
+        run_id=payload.get("run_id") or "",
+        root=Path(payload["run_dir_root"])
+        / f"task_{payload['node_id']:04d}_attempt_{payload['attempt']}",
+    )
+    annotated: dict[str, Any] = {}
     validator = TaskValidator()
     context = RunnerContext(
         validator=validator,
@@ -515,8 +542,8 @@ def _run_directive(
             log_emitter_factory=emitter,
             usage_recorder=lambda *, node, measured: usage.update(measured),
         ),
-        run_dir=None,
-        annotate=lambda *, node, fields: None,
+        run_dir=run_dir,
+        annotate=lambda *, node, fields: annotated.update(fields),
         notice=lambda *, node, message: print(f"warning: {message}", file=sys.stderr),
         run_id=lambda: payload.get("run_id") or "",
         db_path=WorkspaceLayout.for_cwd().db,
@@ -533,7 +560,39 @@ def _run_directive(
     )
     runner = task_kind(task_def).runner
     assert runner is not None
-    return runner(context).run(node=invocation, directive=directive)
+    try:
+        return runner(context).run(node=invocation, directive=directive)
+    finally:
+        if annotated or run_dir.path.exists():
+            record.update(
+                run_dir=run_dir,
+                fields=annotated,
+                runner_extras=invocation.runner_extras,
+            )
+
+
+def _encoded_runner_record(
+    record: dict[str, Any], *, base_dir: Path, artifact_store: ArtifactStore | None
+) -> dict[str, Any]:
+    """Encode what :func:`_run_directive` recorded, its run directory as a folder value.
+
+    ``attempt_dir`` holds the run directory and nothing else of this attempt's,
+    for the worker to remove once the files are on their way.
+    """
+    from ginkgo.core.types import folder
+
+    run_dir = record["run_dir"].path
+    return {
+        "run_dir": str(run_dir),
+        "attempt_dir": str(record["run_dir"].root),
+        "fields": record["fields"],
+        "runner_extras": record["runner_extras"],
+        "files": (
+            encode_value(folder(run_dir), base_dir=base_dir, artifact_store=artifact_store)
+            if run_dir.exists()
+            else None
+        ),
+    }
 
 
 def _is_dynamic_result(value: Any) -> bool:

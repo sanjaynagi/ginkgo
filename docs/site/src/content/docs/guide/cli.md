@@ -364,7 +364,7 @@ ginkgo cache explain [run_id]            # why each task ran or was cached (defa
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size
 ginkgo cache prune --max-entries 500     # remove entries to stay under a count
-ginkgo cache clear <cache_key>           # remove one entry
+ginkgo cache clear <cache_key>           # remove one entry; a unique prefix of the key will do
 ginkgo cache clear --task align          # remove every entry one task wrote
 ginkgo cache clear --all                 # remove every entry
 ginkgo cache clear --orphans             # remove entries the database has lost
