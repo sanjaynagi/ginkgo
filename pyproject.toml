@@ -120,7 +120,7 @@ benchmark = ".pixi/envs/default/bin/python -m benchmarks.run"
 lint = "ruff check src/ginkgo/ tests/ benchmarks/ plugins/"
 format = "ruff format src/ginkgo/ tests/ benchmarks/ plugins/"
 format-check = "ruff format --check src/ginkgo/ tests/ benchmarks/ plugins/"
-typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check --python .pixi/envs/default src/ginkgo/config.py src/ginkgo/resource_history.py src/ginkgo/cli/app.py src/ginkgo/cli/commands/cache.py src/ginkgo/cli/commands/db.py src/ginkgo/query.py src/ginkgo/cli/commands/why.py src/ginkgo/cli/commands/runs.py src/ginkgo/cli/commands/history.py src/ginkgo/cli/commands/query.py src/ginkgo/cli/commands/export.py src/ginkgo/cli/renderers/jsonl.py src/ginkgo/store src/ginkgo/plugins src/ginkgo/cli/commands/plugins.py src/ginkgo/runtime/executor_registry.py src/ginkgo/remote/resolve.py src/ginkgo/runtime/caching src/ginkgo/runtime/artifacts/artifact_store.py src/ginkgo/runtime/rundir.py src/ginkgo/remote/staging.py src/ginkgo/runtime/artifacts/remote_artifact_store.py src/ginkgo/runtime/artifacts/remote_arg_transfer.py src/ginkgo/runtime/run_summary.py tests/store plugins/ginkgo-aws/src plugins/ginkgo-k8s/src plugins/ginkgo-gcp/src plugins/ginkgo-oci/src plugins/ginkgo-report/src/ginkgo_report/__init__.py plugins/ginkgo-report/src/ginkgo_report/command.py plugins/ginkgo-slack/src plugins/ginkgo-pixi/src plugins/ginkgo-notebook/src src/ginkgo/envs/manifest.py"
+typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check --python .pixi/envs/default"
 precommit = "pre-commit run --all-files"
 docs-build = "npm --prefix docs/site ci && npm --prefix docs/site run build"
 docs-serve = "npm --prefix docs/site run dev"
@@ -137,6 +137,86 @@ markers = [
 [tool.ruff]
 src = ["src"]
 line-length = 99
+
+[tool.ty.src]
+# `pixi run typecheck` checks every file except these, which don't pass ty yet.
+# Take a file off the list in the change that makes it pass.
+exclude = [
+    "benchmarks/fuse_vs_stage/run_bench.py",
+    "benchmarks/harness.py",
+    "plugins/ginkgo-gcp/tests/test_gcs_store.py",
+    "plugins/ginkgo-k8s/tests/test_k8s_executor.py",
+    "plugins/ginkgo-notebook/tests/test_notebook_tasks.py",
+    "plugins/ginkgo-oci/tests/test_oci_store.py",
+    "plugins/ginkgo-pixi/tests/test_remote_pixi.py",
+    "plugins/ginkgo-report/src/ginkgo_report/model.py",
+    "plugins/ginkgo-report/src/ginkgo_report/notebook_page.py",
+    "plugins/ginkgo-report/src/ginkgo_report/render.py",
+    "plugins/ginkgo-report/tests/test_reporting.py",
+    "plugins/ginkgo-slack/tests/test_slack_subscriber.py",
+    "src/ginkgo/cli/commands/run.py",
+    "src/ginkgo/cli/renderers/debug.py",
+    "src/ginkgo/cli/renderers/rich.py",
+    "src/ginkgo/cli/renderers/run.py",
+    "src/ginkgo/core/expr.py",
+    "src/ginkgo/core/flow.py",
+    "src/ginkgo/core/resources.py",
+    "src/ginkgo/core/source_hash.py",
+    "src/ginkgo/core/task.py",
+    "src/ginkgo/core/types.py",
+    "src/ginkgo/envs/mounts.py",
+    "src/ginkgo/remote/access/mounted.py",
+    "src/ginkgo/remote/access/protocol.py",
+    "src/ginkgo/remote/access/worker_hydration.py",
+    "src/ginkgo/remote/code_bundle.py",
+    "src/ginkgo/runtime/artifacts/value_codec.py",
+    "src/ginkgo/runtime/diagnostics.py",
+    "src/ginkgo/runtime/dry_run.py",
+    "src/ginkgo/runtime/environment/resources.py",
+    "src/ginkgo/runtime/environment/secrets.py",
+    "src/ginkgo/runtime/evaluator.py",
+    "src/ginkgo/runtime/graph.py",
+    "src/ginkgo/runtime/log_drain.py",
+    "src/ginkgo/runtime/module_loader.py",
+    "src/ginkgo/runtime/placement.py",
+    "src/ginkgo/runtime/scheduler.py",
+    "src/ginkgo/runtime/static_directive.py",
+    "src/ginkgo/runtime/task_runners/shell.py",
+    "src/ginkgo/runtime/task_validation.py",
+    "tests/cli/test_cache_explain.py",
+    "tests/cli/test_cli.py",
+    "tests/cli/test_doctor.py",
+    "tests/cli/test_error_reporting.py",
+    "tests/cli/test_interpreter_mismatch.py",
+    "tests/cli/test_run_path_tracking_summary.py",
+    "tests/cli/test_task_names.py",
+    "tests/conftest.py",
+    "tests/core/test_code_bundle.py",
+    "tests/core/test_graph_boundaries.py",
+    "tests/core/test_module_loader.py",
+    "tests/core/test_optional_outputs.py",
+    "tests/core/test_provenance.py",
+    "tests/core/test_resource_history.py",
+    "tests/core/test_subworkflow.py",
+    "tests/plugins/test_registry.py",
+    "tests/remote/test_remote.py",
+    "tests/remote/test_remote_access.py",
+    "tests/remote/test_remote_backend.py",
+    "tests/remote/test_remote_evaluator.py",
+    "tests/remote_fakes.py",
+    "tests/renderers/test_debug_renderer.py",
+    "tests/renderers/test_jsonl_renderer.py",
+    "tests/renderers/test_run_renderer.py",
+    "tests/runtime/test_evaluator.py",
+    "tests/runtime/test_event_payloads.py",
+    "tests/runtime/test_interrupted_run.py",
+    "tests/runtime/test_measured_resources.py",
+    "tests/runtime/test_named_executors.py",
+    "tests/runtime/test_resources.py",
+    "tests/runtime/test_staging.py",
+    "tests/runtime/test_store_recorder.py",
+    "tests/runtime/test_warm_run_optimizations.py",
+]
 
 [tool.uncoded]
 source-roots = ["src/ginkgo"]
