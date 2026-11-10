@@ -85,8 +85,8 @@ class TaskSummary:
     rendered_html: str | None
     """A page the task rendered for people to read, such as a notebook's HTML.
 
-    Any task kind may record one; relative to the run directory, or absolute
-    when a cache hit points at the page an earlier run rendered."""
+    Any task kind may record one, relative to the directory of the run that
+    rendered it."""
     rendered_html_run_id: str | None
     """The run that rendered ``rendered_html``: not this run on a cache hit."""
     dependency_ids: tuple[int, ...]
@@ -198,14 +198,15 @@ class TaskSummary:
         return f"blocked by {blocker_label}"
 
     def rendered_html_absolute(self, *, run_dir: Path) -> Path | None:
-        """Resolve ``rendered_html`` against the run directory.
+        """Resolve ``rendered_html`` against the directory of the run that rendered it.
 
-        Cache hits replay an absolute path; a freshly rendered page is stored
-        relative to ``run_dir``. ``Path /`` handles both.
+        That is *run_dir*, or on a cache hit the producing run's directory
+        beside it.
         """
         if self.rendered_html is None:
             return None
-        return (run_dir / self.rendered_html).resolve()
+        rendered_in = run_dir.parent / (self.rendered_html_run_id or run_dir.name)
+        return (rendered_in / self.rendered_html).resolve()
 
 
 @dataclass(frozen=True, kw_only=True)

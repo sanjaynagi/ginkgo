@@ -17,8 +17,9 @@ def _worker_parts(dockerfile: str) -> set[str]:
 
 def test_the_fuse_image_runs_whatever_the_worker_image_does() -> None:
     # An executor runs any task with a streamed input in its fuse_image, so
-    # a Pixi task's included. Only a driver uses the Kubernetes executor.
+    # a Pixi or notebook task's included. Only a driver uses the Kubernetes
+    # executor.
     worker = _worker_parts("Dockerfile") - {"ginkgo-k8s"}
 
-    assert {"pixi", "ginkgo-pixi"} <= worker
+    assert {"pixi", "ginkgo-pixi", "ginkgo-notebook"} <= worker
     assert worker <= _worker_parts("Dockerfile.worker-fuse")

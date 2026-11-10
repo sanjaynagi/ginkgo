@@ -20,6 +20,10 @@ task's arguments and renders the page in one pass.
   the notebook. You can leave it out of version control.
 - **The rendered page.** Ginkgo lists the page under "Rendered pages" at the
   end of the run, and links it from the [run report](/ginkgo/guide/reports/).
+- **Remotely.** Under `--executor`, the notebook runs in the remote worker,
+  and its page comes back to the run as if it had run on your machine. Name
+  the notebook by a path built from `Path(__file__)`. See
+  [Remote Execution](/ginkgo/guide/remote-execution/).
 
 ## Check A Notebook Before You Run It
 

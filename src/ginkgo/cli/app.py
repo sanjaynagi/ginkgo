@@ -497,7 +497,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     stats_parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     clear_parser = cache_subparsers.add_parser("clear", help="Clear cache entries")
-    clear_parser.add_argument("cache_key", nargs="?")
+    clear_parser.add_argument(
+        "cache_key",
+        nargs="?",
+        help="The entry's cache key, or any start of it that matches only one entry.",
+    )
     clear_parser.add_argument(
         "--task",
         default=None,

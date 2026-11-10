@@ -322,6 +322,62 @@ class TestCliRunAndCache:
         assert "Removed 1 orphaned cache director" in run_ok("cache", "clear", "--orphans").stdout
         assert known.exists() and not orphan.exists()
 
+    def test_cache_clear_takes_a_unique_key_prefix(self) -> None:
+        wanted = _seed_cache_entry("abc123", age_days=1)
+        kept = _seed_cache_entry("abd456", age_days=1)
+        # A save in flight beside the entry is not a second match.
+        (CACHE / "abc123.tmp-x1y2").mkdir()
+
+        result = run_ok("cache", "clear", "abc")
+        assert "Removed cache entry abc123" in result.stdout
+        assert not wanted.exists() and kept.exists()
+
+    def test_cache_clear_names_the_entries_an_ambiguous_prefix_matches(self) -> None:
+        first = _seed_cache_entry("abc123", age_days=1)
+        second = _seed_cache_entry("abd456", age_days=1)
+
+        result = run_cli("cache", "clear", "ab")
+        assert result.returncode == 2
+        assert "matches 2 entries: abc123, abd456" in unwrapped(result.stderr)
+        assert first.exists() and second.exists()
+
+    @pytest.mark.parametrize("key", ["", "../ca", "abc123/"])
+    def test_cache_clear_finds_no_entry_for_an_empty_or_path_like_key(self, key: str) -> None:
+        # An empty key once named the cache directory itself.
+        entry = _seed_cache_entry("abc123", age_days=1)
+
+        result = run_cli("cache", "clear", key)
+        assert result.returncode == 1
+        assert "Cache entry not found" in result.stdout + result.stderr
+        assert entry.exists()
+
+    def test_cache_ls_groups_entries_by_task_then_branch(self) -> None:
+        write(
+            "workflow.py",
+            """
+            from ginkgo import flow, task
+
+            @task()
+            def sq(i: int) -> int:
+                return i * i
+
+            @task()
+            def total(values: list[int]) -> int:
+                return sum(values)
+
+            @flow
+            def main():
+                return total(values=sq().map(i=list(range(11))))
+            """,
+        )
+        run_ok("run", "workflow.py")
+
+        listed = run_ok("cache", "ls").stdout
+        labels = re.findall(r"sq\[(\d+)\]", listed)
+        # By number, not text, which would put sq[10] before sq[2].
+        assert labels == [str(i) for i in range(11)]
+        assert listed.index("total") > listed.rindex("sq[")
+
     def test_cache_clear_task_removes_only_that_tasks_entries(self) -> None:
         first = _seed_cache_entry("a1", age_days=1, function="m.a", payload="x" * 2048)
         second = _seed_cache_entry("a2", age_days=1, function="m.a")

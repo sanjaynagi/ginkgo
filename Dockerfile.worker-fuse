@@ -69,16 +69,18 @@ COPY --from=ghcr.io/prefix-dev/pixi:0.82.1 /usr/local/bin/pixi /usr/local/bin/pi
 
 WORKDIR /app
 
-# Install ginkgo, the object-store plugins (s3://, gs://, oci://) and Pixi
-# envs. A worker runs tasks, so it needs no executor plugin; ginkgo-gcp brings
-# the Batch client libraries along with the gs:// store.
+# Install ginkgo, the object-store plugins (s3://, gs://, oci://), Pixi envs
+# and notebook tasks (with marimo). A worker runs tasks, so it needs no
+# executor plugin; ginkgo-gcp brings the Batch client libraries along with the
+# gs:// store.
 COPY pyproject.toml README.md ./
 COPY src/ginkgo/ src/ginkgo/
 COPY plugins/ginkgo-aws/ plugins/ginkgo-aws/
 COPY plugins/ginkgo-gcp/ plugins/ginkgo-gcp/
 COPY plugins/ginkgo-oci/ plugins/ginkgo-oci/
 COPY plugins/ginkgo-pixi/ plugins/ginkgo-pixi/
+COPY plugins/ginkgo-notebook/ plugins/ginkgo-notebook/
 RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci \
-    ./plugins/ginkgo-pixi
+    ./plugins/ginkgo-pixi ./plugins/ginkgo-notebook
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]

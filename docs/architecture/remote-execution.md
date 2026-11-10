@@ -3,10 +3,10 @@
 Ginkgo supports dispatching a workflow's tasks to cloud infrastructure while
 the driver runs locally. Placement is decided per task: `executor="name"` pins
 a task to one configured executor and `executor="local"` keeps it on the
-driver; otherwise every task whose kind is `remote_capable` (`python`, `shell`
-and `script`) goes to the run's *default* executor (`--executor`), and the rest
-run on the driver. Notebook and subworkflow tasks therefore run on the driver
-for now, even under `--executor`. Naming an executor on a kind that is not
+driver; otherwise every task whose kind is `remote_capable` (`python`, `shell`,
+`script` and `notebook`) goes to the run's *default* executor (`--executor`),
+and the rest run on the driver. Subworkflow tasks therefore run on the driver,
+even under `--executor`. Naming an executor on a kind that is not
 remote-capable is a build error, as is a locally placed task whose `gpu`
 requirement exceeds the local `--gpus` budget — a task never silently runs
 somewhere its requirement cannot be met. Cached tasks are never dispatched:
@@ -107,12 +107,21 @@ The worker entry point (`remote/worker.py`) runs as
 4. Calls the standard `run_task()` worker function. The payload carries no
    driver-local paths (log files, transport directory), so task
    output goes to the container's stdout/stderr and appears in the pod logs.
-   A driver kind's body (shell, script) returns its directive here, against
-   the pod's paths, and `run_task` runs it on the kind's own runner in a local
-   subprocess. The runner's result goes back as an ordinary encoded value,
-   marked `ran_directive` so the driver completes the task with it, and a
-   failed command's exit code travels in the error so `retry_on_exit_codes`
-   still applies. For a task with a Pixi `env=`, the worker first builds an
+   A driver kind's body (shell, script, notebook) returns its directive here,
+   against the pod's paths, and `run_task` runs it on the kind's own runner in
+   a local subprocess. The runner's result goes back as an ordinary encoded
+   value, marked `ran_directive` so the driver completes the task with it. A
+   failed command's error is rebuilt on the driver as its own type, with its
+   exit code, when that type is a `CommandExitError` from a module the driver
+   has imported, so failure classification, `retry_on` and, for shell and
+   script tasks, `retry_on_exit_codes` still apply. The runner gets a run directory of the
+   pod's own, one per attempt, with the driver's run id. What it writes there,
+   such as a notebook's rendered page, goes back as a `folder` value in the
+   response's `runner_record`, with what it annotated and its `runner_extras`,
+   whether or not the task succeeded. The driver copies the files into its run
+   directory at the same relative paths, so the annotations, which name them
+   relative to that directory, hold unchanged; it names them by their driver
+   paths in a failure's message. For a task with a Pixi `env=`, the worker first builds an
    `EnvironmentRouter` rooted at the extracted code bundle, which stands in
    for the code package's parent directory, or without one at its working
    directory, which stands in for the driver's project root. It searches the

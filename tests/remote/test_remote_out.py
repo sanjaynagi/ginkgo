@@ -52,6 +52,14 @@ def remote_write_output(payload: str, out_path: Out[file]) -> file:
 
 
 @task()
+def remote_returns_a_file(payload: str) -> file:
+    # Written in the pod's own working directory, not at a declared path.
+    path = Path("returned.txt").resolve()
+    path.write_text(payload, encoding="utf-8")
+    return file(path)
+
+
+@task()
 def remote_write_output_untracked_return(payload: str, out_path: Out[file]) -> int:
     """Writes its ``Out[file]`` but returns something else entirely.
 
@@ -305,6 +313,19 @@ class TestRemoteOutFile:
 
         assert out.read_text(encoding="utf-8") == "x"
         assert list((tmp_path / "pod-scratch" / "ginkgo-outputs").iterdir()) == []
+
+
+class TestRemoteReturnedOutput:
+    """A file a remote task returns, from a path of the pod's own."""
+
+    def test_a_returned_file_is_cached(self) -> None:
+        evaluate_remotely(remote_returns_a_file(payload="v1"))
+
+        collector = EventCollector()
+        result = evaluate_remotely(remote_returns_a_file(payload="v1"), event_bus=collector.bus)
+
+        assert collector.cached()
+        assert Path(result).read_text(encoding="utf-8") == "v1"
 
 
 class TestRemoteOutFolder:
