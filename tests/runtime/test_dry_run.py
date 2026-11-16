@@ -251,7 +251,9 @@ class TestWarmCache:
         plan = _plan(lambda: consume_as_file(summary=summary()))
         (diagnostic,) = plan.diagnostics
         assert diagnostic.label.startswith("consume_as_file")
-        assert "annotated `file` but received a pandas.DataFrame" in diagnostic.message
+        # The module is pandas.core.frame before pandas 3 and pandas from 3 on.
+        received = f"{pd.DataFrame.__module__}.DataFrame"
+        assert f"annotated `file` but received a {received}" in diagnostic.message
         assert _status(plan)["produce_summary"] == CACHED
         assert _status(plan)["consume_as_file"][0] == "will_run"
         text = _rendered(plan)
