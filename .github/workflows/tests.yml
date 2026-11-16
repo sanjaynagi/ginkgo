@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   tests:
     # One job per supported Python: default resolves the newest, and the

@@ -6,10 +6,15 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   trivy:
     runs-on: ubuntu-latest
+    # A job's own block replaces the workflow's, so it repeats contents: read.
     permissions:
+      contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v7
