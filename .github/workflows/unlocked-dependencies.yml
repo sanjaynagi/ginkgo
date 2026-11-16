@@ -16,6 +16,9 @@ on:
       - "plugins/*/pyproject.toml"
       - ".github/workflows/unlocked-dependencies.yml"
 
+permissions:
+  contents: read
+
 jobs:
   tests:
     strategy:
