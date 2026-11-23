@@ -766,8 +766,12 @@ class ShellRunner:
         on_stderr: Any = None,
         env: dict[str, str] | None = None,
         usage_callback: Callable[[dict[str, Any]], None] | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run a subprocess while tracking it for interrupt-time termination.
+
+        With *timeout* (seconds), a process still running then is terminated,
+        with its process group, and ``subprocess.TimeoutExpired`` is raised.
 
         When ``usage_callback`` is given, the subprocess tree's peak RSS and
         CPU time are sampled while it runs and reported to the callback once
@@ -851,7 +855,11 @@ class ShellRunner:
         stdout_thread.start()
         stderr_thread.start()
         try:
-            returncode = process.wait()
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self._terminate_subprocess(process=process)
+                raise
         finally:
             stdout_thread.join()
             stderr_thread.join()
@@ -875,12 +883,14 @@ class ShellRunner:
         user_log_path: Path | None = None,
         extra_env: dict[str, str] | None = None,
         mounts: Sequence[Mount] = (),
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run one command while appending to provenance logs.
 
         The node's declared path inputs are mounted for environments that need
         it; *mounts* carries anything else the command touches, such as the
-        declared outputs a shell directive names.
+        declared outputs a shell directive names. With *timeout* (seconds), a
+        command still running then is terminated and ``TimeoutExpired`` raised.
         """
         for path in (node.stdout_path, node.stderr_path, user_log_path):
             if path is not None:
@@ -939,6 +949,7 @@ class ShellRunner:
                 on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
                 env=subprocess_env,
                 usage_callback=usage_callback,
+                timeout=timeout,
             )
         finally:
             if stdout_handle is not None:

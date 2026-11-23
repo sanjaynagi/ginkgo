@@ -53,6 +53,7 @@ curl installer includes `ginkgo-pixi`.
 |---|---|
 | `ginkgo-pixi` | Pixi environments (`env="name"`) and the `ginkgo env` command |
 | `ginkgo-notebook` | `@task("notebook")`, for marimo notebooks. Projects from `ginkgo init` list it in their `pixi.toml` |
+| `ginkgo-agent` | `@task("agent")`, for coding agents such as Codex and Claude Code |
 | `ginkgo-report` | the `ginkgo report` command, for HTML run reports |
 | `ginkgo-slack` | run notifications to Slack |
 | `ginkgo-k8s` | the Kubernetes [executor](/ginkgo/guide/concepts/#glossary) |
