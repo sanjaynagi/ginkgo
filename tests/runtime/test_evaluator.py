@@ -1016,6 +1016,21 @@ def test_run_subprocess_tracks_the_process_only_while_it_runs() -> None:
     assert runner._active_subprocesses == {}
 
 
+def test_run_subprocess_stops_a_command_and_its_children_at_the_timeout(tmp_path: Path) -> None:
+    runner = ConcurrentEvaluator()._shell_runner
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        # The shell's child holds the output pipe, so reading the output would
+        # wait out the sleep unless the whole process group is stopped.
+        runner.run_subprocess(
+            argv=["sh", "-c", f"sleep 30; touch {tmp_path / 'late'}"], timeout=0.5
+        )
+
+    assert time.monotonic() - started < 10
+    assert runner._active_subprocesses == {}
+
+
 def test_a_worker_payload_carries_no_import_roots(tmp_path: Path) -> None:
     evaluator = ConcurrentEvaluator()
     (node_id,) = evaluator._register(add_one_task(x=1))

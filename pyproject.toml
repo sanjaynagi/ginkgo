@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 # First-party plugins, one extra each. They are released with core at the same
 # version, and each plugin pins the exact core version.
+agent = ["ginkgo-agent==0.4.0"]
 aws = ["ginkgo-aws==0.4.0"]
 k8s = ["ginkgo-k8s==0.4.0"]
 gcp = ["ginkgo-gcp==0.4.0"]
@@ -27,6 +28,7 @@ pixi = ["ginkgo-pixi==0.4.0"]
 report = ["ginkgo-report==0.4.0"]
 slack = ["ginkgo-slack==0.4.0"]
 all = [
+    "ginkgo-agent==0.4.0",
     "ginkgo-aws==0.4.0",
     "ginkgo-k8s==0.4.0",
     "ginkgo-gcp==0.4.0",
@@ -79,6 +81,7 @@ yaml = ">=0.2.5,<0.3"
 # environment includes them; the ``core`` environment runs core's tests without
 # any plugin installed, which is what proves the boundary.
 [tool.pixi.feature.plugins.pypi-dependencies]
+ginkgo-agent = { path = "plugins/ginkgo-agent", editable = true }
 ginkgo-aws = { path = "plugins/ginkgo-aws", editable = true }
 ginkgo-k8s = { path = "plugins/ginkgo-k8s", editable = true }
 ginkgo-gcp = { path = "plugins/ginkgo-gcp", editable = true }

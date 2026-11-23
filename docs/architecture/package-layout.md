@@ -171,6 +171,15 @@ plugins/
 │   │   ├── directive.py     # notebook() and NotebookDirective
 │   │   └── runner.py        # NotebookRunner: one `marimo export html` per task
 │   └── tests/
+├── ginkgo-agent/
+│   ├── pyproject.toml       # entry point agent = "ginkgo_agent:PLUGIN"
+│   ├── src/ginkgo_agent/
+│   │   ├── __init__.py      # PLUGIN: the agent task kind
+│   │   ├── directive.py     # agent() and AgentDirective
+│   │   ├── settings.py      # the [agents] table
+│   │   ├── clis.py          # each CLI's command line, final message and usage
+│   │   └── runner.py        # AgentRunner: one CLI call per attempt
+│   └── tests/
 ├── ginkgo-pixi/
 │   ├── pyproject.toml       # entry point pixi = "ginkgo_pixi:PLUGIN"
 │   ├── src/ginkgo_pixi/

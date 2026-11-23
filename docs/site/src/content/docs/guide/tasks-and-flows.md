@@ -316,6 +316,7 @@ All the tasks so far have been Python tasks. Ginkgo has these task kinds:
 | Shell | `@task("shell")` | `shell(cmd=..., output=...)` | a shell command, in a declared environment if there is one |
 | Script | `@task("script")` | `script(path, output=...)` | a `.py` or `.R` script file, with inputs passed as `--flags` |
 | Notebook | `@task("notebook")` | `notebook(path, output=...)` | a marimo notebook, rendered to HTML (needs the `ginkgo-notebook` plugin) |
+| Agent | `@task("agent")` | `agent(brief=..., reads=...)` | a coding agent, such as Codex or Claude Code, in a fresh workspace (needs the `ginkgo-agent` plugin; see [Agent Tasks](/ginkgo/guide/agent-tasks/)) |
 | Subworkflow | `@task("subworkflow")` | `subworkflow(path, params=...)` | another workflow, as its own `ginkgo run` |
 
 All kinds share typed inputs and outputs, caching and resource declarations.

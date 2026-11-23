@@ -182,6 +182,7 @@ tasks, Slack notifications and HTML reports are not in core. They live in separa
 | `plugins/ginkgo-gcp` | `ginkgo_gcp` | `gcp = "ginkgo_gcp:PLUGIN"` | `ObjectStoreType` `gs`, `MountDriverType` `gs` (gcsfuse), `ExecutorType` `batch` (label `GCP Batch`, requires `project`, `image`) | `gcsfs`, `google-auth`, `google-cloud-batch`, `google-cloud-logging` |
 | `plugins/ginkgo-oci` | `ginkgo_oci` | `oci = "ginkgo_oci:PLUGIN"` | `ObjectStoreType` `oci` (with its `oci://namespace/bucket/key` parser), `MountDriverType` `oci` (rclone) | `ocifs` |
 | `plugins/ginkgo-notebook` | `ginkgo_notebook` | `notebook = "ginkgo_notebook:PLUGIN"` | `TaskKind` `notebook` (marimo notebooks; driver mode, allows `env=`, remote-capable, eager source hash) | `marimo` |
+| `plugins/ginkgo-agent` | `ginkgo_agent` | `agent = "ginkgo_agent:PLUGIN"` | `TaskKind` `agent` (coding-agent CLIs; driver mode, eager source hash, exit-code retries, not remote-capable) | `jsonschema` (needs the agent's CLI) |
 | `plugins/ginkgo-pixi` | `ginkgo_pixi` | `pixi = "ginkgo_pixi:PLUGIN"` | `EnvironmentType` `pixi` (bare names, label `pixi`), `CliCommand` `env` | none (needs the `pixi` binary) |
 | `plugins/ginkgo-report` | `ginkgo_report` | `report = "ginkgo_report:PLUGIN"` | `CliCommand` `report` | `jinja2` |
 | `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |

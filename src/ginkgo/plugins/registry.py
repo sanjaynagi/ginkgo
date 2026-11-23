@@ -60,6 +60,7 @@ _FIRST_PARTY_PROVIDERS: dict[tuple[type, str], str] = {
     (CliCommand, "report"): "ginkgo-report",
     (CliCommand, "env"): "ginkgo-pixi",
     (TaskKind, "notebook"): "ginkgo-notebook",
+    (TaskKind, "agent"): "ginkgo-agent",
     (EnvironmentType, ""): "ginkgo-pixi",
 }
 """Which first-party distribution provides a key core does not ship, for hints."""
