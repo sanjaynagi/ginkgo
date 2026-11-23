@@ -1,6 +1,6 @@
 [project]
 name = "ginkgo-workflow"
-version = "0.4.0"
+version = "0.5.0"
 description = "A dynamic, reproducible workflow orchestrator for scientific and data workflows"
 requires-python = ">= 3.12"
 readme = "README.md"
@@ -18,25 +18,25 @@ dependencies = [
 [project.optional-dependencies]
 # First-party plugins, one extra each. They are released with core at the same
 # version, and each plugin pins the exact core version.
-agent = ["ginkgo-agent==0.4.0"]
-aws = ["ginkgo-aws==0.4.0"]
-k8s = ["ginkgo-k8s==0.4.0"]
-gcp = ["ginkgo-gcp==0.4.0"]
-notebook = ["ginkgo-notebook==0.4.0"]
-oci = ["ginkgo-oci==0.4.0"]
-pixi = ["ginkgo-pixi==0.4.0"]
-report = ["ginkgo-report==0.4.0"]
-slack = ["ginkgo-slack==0.4.0"]
+agent = ["ginkgo-agent==0.5.0"]
+aws = ["ginkgo-aws==0.5.0"]
+k8s = ["ginkgo-k8s==0.5.0"]
+gcp = ["ginkgo-gcp==0.5.0"]
+notebook = ["ginkgo-notebook==0.5.0"]
+oci = ["ginkgo-oci==0.5.0"]
+pixi = ["ginkgo-pixi==0.5.0"]
+report = ["ginkgo-report==0.5.0"]
+slack = ["ginkgo-slack==0.5.0"]
 all = [
-    "ginkgo-agent==0.4.0",
-    "ginkgo-aws==0.4.0",
-    "ginkgo-k8s==0.4.0",
-    "ginkgo-gcp==0.4.0",
-    "ginkgo-notebook==0.4.0",
-    "ginkgo-oci==0.4.0",
-    "ginkgo-pixi==0.4.0",
-    "ginkgo-report==0.4.0",
-    "ginkgo-slack==0.4.0",
+    "ginkgo-agent==0.5.0",
+    "ginkgo-aws==0.5.0",
+    "ginkgo-k8s==0.5.0",
+    "ginkgo-gcp==0.5.0",
+    "ginkgo-notebook==0.5.0",
+    "ginkgo-oci==0.5.0",
+    "ginkgo-pixi==0.5.0",
+    "ginkgo-report==0.5.0",
+    "ginkgo-slack==0.5.0",
 ]
 
 [project.urls]

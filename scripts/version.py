@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECTS = [ROOT / "pyproject.toml", *sorted(ROOT.glob("plugins/*/pyproject.toml"))]
-VERSIONS = re.compile(r'(^version = "|ginkgo-[a-z]+==)([^"]+)', re.MULTILINE)
+VERSIONS = re.compile(r'(^version = "|ginkgo-[a-z0-9-]+==)([^"]+)', re.MULTILINE)
 
 
 def main(action: str, version: str) -> int:
