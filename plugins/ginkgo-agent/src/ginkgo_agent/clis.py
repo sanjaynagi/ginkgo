@@ -8,9 +8,10 @@ stream (JSONL) to ``transcript.jsonl``, and leaves its final message in
 - ``codex``: ``codex exec`` in its ``workspace-write`` sandbox, which confines
   writes to the workspace and turns the network off unless asked for. Reads are
   not confined.
-- ``claude``: ``claude -p`` with edits accepted in the workspace and each read
-  added as a directory, with edits there refused. Claude Code has no network
-  switch, so ``network=False`` refuses its web tools only.
+- ``claude``: ``claude -p`` with edits accepted, each read's directory added
+  so it can be opened, and edits to the reads themselves refused. Edits beside
+  a read file are not refused. Claude Code has no network switch, so
+  ``network=False`` refuses its web tools only.
 - ``stub``: a script, given the paths in ``GINKGO_AGENT_*`` variables, for
   testing a workflow without calling a model.
 """
@@ -76,10 +77,10 @@ def cli_version(*, runner: str, command: str) -> str:
         If the command cannot be found or run.
     """
     if runner == "stub":
-        script = Path(command).expanduser()
+        script = Path(command)
         if not script.is_file():
             raise DirectiveError(f"[agents] command = {command!r}: no such stub script.")
-        return f"stub {hash_file(script.resolve())}"
+        return f"stub {hash_file(script)}"
     try:
         completed = subprocess.run(
             [command, "--version"], capture_output=True, text=True, timeout=60, check=False
@@ -152,9 +153,10 @@ def build_command(
         for read in reads:
             directory = read if read.is_dir() else read.parent
             parts.append(f"--add-dir {q(str(directory))}")
-            refused.extend(
-                [f"Edit({read}/**)", f"Write({read}/**)", f"Edit({read})", f"Write({read})"]
-            )
+            # In a permission rule an absolute path starts with "//"; a single
+            # "/" is relative to the settings file.
+            rule_path = f"/{read}/**" if read.is_dir() else f"/{read}"
+            refused.extend([f"Edit({rule_path})", f"Write({rule_path})"])
         if not network:
             refused.extend(["WebFetch", "WebSearch"])
         if refused:
@@ -169,8 +171,7 @@ def build_command(
         "GINKGO_AGENT_MODEL": settings.model or "",
         "GINKGO_AGENT_NETWORK": "1" if network else "0",
     }
-    script = q(str(Path(settings.command).expanduser().resolve()))
-    return f"cd {ws} && {script} {redirect}", env
+    return f"cd {ws} && {q(settings.command)} {redirect}", env
 
 
 def read_final_message(*, settings: AgentSettings, paths: AttemptPaths) -> str | None:

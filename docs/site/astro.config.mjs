@@ -31,7 +31,7 @@ export default defineConfig({
 				{ label: 'Examples', items: ['examples/bioinfo-workflow'] },
 				{
 					label: 'Plugins',
-					items: ['guide/notebooks', 'guide/agents', 'guide/reports', 'guide/notifications', 'guide/remote-execution', 'guide/remote-oke'],
+					items: ['guide/notebooks', 'guide/agent-tasks', 'guide/reports', 'guide/notifications', 'guide/remote-execution', 'guide/remote-oke'],
 				},
 				{ label: 'Reference', items: ['faq'] },
 			],

@@ -16,6 +16,7 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.rundir import RunDir, make_run_id
 from ginkgo_agent import AgentExitError, AgentTaskError, AgentTimeoutError, agent
 from ginkgo_agent.clis import cli_version
+from ginkgo_agent.runner import _fingerprint
 
 STUB = Path(__file__).with_name("stub_agent.py")
 
@@ -49,6 +50,11 @@ def interpret_twice(packet: folder, brief: file, schema: file) -> folder:
 @task("agent")
 def read_beside(brief: file) -> folder:
     return agent(brief=brief, reads=[Path(brief).parent / "notes.txt"])
+
+
+@task("agent")
+def read_by_name(brief: file, notes: str) -> folder:
+    return agent(brief=brief, reads=[notes])
 
 
 @pytest.fixture(autouse=True)
@@ -214,6 +220,40 @@ def test_a_read_that_is_not_an_argument_is_named(project: Path) -> None:
     _, _, _, notices = _evaluate(read_beside(brief=str(project / "brief.md")), root=project)
 
     assert any("notes.txt, which is not one of its arguments" in notice for notice in notices)
+
+
+def test_a_read_passed_as_a_plain_string_is_named(project: Path) -> None:
+    expr = read_by_name(brief=str(project / "brief.md"), notes=str(project / "notes.txt"))
+    _, _, _, notices = _evaluate(expr, root=project)
+
+    assert any("notes.txt, which is not one of its arguments" in notice for notice in notices)
+
+
+def test_a_stub_given_relative_to_the_project_runs(project: Path) -> None:
+    (project / "ginkgo.toml").write_text(
+        '[agents]\nrunner = "stub"\ncommand = "stub_agent.py"\n', encoding="utf-8"
+    )
+    result, _, _, _ = _evaluate(summarise(brief=str(project / "brief.md")), root=project)
+
+    assert Path(str(result)).is_dir()
+    assert _calls(project) == 1
+
+
+def test_the_read_check_sees_new_directories_and_changes_through_links(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "data.txt").write_text("a", encoding="utf-8")
+    read = tmp_path / "read"
+    read.mkdir()
+    (read / "linked").symlink_to(target)
+
+    before = _fingerprint(read)
+    (read / "empty").mkdir()
+    assert _fingerprint(read) != before
+
+    before = _fingerprint(read)
+    (target / "data.txt").write_text("ab", encoding="utf-8")
+    assert _fingerprint(read) != before
 
 
 def test_an_invalid_schema_is_refused_before_the_agent_runs(project: Path) -> None:

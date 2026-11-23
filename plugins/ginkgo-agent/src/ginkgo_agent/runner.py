@@ -23,13 +23,14 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 from jsonschema import ValidationError
 from jsonschema.validators import validator_for
 
+from ginkgo.core.types import is_path_shaped_annotation
 from ginkgo.errors import CommandExitError, FailureKind, GinkgoError
 from ginkgo.plugins.api import RunnerContext
 from ginkgo.runtime.rundir import RunDir
@@ -85,6 +86,7 @@ class AgentRunner(DriverTaskRunner):
     run_dir: RunDir | None
     annotate: Callable[..., None]
     notice: Callable[..., None]
+    _warned: set[tuple[str, Path]] = field(default_factory=set, init=False, repr=False)
 
     def run(self, *, node: TaskInvocation, directive: AgentDirective) -> Any:
         """Run one attempt and return its workspace."""
@@ -148,11 +150,25 @@ class AgentRunner(DriverTaskRunner):
         return path
 
     def _warn_untracked_reads(self, *, node: TaskInvocation, directive: AgentDirective) -> None:
-        """Warn about a read outside every path argument: a change to it would not re-run."""
+        """Warn about a read outside every ``file`` or ``folder`` argument.
+
+        Only those arguments are hashed by content, so a change to any other
+        read would not re-run the task. Each task and read is named once a run.
+        """
         assert node.resolved_args is not None
-        arguments = [Path(value).resolve() for value in _path_values(node.resolved_args.values())]
+        hints = node.task_def.type_hints
+        arguments = [
+            Path(path).resolve()
+            for name, value in node.resolved_args.items()
+            if is_path_shaped_annotation(hints.get(name))
+            for path in _path_values([value])
+        ]
         for read in directive.reads:
+            warned = (node.task_def.base_name, read)
+            if warned in self._warned:
+                continue
             if not any(read == arg or read.is_relative_to(arg) for arg in arguments):
+                self._warned.add(warned)
                 self.notice(
                     node=node,
                     message=(
@@ -237,15 +253,22 @@ def _prompt(*, directive: AgentDirective, paths: AttemptPaths) -> str:
 
 
 def _fingerprint(path: Path) -> tuple[tuple[str, int, int], ...]:
-    """Return each file's relative path, size and mtime under *path*, cheaply."""
+    """Return each entry's relative path, size and mtime under *path*, cheaply.
+
+    Directories count, so adding or removing an empty one is a change, and
+    symbolic links are followed, as the agent would follow them.
+    """
     if path.is_file():
         stat = path.stat()
         return (("", stat.st_size, stat.st_mtime_ns),)
     entries = []
-    for root, _dirs, files in os.walk(path):
-        for name in files:
+    for root, dirs, files in os.walk(path, followlinks=True):
+        for name in [*dirs, *files]:
             child = Path(root) / name
-            stat = child.lstat()
+            try:
+                stat = child.stat()
+            except FileNotFoundError:  # a broken link
+                stat = child.lstat()
             entries.append((str(child.relative_to(path)), stat.st_size, stat.st_mtime_ns))
     return tuple(sorted(entries))
 

@@ -73,8 +73,8 @@ def test_claude_reads_its_inputs_but_may_not_edit_them(tmp_path: Path) -> None:
     assert tokens[tokens.index("--json-schema") + 1] == '{"type": "object"}'
     assert tokens[tokens.index("--add-dir") + 1] == str(packet)
     refused = tokens[tokens.index("--disallowedTools") + 1 : tokens.index("<")]
-    assert f"Edit({packet}/**)" in refused
-    assert f"Write({packet}/**)" in refused
+    assert f"Edit(/{packet}/**)" in refused
+    assert f"Write(/{packet}/**)" in refused
     assert {"WebFetch", "WebSearch"} <= set(refused)
 
 

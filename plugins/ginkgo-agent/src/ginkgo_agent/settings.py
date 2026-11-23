@@ -14,6 +14,7 @@ model. Each of these joins an agent task's cache key, with the CLI's version.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,8 +39,9 @@ class AgentSettings:
     runner : str
         One of :data:`RUNNERS`.
     command : str
-        The executable: the runner's name on ``PATH`` by default, or the stub's
-        script.
+        The executable as an absolute path when it can be found: the runner's
+        name on ``PATH`` by default, or the stub's script. The agent runs in its
+        workspace, so a path relative to the project would not resolve there.
     model : str | None
         The model to ask for, or ``None`` for the CLI's default.
     isolation : str
@@ -89,7 +91,21 @@ def settings_from_table(table: Any) -> AgentSettings:
     model = table.get("model")
     return AgentSettings(
         runner=runner,
-        command=str(command) if command else runner,
+        command=_resolve_command(runner=runner, command=str(command) if command else runner),
         model=str(model) if model else None,
         isolation=isolation,
     )
+
+
+def _resolve_command(*, runner: str, command: str) -> str:
+    """Return *command* as an absolute path, or unchanged if it cannot be found.
+
+    A stub's script is a path; a CLI is looked up on ``PATH`` unless given as a
+    path. A command that cannot be found is left for :func:`cli_version` to
+    report.
+    """
+    expanded = str(Path(command).expanduser())
+    if runner == "stub":
+        return str(Path(expanded).resolve())
+    found = shutil.which(expanded)
+    return str(Path(found).resolve()) if found is not None else expanded
