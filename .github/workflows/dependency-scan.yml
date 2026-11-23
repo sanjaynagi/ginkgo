@@ -26,6 +26,9 @@ on:
       - .trivyignore
       - .github/workflows/dependency-scan.yml
 
+permissions:
+  contents: read
+
 jobs:
   python-environment:
     runs-on: ubuntu-latest
