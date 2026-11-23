@@ -1,0 +1,21 @@
+[project]
+name = "ginkgo-agent"
+version = "0.5.0"
+description = "Coding-agent CLIs (Codex, Claude Code) as ginkgo tasks"
+requires-python = ">= 3.12"
+readme = { text = "# ginkgo-agent\n\nCoding-agent CLIs (Codex, Claude Code) as ginkgo tasks.\n\nA plugin for [Ginkgo](https://sanjaynagi.github.io/ginkgo/). Install it with `pip install \"ginkgo-workflow[agent]\"`, and see the [plugins guide](https://sanjaynagi.github.io/ginkgo/getting-started/installation/#plugins).", content-type = "text/markdown" }
+license = "Apache-2.0"
+dependencies = [
+    "ginkgo-workflow==0.5.0",
+    "jsonschema>=4.18",
+]
+
+[project.entry-points."ginkgo.plugins"]
+agent = "ginkgo_agent:PLUGIN"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ginkgo_agent"]

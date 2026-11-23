@@ -47,6 +47,7 @@ jobs:
       matrix:
         package:
           - ginkgo-workflow
+          - ginkgo-agent
           - ginkgo-aws
           - ginkgo-gcp
           - ginkgo-k8s

@@ -26,6 +26,10 @@ from ginkgo.runtime.task_runners.shell import (
     stringify_cli_argument,
 )
 
+# How a refusal names a DataFrame: its module is pandas.core.frame before
+# pandas 3 and pandas from 3 on.
+_DATAFRAME = f"{pd.DataFrame.__module__}.DataFrame"
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: script and shell tasks consuming upstream outputs
@@ -250,7 +254,7 @@ class TestLivePythonPayloadArguments:
 
         message = str(excinfo.value)
         assert "eat_payload.scores" in message
-        assert "pandas.DataFrame" in message
+        assert _DATAFRAME in message
         assert "`script` task" in message
         assert "JSON serializable" not in message
         # Same guidance as the path-binding refusal: where the worked example
@@ -276,7 +280,7 @@ class TestLivePythonPayloadArguments:
         with pytest.raises(TypeError) as excinfo:
             stringify_cli_argument(payload, label="eat_payload.scores", task_kind="script")
         assert "JSON serializable" not in str(excinfo.value)
-        with pytest.raises(TypeError, match="pandas.DataFrame"):
+        with pytest.raises(TypeError, match=_DATAFRAME):
             serialize_cli_argument_value(payload)
 
     def test_a_date_argument_crosses_as_iso_text(self) -> None:
@@ -299,7 +303,7 @@ class TestLivePythonPayloadArguments:
 
         message = str(excinfo.value)
         assert "eat_payload_via_script.scores" in message
-        assert "pandas.DataFrame" in message
+        assert _DATAFRAME in message
         assert "JSON serializable" not in message
         # Refused before the script ran, so its declared output was never written.
         assert not (tmp_path / "results" / "copied.csv").exists()

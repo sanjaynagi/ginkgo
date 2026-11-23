@@ -335,6 +335,7 @@ class _StageIn(ShellRunner):
         user_log_path: Path | None = None,
         extra_env: dict[str, str] | None = None,
         mounts: Sequence[Mount] = (),
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Write *cmd* to ``command.sh``, and stop: this worker's part is done."""
         env = build_shell_subprocess_env(task_def=node.task_def, threads=node.threads)
@@ -374,6 +375,7 @@ class _StageOut(ShellRunner):
         on_stderr: Any = None,
         env: dict[str, str] | None = None,
         usage_callback: Any = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Replay the command's recorded output, then exit with its exit status.
 

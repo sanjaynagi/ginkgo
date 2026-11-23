@@ -952,26 +952,28 @@ packages:
   - blake3>=1.0.0
   - numpy>=2.0
   - ortools>=9.11
-  - pandas>=2.0
+  - pandas>=2.2.2
   - pyarrow>=23.0.1,<24
   - pyyaml>=6.0
   - rich>=13.9
-  - ginkgo-aws==0.4.0 ; extra == 'aws'
-  - ginkgo-k8s==0.4.0 ; extra == 'k8s'
-  - ginkgo-gcp==0.4.0 ; extra == 'gcp'
-  - ginkgo-notebook==0.4.0 ; extra == 'notebook'
-  - ginkgo-oci==0.4.0 ; extra == 'oci'
-  - ginkgo-pixi==0.4.0 ; extra == 'pixi'
-  - ginkgo-report==0.4.0 ; extra == 'report'
-  - ginkgo-slack==0.4.0 ; extra == 'slack'
-  - ginkgo-aws==0.4.0 ; extra == 'all'
-  - ginkgo-k8s==0.4.0 ; extra == 'all'
-  - ginkgo-gcp==0.4.0 ; extra == 'all'
-  - ginkgo-notebook==0.4.0 ; extra == 'all'
-  - ginkgo-oci==0.4.0 ; extra == 'all'
-  - ginkgo-pixi==0.4.0 ; extra == 'all'
-  - ginkgo-report==0.4.0 ; extra == 'all'
-  - ginkgo-slack==0.4.0 ; extra == 'all'
+  - ginkgo-agent==0.5.0 ; extra == 'agent'
+  - ginkgo-aws==0.5.0 ; extra == 'aws'
+  - ginkgo-k8s==0.5.0 ; extra == 'k8s'
+  - ginkgo-gcp==0.5.0 ; extra == 'gcp'
+  - ginkgo-notebook==0.5.0 ; extra == 'notebook'
+  - ginkgo-oci==0.5.0 ; extra == 'oci'
+  - ginkgo-pixi==0.5.0 ; extra == 'pixi'
+  - ginkgo-report==0.5.0 ; extra == 'report'
+  - ginkgo-slack==0.5.0 ; extra == 'slack'
+  - ginkgo-agent==0.5.0 ; extra == 'all'
+  - ginkgo-aws==0.5.0 ; extra == 'all'
+  - ginkgo-k8s==0.5.0 ; extra == 'all'
+  - ginkgo-gcp==0.5.0 ; extra == 'all'
+  - ginkgo-notebook==0.5.0 ; extra == 'all'
+  - ginkgo-oci==0.5.0 ; extra == 'all'
+  - ginkgo-pixi==0.5.0 ; extra == 'all'
+  - ginkgo-report==0.5.0 ; extra == 'all'
+  - ginkgo-slack==0.5.0 ; extra == 'all'
   requires_python: '>=3.12'
 - pypi: https://files.pythonhosted.org/packages/06/8e/8458c4285fbc5de76414f243e4e0fcab795d71a8b75324e14959aee699da/blake3-1.0.8-cp314-cp314-macosx_11_0_arm64.whl
   name: blake3
