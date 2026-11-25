@@ -358,11 +358,11 @@ def load_remote_artifact_store(
     -------
     RemoteArtifactStore | None
     """
-    from ginkgo.config import load_runtime_config
+    from ginkgo.config import runtime_config
     from ginkgo.core.remote import parse_remote_uri
     from ginkgo.remote.resolve import resolve_backend
 
-    config = load_runtime_config(project_root=Path.cwd())
+    config = runtime_config()
     artifacts_config = config.get("remote", {}).get("artifacts", {})
     store_uri = artifacts_config.get("store") if isinstance(artifacts_config, dict) else None
     if store_uri is None:

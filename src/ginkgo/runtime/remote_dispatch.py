@@ -319,10 +319,9 @@ class RemoteDispatchManager:
             raise FileNotFoundError(f"Code-sync package directory not found: {package_path}")
 
         # Determine remote storage from [remote.artifacts] config.
-        from ginkgo.config import load_runtime_config
+        from ginkgo.config import runtime_config
 
-        runtime_config = load_runtime_config(project_root=Path.cwd())
-        artifacts_config = runtime_config.get("remote", {}).get("artifacts", {})
+        artifacts_config = runtime_config().get("remote", {}).get("artifacts", {})
         store_uri = artifacts_config.get("store") if isinstance(artifacts_config, dict) else None
         if store_uri is None:
             raise ValueError(

@@ -360,6 +360,37 @@ def load_runtime_config(
     )
 
 
+# The --config files of the command that is running, innermost last.
+_COMMAND_CONFIG_PATHS: list[tuple[Path, ...]] = []
+
+
+@contextmanager
+def command_config_paths(paths: Sequence[str | Path]) -> Iterator[None]:
+    """Layer a command's ``--config`` files into :func:`runtime_config` while it runs.
+
+    The CLI enters this once per command, so code that reads the runtime config
+    mid-run, long after the workflow was loaded, sees the same overrides as the
+    code that read it first.
+    """
+    _COMMAND_CONFIG_PATHS.append(tuple(Path(path).resolve() for path in paths))
+    try:
+        yield
+    finally:
+        _COMMAND_CONFIG_PATHS.pop()
+
+
+def runtime_config() -> dict[str, Any]:
+    """Return the project's runtime config, with the running command's ``--config`` files.
+
+    Outside a command, this is the project's ``ginkgo.toml`` or ``ginkgo.yaml``
+    alone. The working directory is the project root (the CLI moves there).
+    """
+    return load_runtime_config(
+        project_root=Path.cwd(),
+        override_paths=_COMMAND_CONFIG_PATHS[-1] if _COMMAND_CONFIG_PATHS else None,
+    )
+
+
 @contextmanager
 def config_session(
     *,

@@ -256,6 +256,38 @@ def test_the_read_check_sees_new_directories_and_changes_through_links(tmp_path:
     assert _fingerprint(read) != before
 
 
+def test_config_given_on_the_command_line_picks_the_runner(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ginkgo.cli.app import main as cli_main
+
+    for name in ("A", "B"):
+        stub = project / f"stub_{name}.sh"
+        stub.write_text(f'#!/bin/sh\necho "stub {name}" > "$GINKGO_AGENT_FINAL_MESSAGE"\n')
+        stub.chmod(0o755)
+    (project / "ginkgo.toml").write_text(
+        '[agents]\nrunner = "stub"\ncommand = "stub_A.sh"\n', encoding="utf-8"
+    )
+    (project / "override.toml").write_text(
+        '[agents]\nrunner = "stub"\ncommand = "stub_B.sh"\n', encoding="utf-8"
+    )
+    (project / "wf.py").write_text(
+        "from ginkgo import file, flow, folder, task\n"
+        "from ginkgo_agent import agent\n\n"
+        "@task('agent')\n"
+        "def ask(brief: file) -> folder:\n"
+        "    return agent(brief=brief)\n\n"
+        "@flow\n"
+        "def main():\n"
+        "    return ask(brief='brief.md')\n",
+        encoding="utf-8",
+    )
+
+    assert cli_main(["run", "wf.py", "--config", "override.toml"]) == 0
+    messages = list((project / ".ginkgo" / "runs").glob("*/agents/*/final_message.txt"))
+    assert [path.read_text().strip() for path in messages] == ["stub B"]
+
+
 def test_an_invalid_schema_is_refused_before_the_agent_runs(project: Path) -> None:
     (project / "schema.json").write_text('{"type": "not-a-type"}', encoding="utf-8")
     with pytest.raises(DirectiveError, match="not a valid JSON Schema"):
