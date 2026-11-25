@@ -128,3 +128,22 @@ def test_lists_and_yaml_report_the_same_way(name, text, keys, expected):
         assert isinstance(loaded["samples"][0], ConfigMapping)
 
     assert expected in _miss(loaded, *keys)
+
+
+def test_runtime_config_layers_the_running_commands_config_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ginkgo.config import command_config_paths, runtime_config
+    from ginkgo.runtime.remote_input_resolver import resolve_staging_jobs
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GINKGO_STAGING_JOBS", raising=False)
+    (tmp_path / "ginkgo.toml").write_text("[remote]\nstaging_jobs = 2\n", encoding="utf-8")
+    (tmp_path / "override.toml").write_text("[remote]\nstaging_jobs = 7\n", encoding="utf-8")
+
+    assert runtime_config()["remote"]["staging_jobs"] == 2
+    with command_config_paths(["override.toml"]):
+        assert runtime_config()["remote"]["staging_jobs"] == 7
+        # Read mid-run, when the evaluator is built, long after the workflow loaded.
+        assert resolve_staging_jobs() == 7
+    assert resolve_staging_jobs() == 2

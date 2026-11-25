@@ -29,7 +29,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, get_args, get_origin
 
-from ginkgo.config import load_runtime_config
+from ginkgo.config import runtime_config
 from ginkgo.core.remote import (
     RemoteFileRef,
     RemoteFolderRef,
@@ -227,7 +227,7 @@ def resolve_staging_jobs() -> int:
     if configured:
         return _parse_positive_int(value=configured, label="GINKGO_STAGING_JOBS")
 
-    config = load_runtime_config(project_root=Path.cwd())
+    config = runtime_config()
     remote_config = config.get("remote", {})
     if isinstance(remote_config, dict) and remote_config.get("staging_jobs") is not None:
         return _parse_positive_int(
@@ -256,7 +256,7 @@ def load_remote_publisher() -> Any | None:
     (e.g. ``s3://bucket/prefix/``). Returns ``None`` when no remote store
     is configured for the current project.
     """
-    config = load_runtime_config(project_root=Path.cwd())
+    config = runtime_config()
     store_uri = config.get("remote", {}).get("store")
     if store_uri is None:
         return None

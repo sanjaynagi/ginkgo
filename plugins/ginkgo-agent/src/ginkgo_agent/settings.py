@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ginkgo.config import current_session, load_runtime_config
+from ginkgo.config import runtime_config
 from ginkgo.core.directive import DirectiveError
 
 RUNNERS = ("codex", "claude", "stub")
@@ -63,12 +63,7 @@ def load_settings() -> AgentSettings:
         If the table names an unknown runner or isolation, or ``stub`` without
         a command.
     """
-    session = current_session()
-    config = load_runtime_config(
-        project_root=Path.cwd(),
-        override_paths=session.override_paths if session is not None else None,
-    )
-    return settings_from_table(config.get("agents"))
+    return settings_from_table(runtime_config().get("agents"))
 
 
 def settings_from_table(table: Any) -> AgentSettings:

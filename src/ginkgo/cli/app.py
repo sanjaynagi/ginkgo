@@ -25,6 +25,7 @@ from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.why import command_why
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
+from ginkgo.config import command_config_paths
 from ginkgo.params import looks_like_flag, unrecognized_arguments_message
 from ginkgo.plugins.api import CliCommand
 from ginkgo.plugins.registry import PluginNotFoundError, first_party_provider, plugin_registry
@@ -198,38 +199,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         _normalize_working_directory(args)
-
-        if args.command == "run":
-            if getattr(args, "show_help", False):
-                return command_run_help(args, usage=run_parser.format_help())
-            return command_run(args, output_mode=_run_mode_from_args(args))
-        if args.command == "cache":
-            return command_cache(args)
-        if args.command == "db":
-            return command_db(args)
-        if args.command == "debug":
-            return command_debug(args)
-        if args.command == "doctor":
-            return command_doctor(args)
-        if args.command == "init":
-            return command_init(args)
-        if args.command == "inspect":
-            return command_inspect(args)
-        if args.command == "why":
-            return command_why(args)
-        if args.command == "plugins":
-            return command_plugins(args)
-        if args.command == "runs":
-            return command_runs(args)
-        if args.command == "history":
-            return command_history(args)
-        if args.command == "query":
-            return command_query(args)
-        if args.command == "export":
-            return command_export(args)
-        if args.command == "secrets":
-            return command_secrets(args)
-        return plugin_registry().get(CliCommand, args.command).run(args)
+        with command_config_paths(getattr(args, "config", None) or ()):
+            return _dispatch(args=args, run_parser=run_parser)
     # SystemExit is deliberately not caught: argparse and ``--version`` use it
     # to exit with a status they have already chosen.
     except KeyboardInterrupt:
@@ -240,6 +211,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream=sys.stderr,
             show_traceback=traceback_requested(args),
         )
+
+
+def _dispatch(*, args: argparse.Namespace, run_parser: argparse.ArgumentParser) -> int:
+    """Run the command *args* names."""
+    if args.command == "run":
+        if getattr(args, "show_help", False):
+            return command_run_help(args, usage=run_parser.format_help())
+        return command_run(args, output_mode=_run_mode_from_args(args))
+    if args.command == "cache":
+        return command_cache(args)
+    if args.command == "db":
+        return command_db(args)
+    if args.command == "debug":
+        return command_debug(args)
+    if args.command == "doctor":
+        return command_doctor(args)
+    if args.command == "init":
+        return command_init(args)
+    if args.command == "inspect":
+        return command_inspect(args)
+    if args.command == "why":
+        return command_why(args)
+    if args.command == "plugins":
+        return command_plugins(args)
+    if args.command == "runs":
+        return command_runs(args)
+    if args.command == "history":
+        return command_history(args)
+    if args.command == "query":
+        return command_query(args)
+    if args.command == "export":
+        return command_export(args)
+    if args.command == "secrets":
+        return command_secrets(args)
+    return plugin_registry().get(CliCommand, args.command).run(args)
 
 
 def _ginkgo_version() -> str:
